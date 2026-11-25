@@ -1,4 +1,4 @@
-/** 工单源 page: one card per Source instance with its last day and execution state, adding Sources, an instance's page with its configuration, and Project answer dialogs. */
+/** 工单源 page: one card per Source instance with its last day and execution state, adding Sources, an instance's page with its sections, and Project answer dialogs. */
 import { useEffect, useState } from 'react'
 import type { AnswerProject } from '../app/api.ts'
 import type { FieldSpec } from '../sources/kind.ts'
@@ -7,9 +7,11 @@ import { usePoll, type DroppedReply, type PendingProject, type SourceDetailView,
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { sourceMark } from './marks.ts'
+import { SourcePolicyEditor } from './policy.tsx'
 import { usePanel, usePanelData } from './provider.tsx'
+import { SourcePrompts } from './prompts.tsx'
 import { TicketLine } from './rows.tsx'
-import { setupPage, type Route } from './route.ts'
+import { setupPage, sourceRoute, SOURCE_SEGMENTS, type Route, type SourceSegment } from './route.ts'
 import { ConfigHistory, Fields, SettingsProvider, SourceField } from './settings-kit.tsx'
 import { actorName, errorText, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { CheckSetupButton, Hint, LabelValue, LoadState, PageHead, Section, SetupMessage, StatusHead, When } from './widgets.tsx'
@@ -96,7 +98,7 @@ function SourceInstanceCard({ source, onOpen, onAnswer, onReload }: {
     </div>
     {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
     {source.problem && <p className="dt-error"><SetupMessage problem={source.problem} lead /> <button type="button"
-      className="dt-textlink" onClick={() => navigate({ page: 'source', id: source.id })}>{t('sourceOpenSettings')}</button>
+      className="dt-textlink" onClick={() => navigate(sourceRoute(source.id, 'config'))}>{t('sourceOpenSettings')}</button>
       <CheckSetupButton /></p>}
     {notes.map(item => <p key={item.name} className={item.state === 'error' ? 'dt-error dt-clamp' : 'dt-hint dt-clamp'}>
       {partLabel(item.name)}{t('labelSeparator')}<span className={item.code ? undefined : 'dt-mono'}>{healthText(t,
@@ -119,6 +121,8 @@ function SourceInstanceCard({ source, onOpen, onAnswer, onReload }: {
     {source.dropped.length > 0 && <DroppedReplies items={source.dropped} />}
     <div className="dt-row-buttons">
       <Button variant="outline" size="sm" onClick={onOpen}>{t('sourceOpen')}</Button>
+      {source.installed && <Button variant="outline" size="sm" icon={<Icon name="shield" size={14} />}
+        onClick={() => navigate(sourceRoute(source.id, 'governance'))}>{t('sourcePolicyPrompts')}</Button>}
       {busy && <span className="dt-hint" role="status">{t('loading')}</span>}
     </div>
   </section>
@@ -212,8 +216,20 @@ function AnswerProjectDialog({ question, onClose, onAnswered }: {
   </Modal>
 }
 
-/** One instance's own page: its configuration, last day, Tickets, filtered and dropped messages, recent Triggers, and Project questions. */
-function SourceDetailPage({ id }: { id: string }) {
+/** The two parts of a Source's Policy and prompts: the rules its work is assessed by, and the prompts its workers read. */
+function GovernancePanel({ id }: { id: string }) {
+  const { t } = usePanel()
+  const [part, setPart] = useState<'policy' | 'prompts'>('policy')
+  return <div className="dt-form dt-governance">
+    <SegmentedControl className="dt-segmented dt-governance-parts" label={t('sourceGovernanceSections')} value={part}
+      options={[{ value: 'policy' as const, label: t('sourceGovernancePolicy') },
+        { value: 'prompts' as const, label: t('sourceGovernancePrompts') }]} onChange={setPart} />
+    {part === 'policy' ? <SourcePolicyEditor id={id} /> : <SourcePrompts id={id} />}
+  </div>
+}
+
+/** One instance's own page: its last day and Tickets, its settings, and the Policy and prompts its work reads. */
+function SourceDetailPage({ id, segment }: { id: string; segment: SourceSegment }) {
   const { t, call, navigate, notify } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET sources/:id', { id }), [id])
   const [question, setQuestion] = useState<PendingProject>()
@@ -223,6 +239,7 @@ function SourceDetailPage({ id }: { id: string }) {
   const toggle = (enabled: boolean) => {
     void call('PATCH sources/:id', { id, body: { enabled } }).then(reload, failure => notify(errorText(failure)))
   }
+  const show = (next: SourceSegment) => navigate(sourceRoute(id, next), true)
   const tickets = [...data.tickets.items, ...extra.items]
   const next = extra.next ?? data.tickets.next_offset
   const loadMore = async () => {
@@ -236,30 +253,40 @@ function SourceDetailPage({ id }: { id: string }) {
       {data.installed
         ? <Switch checked={data.enabled} onChange={toggle} label={t('sourceEnable', { name: localized(t, data.title) })} />
         : <Tag tone="warning">{t('sourceNotInstalled')}</Tag>}
+      {data.installed && <Button variant="outline" size="sm" icon={<Icon name="shield" size={14} />}
+        disabled={segment === 'governance'} onClick={() => show('governance')}>{t('sourcePolicyPrompts')}</Button>}
     </PageHead>
     {data.problem && <p className="dt-error"><SetupMessage problem={data.problem} lead /> {data.problem.place === 'deployment'
       && <button type="button" className="dt-textlink" onClick={() => navigate(setupPage(data.problem!.place))}>{t('setupFixLink')}</button>}
       <CheckSetupButton /></p>}
-    {data.installed && <SourceConfigForm source={data} reload={reload} />}
-    {data.installed && <SettingsProvider><ConfigHistory blocks={[`source:${id}`]} /></SettingsProvider>}
-    <Section title={t('sourceLastDay')}><SourceStats source={data} /></Section>
-    <Section title={t('sourceExecTitle')}><SourceExec source={data} /></Section>
-    <Section title={t('sourceTickets')} count={data.tickets.total}>
-      {tickets.length ? <ul className="dt-list">{tickets.map(ticket => <TicketLine key={ticket.id} ticket={ticket} />)}</ul>
-        : <Hint>{t('sourceTicketsNone')}</Hint>}
-      {next !== null && <Button variant="outline" size="sm" onClick={() => { void loadMore() }}>{t('loadMore')}</Button>}
-    </Section>
-    <SourceFiltered items={data.filtered} />
-    {data.dropped.length > 0 && <DroppedReplies items={data.dropped} />}
-    <Section title={t('sourceRecent')}><SourceRecent source={data} /></Section>
-    {data.pendingProjects.length > 0 && <Section title={t('sourceUnassignedTitle')} count={data.pendingProjects.length}>
-      <ul className="dt-list">{data.pendingProjects.map(item => <li key={item.triggerId} className="dt-row">
-        <Dot state="warning" /><div className="dt-row-main">
-          <div className="dt-row-title">{readableMarkers(t, item.preview) || t('empty')}</div>
-          <div className="dt-row-meta"><When at={item.at} />
-            <Button variant="outline" size="sm" onClick={() => setQuestion(item)}>{t('sourceAnswer')}</Button></div>
-        </div></li>)}</ul>
-    </Section>}
+    <SegmentedControl className="dt-segmented dt-source-segments" label={t('sourceSections')} value={segment}
+      options={SOURCE_SEGMENTS.map(value => ({ value, label: t(`sourceSegment.${value}`) }))} onChange={show} />
+    {segment === 'overview' && <>
+      <Section title={t('sourceLastDay')}><SourceStats source={data} /></Section>
+      <Section title={t('sourceExecTitle')}><SourceExec source={data} /></Section>
+      <Section title={t('sourceTickets')} count={data.tickets.total}>
+        {tickets.length ? <ul className="dt-list">{tickets.map(ticket => <TicketLine key={ticket.id} ticket={ticket} />)}</ul>
+          : <Hint>{t('sourceTicketsNone')}</Hint>}
+        {next !== null && <Button variant="outline" size="sm" onClick={() => { void loadMore() }}>{t('loadMore')}</Button>}
+      </Section>
+      <SourceFiltered items={data.filtered} />
+      {data.dropped.length > 0 && <DroppedReplies items={data.dropped} />}
+      <Section title={t('sourceRecent')}><SourceRecent source={data} /></Section>
+      {data.pendingProjects.length > 0 && <Section title={t('sourceUnassignedTitle')} count={data.pendingProjects.length}>
+        <ul className="dt-list">{data.pendingProjects.map(item => <li key={item.triggerId} className="dt-row">
+          <Dot state="warning" /><div className="dt-row-main">
+            <div className="dt-row-title">{readableMarkers(t, item.preview) || t('empty')}</div>
+            <div className="dt-row-meta"><When at={item.at} />
+              <Button variant="outline" size="sm" onClick={() => setQuestion(item)}>{t('sourceAnswer')}</Button></div>
+          </div></li>)}</ul>
+      </Section>}
+    </>}
+    {segment === 'config' && (data.installed
+      ? <><SourceConfigForm source={data} reload={reload} /><SettingsProvider><ConfigHistory blocks={[`source:${id}`]} /></SettingsProvider></>
+      : <Hint>{t('sourceNotInstalledHint')}</Hint>)}
+    {segment === 'governance' && (data.installed
+      ? <SettingsProvider><GovernancePanel id={id} /></SettingsProvider>
+      : <Hint>{t('sourceNotInstalledHint')}</Hint>)}
     {question && <AnswerProjectDialog question={question} onClose={() => setQuestion(undefined)}
       onAnswered={async () => { setQuestion(undefined); setExtra({ items: [], next: null }); await reload() }} />}
   </div>
@@ -365,7 +392,7 @@ function SourceList() {
   return <div className="dt-form">
     <StatusHead hint={t('sourceStatusIntro')} action={add} />
     {data && data.length > 0 && <div className="dt-source-grid">
-      {data.map(source => <SourceInstanceCard key={source.id} source={source} onOpen={() => navigate({ page: 'source', id: source.id })}
+      {data.map(source => <SourceInstanceCard key={source.id} source={source} onOpen={() => navigate(sourceRoute(source.id))}
         onAnswer={setQuestion} onReload={reload} />)}
     </div>}
     <LoadState error={error} loading={!data} />
@@ -379,7 +406,7 @@ function SourceList() {
   </div>
 }
 
-/** The 工单源 page or, with an instance id, that instance's own page. */
-export function SourcePage({ id }: { id?: string }) {
-  return id === undefined ? <SourceList /> : <SourceDetailPage id={id} />
+/** The 工单源 page or, with an instance id, that instance's own page at one of its sections. */
+export function SourcePage({ id, segment = 'overview' }: { id?: string; segment?: SourceSegment }) {
+  return id === undefined ? <SourceList /> : <SourceDetailPage key={id} id={id} segment={segment} />
 }

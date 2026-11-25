@@ -98,8 +98,8 @@ it('links a question to its Channel, folds consecutive automated messages among 
   expect(all('.dt-disclosure-body .dt-row-title').map(title => title.textContent)).toEqual(['自动通知：CI of PR #42 at abc1234: 10 checks, 1 failed, 0 running.'])
   await click('同一发送者之前还有 1 条自动消息')
   expect(text()).toContain('CI of PR #42 at abc1234: 10 checks, 0 failed, 0 running.')
-  await click(tab(zh['tab.policy']))
-  await click(find(zh['policySegment.eval'], '.dt-policy-segments [role="tab"]'))
+  await click(find(zh['tab.settings'], '.dt-head button'))
+  await click(find(zh['settingsGroup.routing'], '.dt-settings-link'))
   expect(text()).not.toContain('到期后记为未完成')
   const tip = field(zh.evalTimeout).closest('.dt-field')!.querySelector<HTMLElement>('.dt-info')!
   await act(async () => { tip.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })

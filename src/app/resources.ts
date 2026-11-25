@@ -13,8 +13,8 @@ import { transcriptEntry } from './context.ts'
 import { builtInParts, defaultPrompts } from './prompts.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Commands } from '../infra/commands.ts'
-import type { PromptVersion, Prompts } from './prompts.ts'
-import type { Sessions } from './sessions.ts'
+import type { Prompts } from './prompts.ts'
+import type { PromptBinding, Sessions } from './sessions.ts'
 import type { Settings } from './settings.ts'
 import { KV } from '../kv.ts'
 import type { Store } from './store.ts'
@@ -63,7 +63,7 @@ export interface ResourceHost {
   readonly commands: Commands
   readonly masterId: string
   readonly context: Context
-  promptVersion(sessionId: string): PromptVersion
+  promptVersion(sessionId: string): PromptBinding
   /** Whether a Session may read `revision` (the revision it currently runs under or any revision it ran under previously). */
   mayRead(sessionId: string, revision: number): boolean
   feishuPageSize(): number
@@ -172,14 +172,15 @@ const ROUTES: readonly Route[] = [
         ({ ...version, previous_revision: previousRevision, saved_at: savedAt })),
       next_offset: history.next_offset }
   }],
-  // A worker Session may read only its current prompt revision and revisions it previously ran under.
+  // A worker Session reads the prompt configuration of its own Source instance (the installation's default for the main
+  // Session), and only the revisions it worked under.
   ['prompts/', read => {
     const { host, resource, rest, sessionId, ticketId } = read
     const prompts = host.prompts
     const bound = host.promptVersion(sessionId)
     const parts = () => Object.fromEntries(Object.entries(builtInParts()).map(([key, part]) => [key, part.text]))
     const version = rest === 'current' ? bound : rest === 'defaults' && !ticketId ? { revision: 0, config: defaultPrompts(), parts: parts() }
-      : /^\d+$/.test(rest) ? (Number(rest) === 0 && prompts.current().revision === 0 ? prompts.current() : prompts.version(Number(rest))) : undefined
+      : /^\d+$/.test(rest) ? prompts.version(bound.scope, Number(rest)) : undefined
     if (!version || (ticketId && !host.mayRead(sessionId, version.revision))) throw new Error('Unknown or inaccessible prompt version')
     return text({ ...read, resource: rest === 'current' ? `prompts/${version.revision}` : resource }, JSON.stringify(version))
   }],

@@ -49,7 +49,7 @@ export interface Assessment {
  */
 export function assessmentOutcome(assessment: Assessment, settings: Pick<Settings, 'policy' | 'eval'>, strength: Strength,
   source?: string): AssessmentOutcome {
-  const enabled = settings.policy.rules.filter(rule => rule.enabled)
+  const enabled = rulesFor(settings, source).filter(rule => rule.enabled)
   const judged = assessment.rule_assessments
   const ids = new Set(judged.map(item => item.rule_id))
   if (judged.length !== enabled.length || ids.size !== judged.length || enabled.some(rule => !ids.has(rule.id))) {
@@ -98,6 +98,8 @@ const DEFAULT_RULES = [
 export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().min(1).max(LIMITS.ruleName), enabled: z.boolean(),
   instruction: z.string().trim().min(1).max(LIMITS.ruleInstruction) }).strict()
 export type Rule = z.infer<typeof RuleSchema>
+/** A Source instance's own rules: when present they replace the installation's default rules for that Source. */
+export const RuleArraySchema = z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs')
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
 export type RoleModel = z.infer<typeof RoleModelSchema>
 
@@ -105,12 +107,14 @@ export const AllowedSchema = z.object({ id: z.string().trim().min(1).max(200), n
 const Weak = z.enum(['inferred', 'ignore'])
 export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnaddressed: Weak.optional(), unlistedAddressed: z.enum(['explicit', 'inferred', 'ignore']).optional(), unlistedUnaddressed: Weak.optional() }).strict()
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
-export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
+export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}),
+  /** This Source instance's own admission rules; absent means the installation's default rules apply. */
+  rules: RuleArraySchema.optional() }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
 /** A Source instance's id: a kind id, or `<kind>:<key>` for a named instance (old data keeps the bare kind). */
 export const SourceInstanceIdSchema = z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)
 export const PolicyConfigSchema = z.object({
-  rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
+  rules: RuleArraySchema.default(DEFAULT_RULES),
   sources: z.record(SourceInstanceIdSchema, SourcePolicySchema).default({}),
 }).strict()
 export const EvalConfigSchema = z.object({
@@ -150,9 +154,18 @@ export const SettingsSchema = z.object({
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
 }).strict()
 export type Settings = z.infer<typeof SettingsSchema>
-export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
+export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}` | `policy:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
 export type SettingsOrigin = 'panel' | 'tool' | 'sync' | 'migration'
+
+/**
+ * The admission rules that apply to work from `source`: a Source instance's own rules when it has saved any, else the
+ * installation's default rules. An unknown or absent source id falls back to the default rules.
+ */
+export function rulesFor(settings: Pick<Settings, 'policy'>, source?: string): Rule[] {
+  const own = source === undefined ? undefined : settings.policy.sources[source]?.rules
+  return own ?? settings.policy.rules
+}
 
 export const POLICY_REVISION = 'mandate-v3'
 /**
@@ -191,16 +204,23 @@ export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Se
   Map<string, PolicyEffect> {
   const before = settingsPolicy(old, scope(old)), after = settingsPolicy(now, scope(now))
   const effects = new Map<string, PolicyEffect>()
+  /** `settings` with `source`'s effective rules replaced, so a Mandate is rechecked as it was allowed under the old rules. */
+  const withRules = (settings: Settings, source: string, rules: Rule[]): Settings => ({ ...settings, policy: { ...settings.policy,
+    sources: { ...settings.policy.sources, [source]: { ...(settings.policy.sources[source] ?? { allowed: [], admission: {} }), rules } } } })
   for (const ticket of tickets) {
+    const source = ticket.mandate.basis.source
+    const oldRules = rulesFor(old, source), newRules = rulesFor(now, source)
     const rules = (ticket.mandate.basis.rules ?? []).flatMap((id): NonNullable<PolicyEffect['rules']> => {
-      const was = old.policy.rules.find(rule => rule.id === id), is = now.policy.rules.find(rule => rule.id === id)
+      const was = oldRules.find(rule => rule.id === id), is = newRules.find(rule => rule.id === id)
       if (!is?.enabled) return was?.enabled ? [{ id, name: was.name, change: 'disabled' }] : []
       return JSON.stringify(was) === JSON.stringify(is) ? [] : [{ id, name: is.name, change: 'changed', instruction: is.instruction }]
     })
     const effect: PolicyEffect = rules.length ? { rules } : {}
     if (before.revalidate(ticket.mandate) && !after.revalidate(ticket.mandate)) {
       // With the previous accept mode and rules, the Mandate holds unless the sender or receiving scope lost authorization.
-      const asBefore = { ...now, eval: old.eval, policy: { ...now.policy, rules: old.policy.rules } }
+      // A record without a Source keeps the installation's rules, which it was admitted under.
+      const asBefore = source === undefined ? { ...now, eval: old.eval, policy: { ...now.policy, rules: old.policy.rules } }
+        : withRules({ ...now, eval: old.eval }, source, oldRules)
       if (!settingsPolicy(asBefore, scope(now)).revalidate(ticket.mandate)) {
         Object.assign(effect, { requesterAllowed: false, requester: ticket.mandate.actor })
       } else if (ticket.mandate.strength === 'inferred' && old.eval.mode === 'auto' && now.eval.mode !== 'auto') effect.proactive = false
@@ -255,14 +275,17 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       if (admission === 'inferred' && mode !== 'off') return { admissible: true, strength: 'inferred', basis: { ...basis, observation: { mode } } }
       return { admissible: false, reason: !allowed ? 'not_a_member' : receivable && admission === 'ignore' ? 'admission_ignored' : 'no_mention' }
     },
-    admitsInferred: rules => mode === 'auto' && rules.length > 0 && rules.every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id)),
+    admitsInferred: (rules, source) => mode === 'auto' && rules.length > 0
+      && rules.every(id => rulesFor(settings, source).some(rule => rule.enabled && rule.id === id)),
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false
-      const rulesOn = (rules: string[] | undefined) => (rules ?? []).every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id))
+      /** This Source instance's rules, which its Mandate was admitted under. */
+      const sourceRules = rulesFor(settings, source)
+      const rulesOn = (rules: string[] | undefined) => (rules ?? []).every(id => sourceRules.some(rule => rule.enabled && rule.id === id))
       // Explicit follow-ups remain valid; inferred follow-ups require auto mode and enabled matched rules.
       if (basis.via === 'followup') return mandate.strength === 'explicit' || (mode === 'auto' && rulesOn(basis.rules))
       // A bot's candidate holds only while the bot remains on its Source's bot list and passes the observation checks below.

@@ -1,18 +1,22 @@
 // @vitest-environment jsdom
-// The Eval status and settings.
+// The latest Decisions page and one Source's Policy: its rules, lists, admission matrix and sync.
 import { act } from 'react'
 import { expect, it } from 'vitest'
-import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, settle, all, at, find, tab, click, type, text, field } from './fixtures/panel.tsx'
+import { zh } from '../src/client/locales.ts'
+import { usePanel, mount, remount, settle, all, at, find, click, type, text, field } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
-it('opens the Decisions under Policy from the flow line with their reasons, Decisions that start work first, filterable by kind',
-  async () => {
+/** Opens one instance's page at its Policy and prompts section, then the Policy part of it. */
+const openPolicy = (id = 'feishu') => at({ page: 'source', id, query: { segment: 'governance' } })
+const part = (name: string) => find(name, '.dt-governance-parts [role="tab"]')
+
+it('opens the Decisions from the flow line with their reasons, Decisions that start work first, filterable by kind', async () => {
   await mount()
   await click(all('.dt-stat button')[1]!)
-  expect(tab(zh['tab.policy']).getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.dt-policy-segments [aria-selected="true"]')?.textContent).toBe(zh['policySegment.decisions'])
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.decisionsTitle)
+  // The Decisions page has no tab of its own: it opened from the overview's accepted count.
+  expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
   expect(server.requests.some(request => request.path === 'decisions?limit=30&kind=accept,reopen&window=24h')).toBe(true)
   expect(text()).toContain(zh['reason.explicitRouted'])
   await click(zh.stop)
@@ -25,67 +29,90 @@ it('opens the Decisions under Policy from the flow line with their reasons, Deci
   expect(server.requests.some(request => request.path === 'decisions?limit=30&kind=ignore')).toBe(true)
 })
 
-it('keeps a Policy draft across remounts, and merges another save into it sender by sender and rule by rule', async () => {
-  const addUser = async () => {
-    await click(all('.dt-part button').find(button => button.textContent === '添加')!)
-    const row = all('.dt-part .dt-rows-item').at(-1)!
-    await type(row.querySelector<HTMLInputElement>('input[aria-label="open_id"]')!,
-      'ou_newperson'); await type(row.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '新人')
-  }
+it('says on the Decisions that processing is paused, and offers where to resume it', async () => {
+  server.settings = { ...server.settings, paused: true }
   await mount()
-  await click(tab(zh['tab.policy']))
-  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub'])
-  await addUser()
+  await click(all('.dt-stat button')[1]!)
+  expect(text()).toContain(zh.evalRecordsPaused)
+  await click(zh.resumeWhere)
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
+  expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
+})
+
+it('keeps the installation\'s rules for a Source until the first save, then edits and saves its own rules as policy:<id>', async () => {
+  openPolicy('feishu')
+  await mount()
+  // Until it saves, the instance inherits the installation's rules, and says so.
+  expect(text()).toContain(zh.sourceRulesInherited)
+  expect(all('.dt-rule [data-disclosure-row]').map(title => title.textContent)).toEqual([expect.stringContaining('文案修改')])
+  // A new rule and an edited one are saved as this Source's own rules.
+  await click(zh.addRule)
+  await type(field<HTMLInputElement>(zh.ruleName), '文档')
+  await type(field<HTMLTextAreaElement>(zh.ruleInstruction), '修复失效链接')
+  await act(async () => { all('.dt-rule [data-disclosure-row]')[0]!.click() }); await settle()
+  await type(all('.dt-rule input')[0] as HTMLInputElement, '文案')
+  await click(zh.save)
+  expect(server.requests.find(item => item.path === 'settings/policy:feishu')).toMatchObject({ method: 'PUT', body: { revision: 0,
+    value: expect.objectContaining({ allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team',
+      rules: [{ id: 'copy', name: '文案', enabled: true, instruction: '修正明确的文案错误' },
+        { id: expect.any(String), name: '文档', enabled: true, instruction: '修复失效链接' }] }) } })
+  expect(server.settings.policy.sources.feishu!.rules).toHaveLength(2)
+  expect(server.settings.policy.sources.feishu!.allowed).toEqual([{ id: 'ou_alice', name: 'Alice' }])
+  // Its own rules are now what applies, so the inheritance hint is gone.
+  expect(text()).not.toContain(zh.sourceRulesInherited)
+})
+
+it('keeps a Source policy draft across remounts and rebases it onto another save of the same Source', async () => {
+  openPolicy('feishu')
+  await mount()
+  await click([...all('.dt-part button')].find(button => button.textContent === '添加')!)
+  const row = all('.dt-part .dt-rows-item').at(-1)!
+  await type(row.querySelector<HTMLInputElement>('input[aria-label="open_id"]')!, 'ou_newperson')
+  await type(row.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '新人')
   expect(text()).toContain(zh.draftKept)
   await remount()
   expect(text()).toContain(zh.draftRestored)
   expect(all('.dt-part .dt-rows-item')).toHaveLength(2)
-  // Someone else renames a rule and allows another sender meanwhile: the draft keeps its own sender and takes both of theirs.
-  const { policy } = server.settings
-  server.settings = { ...server.settings, policy: { ...policy, rules: [{ ...policy.rules[0]!, name: '文案' }],
-    sources: { ...policy.sources, feishu: { ...policy.sources.feishu!, allowed: [...policy.sources.feishu!.allowed, { id: 'ou_bob',
-      name: 'Bob' }] } } } }
-  server.revisions.policy = 4
+  // Another save writes its own rules meanwhile; this draft moves onto that revision and keeps its own sender.
+  const stored = server.settings.policy.sources.feishu!
+  server.settings = { ...server.settings, policy: { ...server.settings.policy, sources: { ...server.settings.policy.sources,
+    feishu: { ...stored, rules: [{ id: 'copy', name: '文案', enabled: true, instruction: '修正明确的文案错误' }] } } } }
+  server.revisions['policy:feishu'] = 1
   await click(zh.save)
   expect(text()).toContain(zh.saveMerged)
-  await type(all('.dt-part input[aria-label="名字"]').at(-2) as HTMLInputElement, '新同事')
-  expect(text()).not.toContain(zh.saveMerged)
   await click(zh.save)
-  expect(server.settings.policy.sources.feishu!.allowed).toEqual([{ id: 'ou_alice', name: 'Alice' }, { id: 'ou_newperson', name: '新同事' },
-    { id: 'ou_bob', name: 'Bob' }])
-  expect(server.settings.policy.rules.map(rule => rule.name)).toEqual(['文案'])
-  expect(sessionStorage.getItem('dsh-superagent/draft/master/policy')).toBeNull()
+  expect(server.settings.policy.sources.feishu!.allowed).toEqual([{ id: 'ou_alice', name: 'Alice' },
+    { id: 'ou_newperson', name: '新人' }])
+  expect(sessionStorage.getItem('dsh-superagent/draft/master/policy:feishu')).toBeNull()
 })
 
-it('keeps the Policy to its rules and each Source\'s part, in that Source\'s own identities', async () => {
+it('keeps each Source\'s Policy in its own identities: people, bots, sync chat and the admission matrix', async () => {
+  server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { kind: 'feishu', enabled: true, config: {
+    cli: 'lark-bot', chats: [{ chatId: 'oc_team', listen: 'all' }, { chatId: 'oc_other', listen: 'mentions' }], directMessages: true,
+    otherChats: 'none' } } } }
+  openPolicy('feishu')
   await mount()
-  await click(tab(zh['tab.policy']))
-  // Auto-merge and its threshold are prompt text, and no Source's settings sit in the Policy core.
-  for (const gone of ['自动合并', '行数阈值', '成员', '计入策略版本']) expect(text()).not.toContain(gone)
-  expect(all('.dt-lv').map(item => item.textContent)[0]).toBe('策略版本 abcdef12')
+  // The list fields come from the kind, with the Source's own labels.
+  const lists = () => all('.dt-part > .dt-field .dt-subhead .dt-field-head').map(head => head.firstChild?.textContent)
+  expect(lists()).toEqual(['能发起工作的飞书用户', '消息可以成为候选的机器人'])
   expect(text()).toContain('名单内的人 @ 机器人或私聊机器人，总是明确的请求')
-  await click(find(zh['source.github'], '.dt-subtab'))
-  expect(text()).toContain('能发起工作的 GitHub 账号')
-  expect(text()).toContain('名单里的账号在 Issue 或评论里 @ 智能体的账号。')
-  // A saved account shows as its id; only a row being added is a field.
-  expect(all('.dt-part .dt-rows-item .dt-row-label').map(label => label.textContent)).toEqual(['alice'])
+  await click(all('.dt-part > .dt-field')[1]!.querySelectorAll('button')[0]!)
+  expect([...all('.dt-part select')[0]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['不同步', '另一个群', '团队群'])
+  // The admission table is this Source's own, row by row.
+  const rows = all('.dt-admission tbody tr').map(row => [row.querySelector('.dt-admission-scope')!.firstChild?.textContent,
+    row.querySelectorAll('select').length])
+  expect(rows).toEqual([['团队群', 3], ['另一个群', 1], ['其他群', 0], ['私聊', 1]])
+  const cell = field<HTMLSelectElement>('团队群 · 名单外 · 点名智能体')
+  expect(cell.value).toBe('ignore')
+  await type(cell, 'explicit')
+  expect(document.querySelector('.dt-admission .dt-info-warn')?.getAttribute('aria-label')).toBe(zh.admissionAnyoneWarning)
+  await click(zh.save)
+  expect(server.settings.policy.sources.feishu!.admission).toEqual({ oc_team: { unlistedAddressed: 'explicit' } })
 })
 
-it('opens the rule list for an invalid field inside it only', async () => {
+it('syncs a Source\'s list from where the Source keeps it, but not while its Policy draft is unsaved', async () => {
+  openPolicy('feishu')
   await mount()
-  await click(tab(zh['tab.policy']))
-  const openRows = () => all('.dt-disclosure[data-open]').length
-  // The Policy's own source fields sit outside the rules, so an invalid one there expands nothing.
-  await act(async () => { all('.dt-part input')[0]!.dispatchEvent(new Event('invalid', { bubbles: false })) })
-  expect(openRows()).toBe(0)
-  await click(all('.dt-rule [data-disclosure-row]')[0]!)
-  await act(async () => { all('.dt-rule input')[0]!.dispatchEvent(new Event('invalid')) })
-  expect(openRows()).toBe(all('.dt-rule').length)
-})
-
-it('syncs a Source\'s list from where the Source keeps it, but not while a Policy draft is unsaved', async () => {
-  await mount()
-  await click(tab(zh['tab.policy']))
   expect([...all('.dt-part select')[0]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['不同步', '另一个群', '团队群'])
   await click(find('立即同步', '.dt-part button'))
   expect(server.requests.some(request => request.path === 'policy-sync/feishu' && request.method === 'POST')).toBe(true)
@@ -96,116 +123,37 @@ it('syncs a Source\'s list from where the Source keeps it, but not while a Polic
   expect(server.requests.slice(before).some(request => request.path.startsWith('policy-sync'))).toBe(false)
 })
 
-it('adds, copies, renames, disables and deletes rules in Policy without touching Eval', async () => {
+it('shows the GitHub admission rows its receiving switches open', async () => {
+  server.settings = { ...server.settings, sources: { ...server.settings.sources,
+    github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh-agent', observeIssues: true,
+      observeComments: true, observeCi: true } } } }
+  openPolicy('github')
   await mount()
-  await click(tab(zh['tab.policy']))
-  await click(zh.addRule)
-  await type(field<HTMLInputElement>(zh.ruleName), '文档')
-  await type(field<HTMLTextAreaElement>(zh.ruleInstruction), '修复失效链接')
-  await click(zh.duplicate)
-  expect(all('.dt-rule').map(rule => rule.querySelector('[data-disclosure-row]')!.textContent)).toEqual(expect.arrayContaining([expect.stringContaining('文档 副本')]))
-  await click('启用规则：文案修改')
-  const removeButtons = all('button').filter(button => button.textContent === '删除')
-  await click(removeButtons.at(-1)!)
-  await click(zh.save)
-  expect(server.settings.policy.rules.map(rule => [rule.name, rule.enabled])).toEqual([['文案修改', false], ['文档', true]])
-  expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/policy'])
-})
-
-it('shows the current Policy version once, explains what makes it up, and opens a Mandate\'s version in the Policy history', async () => {
-  await mount()
-  await click(tab(zh['tab.policy']))
-  await settle()
-  expect(all('.dt-lv')[0]!.textContent).toBe('策略版本 abcdef12')
-  expect(all('.dt-info').map(tip => tip.getAttribute('aria-label')).join('\n')).toContain('策略版本由接单规则、各来源上的策略和评估的接单模式决定')
-  expect(all('.dt-tag').filter(tag => tag.textContent === '计入策略版本')).toHaveLength(0)
-  // A Ticket's Policy version opens the Policy page at the save that made it.
-  at({ page: 'execution', id: 't1' })
-  await remount()
-  await click('abcdef12')
-  expect(tab(zh['tab.policy']).getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.dt-policy-segments [aria-selected="true"]')?.textContent).toBe(zh['policySegment.rules'])
-  await settle()
-  // The history opens at the save that made the version, and lists versions that Source saves made too.
-  expect(document.querySelector('.dt-highlight')?.textContent).toContain('生成策略版本 abcdef12')
-  expect(text()).toContain('生成策略版本 98765432')
-})
-
-it('sets the Feishu admission table per receiving scope, offering only the cells a scope can receive, and warns when anyone may originate work', async () => {
-  server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { kind: 'feishu', enabled: true, config: { cli: 'lark-bot',
-    chats: [{ chatId: 'oc_team', listen: 'all' }, { chatId: 'oc_other', listen: 'mentions' }], directMessages: true,
-      otherChats: 'none' } } } }
-  await mount()
-  await click(tab(zh['tab.policy']))
   const rows = all('.dt-admission tbody tr').map(row => [row.querySelector('.dt-admission-scope')!.firstChild?.textContent,
     row.querySelectorAll('select').length])
-  // Chats receiving every message have all three cells; @-only chats only the mention cell; other chats nothing while not received.
-  expect(rows).toEqual([['团队群', 3], ['另一个群', 1], ['其他群', 0], ['私聊', 1]])
-  const cell = field<HTMLSelectElement>('团队群 · 名单外 · 点名智能体')
-  expect(cell.value).toBe('ignore')
-  await type(cell, 'explicit')
-  // The warning is an icon in a slot every cell reserves, with the text on hover, so the table does not move.
-  expect(document.querySelector('.dt-admission .dt-info-warn')?.getAttribute('aria-label')).toBe(zh.admissionAnyoneWarning)
-  expect(all('.dt-admission-slot')).toHaveLength(5)
-  // A message not addressed to the bot cannot be an explicit request.
-  expect([...field<HTMLSelectElement>('团队群 · 名单外 · 未 @').options].map(option => option.value)).toEqual(['inferred', 'ignore'])
-  await click(zh.save)
-  expect(server.settings.policy.sources.feishu!.admission).toEqual({ oc_team: { unlistedAddressed: 'explicit' } })
-})
-
-it('lists each Source\'s bots next to its people and saves them, and sets the GitHub admission table by its receiving scopes', async () => {
-  // The GitHub Source's switches live on its own page; the Policy's admission table stays on the Policy page.
-  at({ page: 'source', id: 'github' })
-  await mount()
-  const github = all('.dt-card')[0]!
-  expect([...github.querySelectorAll('.dt-switch-row')].map(row => row.textContent)).toEqual(['接收仓库里的新 Issue', '接收仓库里的新 PR',
-    '接收仓库里的评论', '接收默认分支的 CI'])
-  expect([...github.querySelectorAll('[role="switch"]')].map(item => item.getAttribute('aria-checked'))).toEqual(['false', 'false',
-    'false', 'false'])
-  await click(tab(zh['tab.policy']))
-  const lists = () => all('.dt-part > .dt-field .dt-subhead .dt-field-head').map(head => head.firstChild?.textContent)
-  const list = (label: string) => all('.dt-part > .dt-field').find(item => item.textContent?.startsWith(label))!
-  const add = async (label: string) => {
-    await click([...list(label).querySelectorAll('button')].find(button => button.textContent === zh.addRow)!)
-    return [...list(label).querySelectorAll('.dt-rows-item')].at(-1)!
-  }
-  expect(lists()).toEqual(['能发起工作的飞书用户', '消息可以成为候选的机器人'])
-  const bot = await add('消息可以成为候选的机器人')
-  await type(bot.querySelector<HTMLInputElement>('input[aria-label="App ID 或 open_id"]')!, 'cli_reviewer')
-  await type(bot.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '评审机器人')
-  await click(find(zh['source.github'], '.dt-subtab'))
-  expect(lists()).toEqual(['能发起工作的 GitHub 账号', '评论可以成为候选的机器人'])
-  await type((await add('评论可以成为候选的机器人')).querySelector<HTMLInputElement>('input[aria-label="账号"]')!, 'dependabot[bot]')
-  // Until the GitHub Source receives the repository's Issues, pull requests, comments or CI, only messages that mention the agent arrive.
-  const rows = () => all('.dt-admission tbody tr').map(row => [row.querySelector('.dt-admission-scope')!.firstChild?.textContent,
-    row.querySelector('.dt-admission-scope small')?.textContent, row.querySelectorAll('select').length])
-  expect(rows()).toEqual([['新 Issue', '仅 @', 1], ['新 PR', '仅 @', 1], ['评论', '仅 @', 1], ['默认分支的 CI', '不接收', 0]])
-  expect(field<HTMLSelectElement>('新 Issue · 名单外 · 点名智能体').value).toBe('ignore')
-  await click(zh.save)
-  expect(server.settings.policy.sources.feishu!.bots).toEqual([{ id: 'cli_reviewer', name: '评审机器人' }])
-  expect(server.settings.policy.sources.github!.bots).toEqual([{ id: 'dependabot[bot]' }])
-})
-
-it('shows the GitHub Source\'s switches for what it receives across the repository, and the admission rows they open, in English', async () => {
-  server.settings.sources.github = { ...server.settings.sources.github!, config: { ...server.settings.sources.github!.config,
-    observeIssues: true, observeCi: true } }
-  await mount(en)
-  await click(tab(en['tab.source']))
-  const github = all('.dt-source-card').find(card => card.querySelector('.dt-source-title')?.textContent === 'GitHub')!
-  await click(github.querySelector('.dt-source-title')!)
-  expect([...all('.dt-card')[0]!.querySelectorAll('.dt-switch-row')].map(row => [row.textContent, row.querySelector('[role="switch"]')
-    ?.getAttribute('aria-checked')])).toEqual([['Receive new Issues in the repository', 'true'],
-    ['Receive new pull requests in the repository', 'false'], ['Receive comments in the repository', 'false'],
-    ['Receive the default branch\'s CI', 'true']])
-  await click(find('Receive comments in the repository', '[role="switch"]'))
-  await act(async () => { all('.dt-card')[0]!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
-  expect(server.settings.sources.github!.config).toMatchObject({ observeIssues: true, observeComments: true, observeCi: true })
-  await click(tab(en['tab.policy']))
-  await click(find(en['source.github'], '.dt-subtab'))
-  const rows = all('.dt-admission tbody tr').map(row => [row.querySelector('.dt-admission-scope')!.firstChild?.textContent,
-    row.querySelectorAll('select').length])
-  expect(rows).toEqual([['New Issues', 3], ['New pull requests', 1], ['Comments', 3], ['Default branch CI', 1]])
+  expect(rows).toEqual([['新 Issue', 3], ['新 PR', 1], ['评论', 3], ['默认分支的 CI', 1]])
   // CI has no sender: its one cell is that of a message off the list that does not mention the agent.
-  expect(field('Default branch CI · Not on the list · no mention')).toBeTruthy()
-  expect(all('.dt-admission thead th').map(cell => cell.textContent)).toContain(en.admissionAddressed)
+  expect(field('默认分支的 CI · 名单外 · 未 @')).toBeTruthy()
+})
+
+it('opens a Ticket\'s Policy version in the Routing and Eval settings, where the Policy history lists every save', async () => {
+  at({ page: 'execution', id: 't1' })
+  await mount()
+  await click('abcdef12')
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.routing'])
+  expect(server.requests.some(request => request.path === 'policy/history')).toBe(false)
+  await click(zh.configHistory)
+  for (const expected of ['生成策略版本 abcdef12', '生成策略版本 98765432']) expect(text()).toContain(expected)
+})
+
+it('shows the Policy and prompts parts of a Source page, each loading what it edits', async () => {
+  at({ page: 'source', id: 'feishu', query: { segment: 'governance' } })
+  await mount()
+  expect(part(zh.sourceGovernancePolicy).getAttribute('aria-selected')).toBe('true')
+  expect(all('.dt-rule').length).toBe(1)
+  expect(server.requests.some(request => request.path === 'sources/feishu/prompts')).toBe(false)
+  await click(part(zh.sourceGovernancePrompts))
+  expect(part(zh.sourceGovernancePrompts).getAttribute('aria-selected')).toBe('true')
+  expect(server.requests.some(request => request.path === 'sources/feishu/prompts')).toBe(true)
+  expect(server.requests.some(request => request.path === 'sources/feishu/prompts/preview' && request.method === 'POST')).toBe(false)
 })

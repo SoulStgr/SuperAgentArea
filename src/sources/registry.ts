@@ -2,7 +2,7 @@
 import type { ChannelRef, OutboundMessage, PersonRef, ProjectHint, ScopeResult, SourceScope, Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { HealthBoard, type HealthEntry } from '../infra/health.ts'
-import { AdmissionTableSchema, type Settings } from '../policy.ts'
+import { AdmissionTableSchema, RuleArraySchema, type Settings } from '../policy.ts'
 import type { Health } from './host.ts'
 import type { ChannelLink, ChannelLinks, FieldSpec, Localized, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.ts'
 
@@ -186,17 +186,21 @@ export class SourceRegistry implements SourceScope {
   validatePolicy(parts: Record<string, Record<string, unknown>>): Record<string, Record<string, unknown> & { allowed: { id: string; name?: string }[] }> {
     return Object.fromEntries(Object.entries(parts).map(([id, part]) => {
       const policy = this.kind(id)?.policy
-      // `admission` is validated by the Policy's own schema (shared across all kinds), while the kind validates the rest of its part.
-      const { admission, ...rest } = part
-      return [id, policy ? { ...policy.schema.parse(rest), admission: AdmissionTableSchema.parse(admission ?? {}) } : part as Record<string, unknown> & { allowed: { id: string; name?: string }[] }]
+      // `admission` and a source's own `rules` are validated by the Policy's own schemas (shared across all kinds), while the
+      // kind validates the rest of its part.
+      const { admission, rules, ...rest } = part
+      const own = rules === undefined ? {} : { rules: RuleArraySchema.parse(rules) }
+      return [id, policy ? { ...policy.schema.parse(rest), admission: AdmissionTableSchema.parse(admission ?? {}), ...own }
+        : { ...part } as Record<string, unknown> & { allowed: { id: string; name?: string }[] }]
     }))
   }
   policyPart(id: string, settings = this.settings()) {
     const policy = this.kind(id, settings)?.policy
     if (!policy) return undefined
-    const { admission, ...rest } = settings.policy.sources[id] ?? {}
+    const { admission, rules, ...rest } = settings.policy.sources[id] ?? {}
     const parsed = policy.schema.safeParse(rest)
-    return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {} }
+    return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {},
+      ...rules !== undefined && Array.isArray(rules) ? { rules } : {} }
   }
   /**
    * The default Project the Trigger's instance names and the Project hints its kind reads from the event (see plan §2.5):

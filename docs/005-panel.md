@@ -12,26 +12,25 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Sources**, **Workstations**, **Artifacts**, **Prompts**, and **Policy & Eval**. A gear in the header opens **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the page that fixes it.
+The tabs follow the workflow: **Overview**, **Sources**, **Workstations** and **Artifacts**. A gear in the header opens **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the page that fixes it.
 
-Detail pages keep their own routes but take no tab: a Ticket, a Thread, and the Execution list are opened from links (and the Overview's Executor block), and Settings from the header gear. A saved route reopens the same page after a refresh, including the old Trigger, Eval, Execution and Settings routes.
+Policy and prompts are not pages of their own: each Source instance owns its own, reached from the **Policy and prompts** action on its card and from its page's header. The latest Decisions keep a page of their own, reached from Overview, but take no tab. Other detail pages keep their routes too but take no tab: a Ticket, a Thread and the Execution list are opened from links (and the Overview's Executor block), and Settings from the header gear. A saved route reopens the same page after a refresh, including the old Trigger, Eval, Execution and Settings routes. An old Prompts route opens the Sources, and an old Policy route opens the Sources too, except its Eval section, which opens the Routing and Eval settings, and its Decisions, which keep the Decisions page.
 
 | Page | Shows |
 | --- | --- |
-| Overview | Tickets needing action, recent artifacts, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
-| Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. Each card carries its own instance's health, and the setup problem of a named GitHub or Feishu instance appears on that instance's card alone with **Check again**. **Add Source** creates a named instance of an installed kind. A card opens the instance's own page with its configuration, statistics, Tickets, filtered and unsent messages, recent Triggers, and its configuration history |
+| Overview | Tickets needing action, recent artifacts, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page; the accepted count opens the Decisions page |
+| Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. Each card carries its own instance's health, and the setup problem of a named GitHub or Feishu instance appears on that instance's card alone with **Check again**. A card offers **Open Source** and **Policy and prompts**; it opens the instance's own page, whose sections are Overview, Settings and **Policy and prompts** — the instance's statistics, Tickets, filtered and unsent messages and recent Triggers, its configuration with its history, and the Policy and prompts its Tickets read. **Add Source** creates a named instance of an installed kind |
 | Workstations | One card per Project: its name, its address kind (managed, folder or repository), its Sources, open Tickets, artifacts, latest activity and latest reporter. The built-in workspace comes first and is fixed: it cannot be archived or renamed. A card's six sections — Sources, Trigger, Eval, Execution, Settings and agent — open the project-level view; the agent section opens the Project's Session and the history it collects. **New workstation** creates a station, and **Show archived** lists the archived ones. On a Project's page, its artifact count opens the index filtered to that Project |
 | Artifacts | Delivered files newest collection first: name, Project, Source, Ticket, size and time, each with its download. Filters cover the Project (the workspace first) and Source instance, and a search matches a name or hash; the filters stay in the route. Each row opens the artifact's page, and a file that is no longer readable at its landing says so. Until a Ticket reports ready, the page explains that its delivered files will appear here |
-| Prompts | **Edit**, **Full prompt** and **History** as page sections: edit team sections, built-in parts and skills; read the assembled prompt and compare it with the saved text or defaults; list and restore versions. Saving uses one save bar with conflict handling |
-| Policy & Eval | Three page sections: **Rules and admission** (the Policy version, accept rules, each Source's Policy part and admission table, with configuration history), **Eval settings** (accept mode, timeout and assessment model), and **Recent decisions** (the Decision log with strength, reason and Policy version, filterable by kind and to the last day) |
+| Recent decisions | The Decision log reached from Overview: each Decision shows its strength, reason, matched rules (named from its own Source's rules) and Policy version, filterable by kind (all work, accepted or continued, stopped, ignored, unavailable) and optionally to the last day. The filters stay in the route. It is not a top-level tab |
 | Ticket, Thread, Execution | A Ticket's actions, authorization, waiting Inputs, Subscriptions, Assignments and artifacts; a Thread's timeline, Decisions and Subscriptions; and the Execution list filtered by Open, Pending, Working, Waiting for a Trigger or Ended, with the Executor state and **Pause processing** |
-| Settings (gear) | **Executor and environment** (worker model, concurrency, directory root, prepare command, blocked commands) and **Deployment** (startup problems with **Check again**, the state directory and machine limits). Each group includes its save |
+| Settings (gear) | Three groups: **Routing and Eval** (the Eval settings, and the history of Policy and Eval saves), **Executor and environment** (worker model, concurrency, directory root, prepare command, blocked commands) and **Deployment** (startup problems with **Check again**, the state directory and machine limits). Each group includes its save |
 
 ### Reading individual records
 
 A dropped message links to its Ticket, or to its Thread when it has no Ticket. The Sources page explains whether its conversation disappeared or the Source stopped listening to it.
 
-Each instance is responsible for its own state: two folder instances, or a default GitHub Source and a named one, show their own health and their own last day. A named GitHub or Feishu instance also has its own setup problem, which its card and page show with **Check again** while the rest of the deployment keeps running.
+Each instance is responsible for its own state: two folder instances, or a default GitHub Source and a named one, show their own health, their own last day, their own allowed lists, rules and prompt configuration. A named GitHub or Feishu instance also has its own setup problem, which its card and page show with **Check again** while the rest of the deployment keeps running.
 
 A request whose Project is not registered waits in Eval, and its Source card and page offer **Answer**: place it in an existing workstation, confirm the assessment's proposed one, or create a workstation from a name and a local folder or repository address. The request is then evaluated again and, once accepted, appears among that Source's Tickets. Adding a Source of an installed kind takes effect on its next poll; a folder instance answers on the inbox it names.
 
@@ -53,32 +52,27 @@ Ticket details show the originating Trigger, Decision and reason, scope and Poli
 
 ## Settings
 
-The header gear opens Settings where it was left. Settings has two groups; the settings that belong to a Source, to Eval or to the prompts live on their own pages.
+The header gear opens Settings where it was left. Settings has three groups. The settings that belong to a Source, its Policy or its prompts live on that Source's page; the installation-wide settings are in the gear.
 
+- **Routing and Eval:** the Eval settings — accept mode, the Eval timeout and the assessment model — and the history of Policy and Eval saves. A Ticket's Policy version opens this group, where the Policy history lists the saves.
 - **Executor and environment:** worker model, concurrency, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
 - **Deployment:** startup problems with **Check again**, the state directory and machine limits. Saved limits apply without restart. The DeepSeek Harness Plugin Manager exposes the same page.
 
-Each Source instance's configuration is on its own Source page, saved as that instance's settings block and followed by its configuration history. The Policy page holds the accept rules, admission, Eval settings and recent Decisions; a Ticket's Policy version opens its save in the Policy history.
+Each Source instance's configuration is on its own Source page, saved as that instance's settings block and followed by its configuration history.
 
-## Prompts
+## A Source's Policy and prompts
 
-The Prompts page edits the team prompt configuration:
+An installed Source instance's page has three sections: **Overview** (its statistics, Tickets, filtered and unsent messages and recent Triggers), **Settings** (its switch and its kind's configuration, with the configuration history) and **Policy and prompts** (策略提示配置), which has a **Policy** and a **Prompts** sub-section. The card's **Policy and prompts** action opens the last one directly.
 
-- **Edit** changes team sections, built-in parts and skills.
-- **Full prompt** shows the assembled text and compares it with saved text or defaults.
-- **History** lists versions.
+- **Policy:** the rules this instance's work is assessed by, the accept-rule list with add, duplicate, remove and enable switches, its allowed people, bots, membership sync and admission table, and the history of this instance's Policy saves. Until the instance saves its own rules, the rules shown are the installation's defaults and the panel says they are inherited; saving gives the instance a copy it owns. A rule change notifies only the Tickets this instance's rules bear on.- **Prompts:** the three team sections, the built-in parts, the skills and the version history of this instance's prompt configuration. The default skill of the instance's kind is listed read-only; team skills can be added beside it. An instance that never saved shows the installation's current configuration and history, marked inherited. The full prompt previews the assembled text; one save bar saves the whole configuration with conflict handling.
 
-Edited built-in parts are marked changed and can be reset; templates list their required placeholders. An upgrade that changes an overridden default marks it **Default updated** (默认内容已更新). The panel compares the old and new defaults above the team's text. If the old default was not recorded, it compares the team's text with the new default instead. Choose **Keep my text** or **Use the new default**. Overrides for removed parts are listed below the section bar and dropped on the next save.
+Edited built-in parts are marked changed and can be reset; templates list their required placeholders. An upgrade that changes an overridden default marks it **Default updated** (默认内容已更新). The panel compares the old and new defaults above the team's text. If the old default was not recorded, it compares the team's text with the new default instead. Choose **Keep my text** or **Use the new default**. Overrides for removed parts — such as the old `skill/feishu` and `skill/github` — are listed below the section bar and dropped on the next save. Restoring a version or the defaults creates another version; the history lists what each save changed.
 
-## Policy & Eval
+The main Session's own prompt is the installation default, which is read by the main Session and inherited by Sources that have not saved theirs. It is not edited from the panel; the main Session itself changes it with `orchestrator_prompts_save` on an explicit human request.
 
-The Policy page combines what Eval follows and what it decided, as three sections instead of stacked tabs:
+## Recent decisions
 
-- **Rules and admission:** the Policy version and its explanation, the accept rules with their enable switches, each Source's allowed people, bots, membership sync and admission table, and the configuration history. Each Source's part uses that Source's own identities, with no mapping between Sources.
-- **Eval settings:** the accept mode, the Eval timeout and the assessment model.
-- **Recent decisions:** the Decision log, filtered by kind (all work, accepted or continued, stopped, ignored, unavailable) and optionally to the last day. Each Decision shows its strength, reason, matched rules and Policy version.
-
-Saving a rule or admission change saves the Policy block; saving an Eval setting saves the Eval block. Each save uses its own revision and the same save bar as Settings.
+The Decisions page shows what Eval decided, filterable by kind and optionally to the last day. Each Decision shows its strength, reason, matched rules and Policy version; a rule's name comes from the rules of the Decision's own Source, so a Source that renamed a rule reads correctly. The page has no tab: Overview's accepted count and other Decision links open it, and the filter stays in the route.
 
 ## Search
 
@@ -90,7 +84,7 @@ Search also finds Threads by references such as `#12` or a GitHub URL, and Ticke
 
 1. **Focus on what matters.** Every element answers one of the three questions, or it is removed. A number appears only when it changes what the supervisor does.
 2. **Precise definitions.** Categories have checkable definitions, are mutually exclusive and cover every case, as the Ticket stages do. A label says whom a row waits for and what it needs, not an internal status code.
-3. **One place per concept.** Source state and configuration belong to Sources; Project cards and their six sections in Workstations; Threads and Triggers in Trigger; Decisions in Policy & Eval; Tickets in Execution; prompts in Prompts; the machine's settings in Settings. Overview summarizes these pages and links to them instead of becoming another detailed view.
+3. **One place per concept.** Source state, configuration, Policy and prompts belong to Sources; Project cards and their six sections in Workstations; Threads and Triggers in Trigger; Tickets in Execution; the latest Decisions on their own page; Eval settings and the machine's settings in Settings. Overview summarizes these pages and links to them instead of becoming another detailed view.
 4. **Domain structure.** The panel uses the domain terms. Internal identifiers appear only in folded details, and names replace identifiers where they can be resolved.
 5. **Honest state.** A count equals the length of the list it links to, and no state contradicts another fact.
 6. **Quiet by default.** Healthy states take no extra space. Problems must be actionable; a one-off network error is not enough. Rows needing a person offer their action directly. Keep page explanations to one sentence and put further detail in the (?) tooltip. Destructive actions require confirmation.

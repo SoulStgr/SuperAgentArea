@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
+import { rulesFor } from '../policy.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
@@ -42,7 +43,20 @@ export interface SessionsHost {
  * What Sessions registered for an agent it decorated: the releases of its prompt section, tools and skill scope, the scope
  * its skills are registered in, and the skills of one prompt revision; for a worker's subagent, only its tool limits.
  */
-interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
+interface SessionBinding { disposers: (() => void)[]; scope?: Context
+  skills?: { revision: number; scope?: string; dispose: () => void }; subagent?: true }
+/** A prompt version a Session read, and the scope it read it from: a worker's Source instance id, or the installation's default. */
+export interface PromptBinding extends PromptVersion { scope?: string }
+/** A Session's stored prompt binding, `<scope>#<revision>`, where the installation's default is the empty scope. */
+const parsePromptBinding = (entry: string | number): { scope?: string; revision: number } => {
+  // A revision stored before per-Source prompts is the installation's own.
+  if (typeof entry === 'number') return { revision: entry }
+  const at = entry.lastIndexOf('#')
+  const scope = at < 0 ? '' : entry.slice(0, at)
+  return { ...scope ? { scope } : {}, revision: Number(at < 0 ? entry : entry.slice(at + 1)) }
+}
+/** The stored form of a Session's prompt binding: the scope it read and the revision of that scope. */
+const promptBinding = (scope: string | undefined, revision: number): string => `${scope ?? ''}#${revision}`
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
@@ -186,23 +200,39 @@ export class Sessions {
     const text = JSON.stringify(value)
     await this.agentDelivery.send(resolved.agent, `notice:${name}:${key(text)}`, text, { inject: summary }, this.host.lifetime)
   }
-  /** Returns the current prompt revision, the active prompt revision of each loaded Session, and whether the main Session still has a pending `'prompts'` notice. */
+  /** Returns the current installation prompt revision, the active prompt revision of each loaded Session, and whether the main Session still has a pending `'prompts'` notice. */
   status() {
     const { store, prompts, effects } = this.host
     const sessions = store.keys(KV.sessions.prompts).flatMap(name => {
-      const sessionId = name.slice(KV.sessions.prompts.prefix.length), revision = store.get(name)?.at(-1)
+      const sessionId = name.slice(KV.sessions.prompts.prefix.length), last = store.get(name)?.at(-1)
+      const revision = last === undefined ? undefined : parsePromptBinding(last).revision
       return this.ctx.agents.get(sessionId as SessionId) && revision !== undefined ? [{ sessionId, revision }] : []
     })
     return { revision: prompts.current().revision, sessions, notificationPending: effects.pending('notice', 'prompts') }
   }
-  /** Returns the prompt version a Session runs under (the one bound on its latest model request, or the current version). */
-  promptVersion(sessionId: string): PromptVersion {
-    const revision = this.host.store.get(KV.sessions.prompts(sessionId))?.at(-1)
-    return revision === undefined ? this.host.prompts.current() : this.host.prompts.version(revision)
+  /**
+   * Returns the prompt version a Session runs under (the one bound on its latest model request, or the current version of the
+   * scope it reads: a worker's Source instance configuration, else the installation's default), and that scope.
+   */
+  promptVersion(sessionId: string): PromptBinding {
+    const last = this.host.store.get(KV.sessions.prompts(sessionId))?.at(-1)
+    if (last === undefined) {
+      const scope = this.scopeOfSession(sessionId)
+      return { ...this.host.prompts.current(scope), ...scope === undefined ? {} : { scope } }
+    }
+    const binding = parsePromptBinding(last)
+    return { ...this.host.prompts.version(binding.scope, binding.revision), ...binding.scope === undefined ? {} : { scope: binding.scope } }
   }
   /** Whether a Session is authorized to read `revision` (its active revision or any revision it previously ran under). */
   mayRead(sessionId: string, revision: number): boolean {
-    return revision === this.promptVersion(sessionId).revision || (this.host.store.get(KV.sessions.prompts(sessionId)) ?? []).includes(revision)
+    if (revision === this.promptVersion(sessionId).revision) return true
+    return (this.host.store.get(KV.sessions.prompts(sessionId)) ?? []).some(entry => parsePromptBinding(entry).revision === revision)
+  }
+  /** The prompt scope a Session reads: a worker's Source instance id, or `undefined` for the main Session's installation default. */
+  private scopeOfSession(sessionId: string): string | undefined {
+    if (sessionId === this.host.masterId) return undefined
+    const ticketId = ticketOfSession(sessionId)
+    return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)?.sourceId
   }
   /** Returns a tool registrar for `agent` that renders tool output as JSON text and attaches `output.image` as an image when present. */
   private registerTool(agent: Agent, binding: SessionBinding): RegisterTool {
@@ -247,13 +277,16 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      // An inferred ticket is told the rules it was accepted under, as the settings hold that Source's rules now.
+      const mandate = current ? mandateInstructions(current.mandate, rulesFor(host.store.settings(), current.sourceId)) : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${mandate}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
       binding.scope = scope
       binding.skills = undefined
-      this.bindSkills(binding, host.prompts.current())
+      const promptScope = this.scopeOfSession(agent.id)
+      this.bindSkills(binding, host.prompts.current(promptScope), promptScope)
     })
     binding.disposers.push(() => { skillScope.dispose().catch((error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release a skill scope: %s', String(error)) }) })
     await skillScope
@@ -313,30 +346,32 @@ export class Sessions {
     this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
   }
   /** Register the skills of a prompt version in the agent's skill scope, in place of an earlier version's. */
-  private bindSkills(binding: SessionBinding, version: PromptVersion): void {
-    const { scope, skills: previous } = binding
-    if (!scope || previous?.revision === version.revision) return
+  private bindSkills(binding: SessionBinding, version: PromptVersion, scope: string | undefined): void {
+    const context = binding.scope, previous = binding.skills
+    if (!context || previous?.revision === version.revision && previous.scope === scope) return
     previous?.dispose()
     const disposers: (() => void)[] = []
-    for (const [name, content] of this.host.prompts.skills(version.config)) {
-      const bundled = name === 'feishu' || name === 'github' ? bundledSkills[name] : undefined
+    for (const [name, content] of this.host.prompts.skills(version.config, scope)) {
+      const bundled = bundledSkills[name]
       const body = version.config.skills[name] ?? ''
       const description = bundled?.description ?? (body.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagent operational skill.')
-      disposers.push(scope.skills.register({ name: `${SKILL_PREFIX}${name}`, description, content, source: 'runtime',
+      disposers.push(context.skills.register({ name: `${SKILL_PREFIX}${name}`, description, content, source: 'runtime',
         ...(bundled ? { resourceBase: { kind: 'directory' as const, path: dirname(bundled.path) } } : {}) }))
     }
-    binding.skills = { revision: version.revision, dispose: () => { disposers.forEach(dispose => dispose()) } }
+    binding.skills = { revision: version.revision, scope, dispose: () => { disposers.forEach(dispose => dispose()) } }
   }
-  /** Return the current prompt version, updating the agent's skills and recording the revision in Store when bound to a model request. */
+  /** Return the current prompt version of the Session's scope, updating the agent's skills and recording the revision in Store when bound to a model request. */
   private promptFor(agent: Agent, bind: boolean): PromptVersion {
-    const version = this.host.prompts.current()
+    const scope = this.scopeOfSession(agent.id)
+    const version = this.host.prompts.current(scope)
     if (!bind) return version
     const binding = this.bindings.get(agent)
-    if (binding) this.bindSkills(binding, version)
+    if (binding) this.bindSkills(binding, version, scope)
     const { store } = this.host
-    const revisions = store.get(KV.sessions.prompts(agent.id)) ?? []
-    const bound = [...revisions.filter(revision => revision !== version.revision), version.revision]
-    if (revisions.at(-1) !== version.revision) store.set(KV.sessions.prompts(agent.id), bound)
+    const entry = promptBinding(scope, version.revision)
+    const bound = store.get(KV.sessions.prompts(agent.id)) ?? []
+    // Keep the earlier revisions the Session ran under, and move this one last without repeating it.
+    if (bound.at(-1) !== entry) store.set(KV.sessions.prompts(agent.id), [...bound.filter(item => item !== entry), entry])
     return version
   }
   /** Releases registrations for `agent` in reverse order (LIFO); disposing its skill scope releases its skills as well. */

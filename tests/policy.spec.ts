@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
+import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, rulesFor, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -483,5 +483,90 @@ describe('bots and events without a sender', () => {
       ['pulls', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
+  })
+})
+
+describe('source rules', () => {
+  const docs = { id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }
+  const copy = { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Fix typos only.' }
+  /** The fixture settings with `source`'s own rules (omitted: the Source inherits the installation's default rules). */
+  const perSource = (rules: (typeof docs)[] | undefined = undefined, source = 'feishu') => SettingsSchema.parse({ ...base,
+    policy: { ...base.policy, sources: { ...base.policy.sources,
+      [source]: { ...base.policy.sources[source]!, ...rules === undefined ? {} : { rules } } } } })
+  const auto = (settings: Settings) => ({ ...settings, eval: { ...settings.eval, mode: 'auto' as const } })
+  const scope = () => ({ scope: () => ({ listened: true as const, observed: true }) })
+  const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'asked' }
+  const judged = (rules: { id: string; enabled: boolean }[], matched = true) =>
+    rules.filter(rule => rule.enabled).map(rule => ({ rule_id: rule.id, matched, reason: 'judged' }))
+  const accept = (rules: { id: string; enabled: boolean }[]) => ({ decision: 'accept' as const, rule_assessments: judged(rules),
+    direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote', worktree_name: 'fix-copy' })
+  const ticketOf = (id: string, source: string) => ({ id, mandate: { strength: 'inferred', policyVersion: 'v',
+    actor: { source, id: 'ou_guest' }, basis: { via: 'listed', source, rules: ['copy'] } } } as unknown as Ticket)
+
+  it('applies a Source instance\'s own rules to its work, falling back to the installation\'s default rules otherwise', () => {
+    const settings = perSource([docs])
+    expect(rulesFor(settings)).toEqual(settings.policy.rules)
+    expect(rulesFor(settings, 'feishu')).toEqual([docs])
+    // A Source that saved no rules inherits the installation's default rules; so does an unknown or absent source.
+    expect(rulesFor(settings, 'github')).toEqual(settings.policy.rules)
+    expect(rulesFor(settings, 'unknown')).toEqual(settings.policy.rules)
+    // An empty own list means no rule applies; it does not fall back to the default rules.
+    expect(rulesFor(perSource([]), 'feishu')).toEqual([])
+  })
+  it('judges an assessment against the enabled rules of the Trigger\'s Source, and against the default rules it inherits', () => {
+    const settings = auto(perSource([docs, { ...copy, enabled: false }]))
+    expect(assessmentOutcome(accept([docs]), settings, 'inferred', 'feishu')).toMatchObject({ kind: 'accept', rules: ['docs'] })
+    // An assessment written for the default rules does not fit a Source with its own rules...
+    expect(() => assessmentOutcome(accept(settings.policy.rules), settings, 'inferred', 'feishu'))
+      .toThrow('Exactly one assessment for every enabled rule')
+    // ... while one written for the Source's rules does not fit a Source inheriting the default rules, where it covers none.
+    expect(() => assessmentOutcome(accept([docs]), settings, 'inferred', 'github'))
+      .toThrow('Exactly one assessment for every enabled rule')
+    expect(assessmentOutcome(accept(settings.policy.rules), settings, 'inferred', 'github'))
+      .toMatchObject({ kind: 'accept', rules: settings.policy.rules.filter(rule => rule.enabled).map(rule => rule.id) })
+    // A missing source judges the installation's default rules.
+    expect(assessmentOutcome(accept(settings.policy.rules), settings, 'inferred')).toMatchObject({ kind: 'accept' })
+  })
+  it('admits an inferred candidate on the rules its own Source enables, not on another Source\'s or the default rules', () => {
+    const policy = setup(auto(perSource([docs]))).policy
+    expect(policy.admitsInferred(['docs'], 'feishu')).toBe(true)
+    expect(policy.admitsInferred(['copy'], 'feishu')).toBe(false)
+    expect(policy.admitsInferred(['docs'], 'github')).toBe(false)
+    expect(policy.admitsInferred(['copy'], 'github')).toBe(true)
+    // Without a source only the installation's default rules admit, and a disabled own rule admits nothing.
+    expect(policy.admitsInferred(['docs'])).toBe(false)
+    expect(setup(auto(perSource([{ ...docs, enabled: false }]))).policy.admitsInferred(['docs'], 'feishu')).toBe(false)
+  })
+  it('revalidates a Mandate under the rules of the Source that admitted it', () => {
+    const followup = { strength: 'inferred' as const, policyVersion: 'v', actor: { source: 'feishu', id: 'ou_guest' }, scope: '',
+      basis: { via: 'followup' as const, source: 'feishu', scope: { chatId: CHAT }, rules: ['docs'] } }
+    expect(setup(auto(perSource([docs]))).policy.revalidate(followup)).toBe(true)
+    // Disabling the Source's own rule invalidates its Mandate, even though no default rule has that id.
+    expect(setup(auto(perSource([{ ...docs, enabled: false }]))).policy.revalidate(followup)).toBe(false)
+    // A Source inheriting the default rules follows them: it has no such rule.
+    expect(setup(auto(perSource([docs]))).policy.revalidate({ ...followup,
+      basis: { ...followup.basis, source: 'github' } })).toBe(false)
+  })
+  it('reports changes to a Source\'s own rules only for its Tickets, and to the default rules for inheriting Sources', () => {
+    const old = perSource([copy]), changed = perSource([{ ...copy, instruction: 'Fix typos more carefully.' }])
+    const effects = policyEffects([ticketOf('t1', 'feishu'), ticketOf('t2', 'github')], old, changed, scope)
+    expect(effects.get('t1')).toEqual({ rules: [{ id: 'copy', name: 'Copy fixes', change: 'changed', instruction: 'Fix typos more carefully.' }] })
+    expect(effects.has('t2')).toBe(false)
+    // Changing the installation's default rules bears on the Source that inherits them, not on the one with its own.
+    const defaults = { ...changed, policy: { ...changed.policy, rules: changed.policy.rules.map(rule =>
+      rule.id === 'copy' ? { ...rule, instruction: 'Fix typos by default.' } : rule) } }
+    const fallback = policyEffects([ticketOf('t1', 'feishu'), ticketOf('t2', 'github')], changed, defaults, scope)
+    expect(fallback.has('t1')).toBe(false)
+    expect(fallback.get('t2')).toEqual({ rules: [{ id: 'copy', name: 'Copy fixes', change: 'changed', instruction: 'Fix typos by default.' }] })
+    // A Source that stops inheriting and disables the rule its Ticket was accepted under reports it disabled.
+    expect(policyEffects([ticketOf('t2', 'github')], defaults, perSource([{ ...copy, enabled: false }], 'github'), scope).get('t2'))
+      .toEqual({ rules: [{ id: 'copy', name: 'Copy fixes', change: 'disabled' }] })
+  })
+  it('changes the Policy version when a Source\'s own rules change, and refuses duplicate rule ids', () => {
+    const version = setup(perSource([copy])).version
+    expect(setup(perSource([{ ...copy, instruction: 'x' }])).version).not.toBe(version)
+    expect(setup(perSource([copy, docs])).version).not.toBe(version)
+    expect(perSource([copy, docs]).policy.sources.feishu!.rules).toEqual([copy, docs])
+    expect(() => perSource([copy, { ...copy, name: 'Again' }])).toThrow()
   })
 })

@@ -5,7 +5,7 @@ import { AssessmentSchema, EvalReadSchema, MasterAssessor, type AssessorHost } f
 import { mainAdmissionPolicy } from '../src/app/context.ts'
 import { Engine, MemoryRepositories, type Executor, type Policy, type Trigger } from '../src/core/index.ts'
 import type { Commands } from '../src/infra/commands.ts'
-import { SettingsSchema } from '../src/policy.ts'
+import { SettingsSchema, type Settings } from '../src/policy.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { deferred } from './fixtures/async.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -13,7 +13,7 @@ import { SourceRegistry } from '../src/sources/registry.ts'
 
 /** Assessor fixture backed by in-memory repositories and fake GitHub Issue and file reads. */
 function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.from({ length: 5 }, (_, i) => `comment ${i}`),
-  threadContext?: AssessorHost['threadContext']) {
+  threadContext?: AssessorHost['threadContext'], settings: Settings = SettingsSchema.parse({})) {
   const comments = bodies.map((body, i) => ({ id: i, html_url: `https://github.com/acme/widgets/issues/1#c${i}`,
     user: { login: 'bob' }, created_at: '2026-09-09T00:00:00Z', body }))
   const gate = { issue: undefined as Promise<void> | undefined }
@@ -38,13 +38,13 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   sources.register(githubKind)
   let engine!: Engine
   const host: AssessorHost = {
-    get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
+    get engine() { return engine }, commands, deployment: testDeployment(), settings: () => settings,
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
     // These Evals judge no Project: no Project is registered, no hint states one, and no answer creates one here.
     projects: { resolve: () => ({ candidates: [], hints: [], strongHints: [], needsQuestion: false }), pending: () => undefined,
       create: () => { throw new Error('No Project is created in this fixture') } },
-    people: { settings: () => SettingsSchema.parse({}), sources },
+    people: { settings: () => settings, sources },
   }
   const assessor = new MasterAssessor(host)
   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
@@ -185,4 +185,25 @@ it('lets the main Session read on from the cursor its loaded window ends with, a
   s2.engine.receive(long); s2.engine.receive({ ...issue(3), threads: issue(1).threads }); s2.engine.evaluateDue()
   const other = await s2.assessor.context('issue-3', signal) as { batch: Record<string, unknown>[] }
   expect(other.batch).toEqual([expect.objectContaining({ trigger_id: 'long', chars: long.text.length, read: 'trigger/long' })])
+})
+
+it('judges an assessment against the rules of the Trigger\'s Source, falling back to the default rules it inherits', async () => {
+  const docs = { id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }
+  const settings = SettingsSchema.parse({ eval: { mode: 'auto' },
+    policy: { sources: { github: { allowed: [{ id: 'bob' }], rules: [docs] } } } })
+  const s = setup('inferred', undefined, undefined, settings)
+  // A registered Project would let the acceptance create a Ticket; without one the host asks for it, which needs a reply channel.
+  const trigger = { ...issue(1), channel: { source: 'github', thread: 'github:1', address: { number: '1' } } }
+  s.engine.receive(trigger); s.engine.evaluateDue()
+  await s.assessor.context('issue-1', signal)
+  const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'asked' }
+  const decision = (ruleIds: string[]) => ({ trigger_id: 'issue-1', decision: 'accept',
+    rule_assessments: ruleIds.map(rule_id => ({ rule_id, matched: true, reason: 'docs' })), direction, title: 'Fix docs', scope: 'docs',
+    reason: 'asked', intent_evidence: 'quote', worktree_name: 'fix-docs' })
+  // The assessment must judge this Source's own rules, not the installation's default ones.
+  await expect(s.tools.orchestrator_eval_decide!(decision(settings.policy.rules.map(rule => rule.id)), signal))
+    .rejects.toThrow('Exactly one assessment for every enabled rule')
+  // The accepted Source rule becomes the Ticket mandate's rule; the fixture registers no Project, so the host asks for one.
+  expect(await s.tools.orchestrator_eval_decide!(decision(['docs']), signal))
+    .toMatchObject({ state: 'stop', reason: expect.stringContaining('The Project is not registered') })
 })

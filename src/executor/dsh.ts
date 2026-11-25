@@ -10,7 +10,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   Trigger } from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Settings } from '../policy.ts'
+import { rulesFor, type Rule, type Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { deliverArtifacts } from '../app/artifacts.ts'
@@ -89,12 +89,20 @@ export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: 
 
 /**
  * Returns additional system-prompt mandate instructions for a worker beyond the request: for work accepted proactively under
- * rules (`strength === 'inferred'`), restricts authorization to small internal changes within the rule scope; returns `''` for explicit requests.
+ * rules (`strength === 'inferred'`), restricts authorization to small internal changes within the rule scope, and names the
+ * matched rules with the instructions they read as now in `rules` (the ticket's Source instance rules, falling back to the
+ * installation's default rules); returns `''` for explicit requests.
  */
-export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string {
-  return mandate.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
+export function mandateInstructions(mandate: Pick<Mandate, 'strength'> & { basis?: Pick<Mandate['basis'], 'rules'> },
+  rules: readonly Rule[] = []): string {
+  if (mandate.strength !== 'inferred') return ''
+  const base = 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
-    + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
+    + 'decisions or clarification, stop and report dropped; do not expand scope.'
+  const matched = (mandate.basis?.rules ?? []).flatMap(id => rules.filter(rule => rule.id === id))
+  if (!matched.length) return base
+  return `${base}\nThe rules of its Source this ticket was accepted under, as they read now:\n`
+    + matched.map(rule => `- ${rule.name} (${rule.id}): ${rule.instruction}`).join('\n')
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
@@ -102,7 +110,8 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
   const ruleIds = ticket.mandate.basis.rules
-  const rules = settings.policy.rules.filter(rule => ruleIds?.includes(rule.id))
+  // A rule's procedure comes from the ticket's Source instance rules, which fall back to the installation's default rules.
+  const rules = rulesFor(settings, ticket.sourceId).filter(rule => ruleIds?.includes(rule.id))
     .map(rule => `\n- ${rule.name} (${rule.id}): ${rule.instruction}`).join('')
   const precedence = rules ? `\nMatched rules; their procedure and communication instructions take precedence over the default acknowledgement and messaging policy for this ticket:${rules}` : ''
   // The origin trigger is delivered alongside the assignment, so `assignment` omits the trigger text.

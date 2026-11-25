@@ -375,6 +375,15 @@ it('collects both roles\' tools, prompts, skills and inputs', () => {
   expect(sessions.refusal).not.toBe('')
 })
 
+it('registers a Source kind\'s default skill on that Source\'s workers, and every configured kind\'s on the main Session', () => {
+  const skillsOf = (sessionId: string) => host.skills.get(sessionId)!.map(skill => skill.name)
+  // The main Session reads the installation's default configuration and every configured Source kind's skill, in kind order.
+  expect(skillsOf(host.runtime.masterId)).toEqual(['dsh-superagent-feishu', 'dsh-superagent-github'])
+  // Both tickets came from the Feishu instance, whose workers read that Source's prompt configuration and skill alone.
+  expect(skillsOf(sessions.workerA)).toEqual(['dsh-superagent-feishu'])
+  expect(skillsOf(sessions.workerB)).toEqual(['dsh-superagent-feishu'])
+})
+
 it('names only registered tools, schema options, environment variables and glossary words, with the enforced word limits', () => {
   const found = failures(), known = new Map(KNOWN_FAILURES.map(([owner, failure]) => [failure, owner]))
   const drift = [...found].filter(([failure]) => !known.has(failure)).map(([failure, owner]) => `${owner}: ${failure}`)

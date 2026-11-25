@@ -1,6 +1,7 @@
 /** Computes structured settings diffs across saved revisions for display in the management panel. */
 import type { FieldSpec } from '../sources/kind.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
+import type { Rule } from '../policy.ts'
 import { KV } from '../kv.ts'
 import type { Store, SettingsVersion } from './store.ts'
 
@@ -16,6 +17,23 @@ export interface SettingsChange {
   field?: string; part?: true
 }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+/**
+ * The changes from one set of admission rules to another: a rule added, renamed, given a new instruction, enabled, disabled or
+ * removed. `source` names the Source instance whose own rules changed, so a history entry says where the rule belongs.
+ */
+function ruleChanges(before: readonly Rule[], after: readonly Rule[], source?: string): SettingsChange[] {
+  const changes: SettingsChange[] = []
+  const at = source === undefined ? {} : { source, part: true as const }
+  for (const rule of after) {
+    const old = before.find(item => item.id === rule.id)
+    if (!old) { changes.push({ code: 'ruleAdded', name: rule.name, ...at }); continue }
+    if (old.name !== rule.name) changes.push({ code: 'ruleRenamed', from: old.name, to: rule.name, ...at })
+    if (old.instruction !== rule.instruction) changes.push({ code: 'ruleInstruction', name: rule.name, ...at })
+    if (old.enabled !== rule.enabled) changes.push({ code: rule.enabled ? 'ruleEnabled' : 'ruleDisabled', name: rule.name, ...at })
+  }
+  for (const rule of before) if (!after.some(item => item.id === rule.id)) changes.push({ code: 'ruleRemoved', name: rule.name, ...at })
+  return changes
+}
 function fieldChanges(id: string, fields: readonly FieldSpec[], a: Record<string, unknown>, b: Record<string, unknown>, part?: true): SettingsChange[] {
   const changes: SettingsChange[] = []
   const at = { source: id, ...part ? { part } : {} }
@@ -46,21 +64,21 @@ function sourceChanges(id: string, before: SourceSettings | undefined, after: So
 }
 function settingsChanges(before: SettingsVersion['settings'], after: SettingsVersion['settings'], sources: SourceRegistry): SettingsChange[] {
   const changes: SettingsChange[] = []
-  for (const rule of after.policy.rules) {
-    const old = before.policy.rules.find(item => item.id === rule.id)
-    if (!old) { changes.push({ code: 'ruleAdded', name: rule.name }); continue }
-    if (old.name !== rule.name) changes.push({ code: 'ruleRenamed', from: old.name, to: rule.name })
-    if (old.instruction !== rule.instruction) changes.push({ code: 'ruleInstruction', name: rule.name })
-    if (old.enabled !== rule.enabled) changes.push({ code: rule.enabled ? 'ruleEnabled' : 'ruleDisabled', name: rule.name })
-  }
-  for (const rule of before.policy.rules) if (!after.policy.rules.some(item => item.id === rule.id)) changes.push({ code: 'ruleRemoved', name: rule.name })
+  changes.push(...ruleChanges(before.policy.rules, after.policy.rules))
   for (const id of new Set([...Object.keys(before.policy.sources), ...Object.keys(after.policy.sources)])) {
     const policy = sources.kind(id)?.policy
-    // Validate source-specific policy fields separately from the shared admission table.
-    const fill = (value: Record<string, unknown> | undefined) => { const { admission: _admission, ...rest } = value ?? {}; return policy ? policy.schema.parse(rest) : rest }
+    // Validate source-specific policy fields separately from the shared admission table and the Source's own rules.
+    const fill = (value: Record<string, unknown> | undefined) => {
+      const { admission: _admission, rules: _rules, ...rest } = value ?? {}
+      return policy ? policy.schema.parse(rest) : rest
+    }
     changes.push(...fieldChanges(id, policy?.fields ?? [], fill(before.policy.sources[id]), fill(after.policy.sources[id]), true))
     // Admission tables map receiving scopes rather than form fields, so summarize any table change as one entry per Source.
     if (JSON.stringify(before.policy.sources[id]?.admission ?? {}) !== JSON.stringify(after.policy.sources[id]?.admission ?? {})) changes.push({ code: 'sourceAdmission', source: id, part: true })
+    // A Source's own rules show what changed for its work; a Source that starts or stops overriding compares the rules its work
+    // used before with those it uses now (the installation's default rules on the side it inherited them).
+    const oldRules = before.policy.sources[id]?.rules, newRules = after.policy.sources[id]?.rules
+    if (!same(oldRules, newRules)) changes.push(...ruleChanges(oldRules ?? before.policy.rules, newRules ?? after.policy.rules, id))
   }
   if (before.eval.mode !== after.eval.mode) changes.push({ code: 'mode', from: before.eval.mode, to: after.eval.mode })
   if (before.eval.timeoutSeconds !== after.eval.timeoutSeconds) changes.push({ code: 'timeout', from: before.eval.timeoutSeconds, to: after.eval.timeoutSeconds })

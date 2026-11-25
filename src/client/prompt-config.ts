@@ -5,6 +5,9 @@ import { valueLabel, type T } from './text.ts'
 type TeamSection = PromptsView['sections'][number]
 export type BuiltInPart = PromptsView['parts'][number]
 export const isSkill = (name: string): name is `skill/${string}` => name.startsWith('skill/')
+/** A bundled skill of the Source's kind, read-only in the editor, which names it `default/<name>`. */
+export const isDefaultSkill = (name: string): name is `default/${string}` => name.startsWith('default/')
+export const defaultSkillName = (name: `default/${string}`): string => name.slice('default/'.length)
 /** A built-in part, which the editor names `part/<key>`, apart from the team skills (`skill/<name>`). */
 export const isPart = (name: string): name is `part/${string}` => name.startsWith('part/')
 export const partKey = (name: `part/${string}`): string => name.slice(5)

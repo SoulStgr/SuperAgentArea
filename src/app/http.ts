@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
-import { sourceSkills } from './context.ts'
+import { bundledSkills } from './skill-files.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInParts, defaultPrompts, savePrompts, type Prompts }
   from './prompts.ts'
@@ -38,7 +38,7 @@ export interface HttpHost {
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
-  readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
+  readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged' | 'defaultSkills'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
   readonly settings: Pick<Settings, 'view' | 'save' | 'add' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
@@ -148,15 +148,16 @@ function ticketPage(runtime: HttpHost, id: string) {
   return { ...detail, environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [] }
 }
 export type TicketPageView = ReturnType<typeof ticketPage>
-function promptsView(runtime: HttpHost, revision: number | undefined, offset: number) {
-  const current = runtime.prompts.current()
-  const shown = revision === undefined || revision === current.revision ? current : runtime.prompts.version(revision)
+function promptsView(runtime: HttpHost, revision: number | undefined, offset: number, source?: string) {
+  const current = runtime.prompts.current(source)
+  const shown = revision === undefined || revision === current.revision ? current : runtime.prompts.version(source, revision)
   // Each built-in part with the key of its text, which an override records as its base, and for the overrides shown whose
   // built-in text changed since, the text they were edited from when known.
   const parts = Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) }))
-  return { masterId: runtime.masterId, current: shown, defaults: defaultPrompts(), sections: TEAM_SECTIONS, skillName: SKILL_NAME.source,
-    builtin: Object.keys(sourceSkills), skillPrefix: SKILL_PREFIX, parts, defaultChanged: runtime.prompts.defaultChanged(shown.config),
-    ...runtime.sessions.status(), ...runtime.prompts.history(offset) }
+  return { masterId: runtime.masterId, ...source === undefined ? {} : { source }, current: shown, defaults: defaultPrompts(),
+    sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: Object.keys(bundledSkills), skillPrefix: SKILL_PREFIX, parts,
+    defaultSkills: runtime.prompts.defaultSkills(source), defaultChanged: runtime.prompts.defaultChanged(source, shown.config),
+    ...runtime.sessions.status(), ...runtime.prompts.history(source, offset) }
 }
 export type PromptsView = ReturnType<typeof promptsView>
 
@@ -184,7 +185,9 @@ const ArtifactQuery = z.object({ assignment: z.string().trim().min(1).optional()
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)])
-const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
+/** A Source instance's own Policy part: its rules, allowed senders, kind-specific fields and admission table. */
+const PolicyBlock = z.templateLiteral(['policy:', z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)])
+const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock, PolicyBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
 const NewSourceRequest = z.object({ kind: z.string().trim().min(1), key: z.string().trim().max(60).optional(),
   label: z.string().trim().max(100).optional(), config: z.record(z.string(), z.unknown()).default({}) }).strict()
@@ -222,6 +225,11 @@ function routes(runtime: HttpHost): Routes {
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const project = (id: string) => { if (!store.projects.get(id)) throw new UserError('projectUnknown', { project: id }); return id }
+  /** A Source instance id whose page or prompt configuration a route addresses. */
+  const sourceOf = (id: string) => {
+    if (!runtime.sources.instances().some(instance => instance.id === id)) throw new UserError('unknownSource', { source: id })
+    return id
+  }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
@@ -354,8 +362,10 @@ function routes(runtime: HttpHost): Routes {
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
-      const known = !block.startsWith('source:') || runtime.sources.instances().some(instance => `source:${instance.id}` === block)
-      if (!known) throw new RouteError(404, 'Source not found')
+      // A source's own block and a source's own policy part name a configured instance; a global block names no instance.
+      const instance = block.startsWith('source:') ? block.slice('source:'.length)
+        : block.startsWith('policy:') ? block.slice('policy:'.length) : undefined
+      if (instance !== undefined && !runtime.sources.instances().some(item => item.id === instance)) throw new RouteError(404, 'Source not found')
       const request = SaveRequest.parse(await body())
       return runtime.settings.save(block, request.value, request.revision, 'panel')
     },
@@ -363,12 +373,25 @@ function routes(runtime: HttpHost): Routes {
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
     'GET models': () => runtime.models(),
+    // One Source instance's prompt configuration: its Tickets' worker Sessions read it; an instance that never saved inherits the
+    // installation's default configuration, which the routes below keep serving for the main Session and older tool calls.
+    'GET sources/:id/prompts': ({ params, query }) => {
+      const { revision, offset } = PromptsQuery.parse(query)
+      const id = sourceOf(params.id)
+      return { ...promptsView(runtime, revision, offset, id), source: id }
+    },
+    'PUT sources/:id/prompts': async input => {
+      const id = sourceOf(input.params.id)
+      const request = z.object({ config: z.unknown(), baseRevision: z.number().int().nonnegative() }).parse(await promptBody(input))
+      return savePrompts(runtime, request.config, request.baseRevision, 'panel', id)
+    },
+    'POST sources/:id/prompts/preview': async input => runtime.prompts.preview(sourceOf(input.params.id), await promptBody(input)),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
       const request = z.object({ config: z.unknown(), baseRevision: z.number().int().nonnegative() }).parse(await promptBody(input))
       return savePrompts(runtime, request.config, request.baseRevision, 'panel')
     },
-    'POST prompts/preview': async input => runtime.prompts.preview(await promptBody(input)),
+    'POST prompts/preview': async input => runtime.prompts.preview(undefined, await promptBody(input)),
   }
 }
 function decoded(segment: string): string {

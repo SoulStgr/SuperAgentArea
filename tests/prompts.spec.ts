@@ -8,7 +8,7 @@ import { USER_ERRORS, UserError } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { SettingsSchema, policyVersion } from '../src/policy.ts'
 import { guides, handoffPolicy, mainAdmissionPolicy, masterPrompt, sharedPrompt, workerPrompt } from '../src/app/context.ts'
-import { promptFile } from '../src/app/skill-files.ts'
+import { bundledSkillNames, bundledSkills, promptFile } from '../src/app/skill-files.ts'
 import { packagePath } from '../src/infra/paths.ts'
 import type { Variable } from '../src/app/execution-environment.ts'
 
@@ -16,9 +16,13 @@ import type { Variable } from '../src/app/execution-environment.ts'
 const variables = (): Variable[] => [{ key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', value: 'acme/widgets', description: { zh: '仓库', en: 'The repository' }, owner: 'github' }]
 const ENVIRONMENT_LINE = '- DSH_SUPERAGENT_GITHUB_REPOSITORY = "acme/widgets": The repository.'
 const promptsOf = (store: Store, maxChars = 100000) => new Prompts(store, () => maxChars, variables, () => true)
-function withStore(body: (store: Store, dir: string) => void): void {
+const withStore = (body: (store: Store, dir: string) => void): void => {
   const dir = mkdtempSync(join(tmpdir(), 'prompts-')); const store = new Store(join(dir, 'db'))
   try { body(store, dir) } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
+}
+/** Configures the installation's Source instances, whose kinds decide the default skills. */
+const configure = (store: Store, sources: Record<string, { kind: string }>): void => {
+  store.saveSettings(SettingsSchema.parse({ ...store.settings(), sources }))
 }
 
 it('saves team sections and skills as versions that survive a restart, with history and rollback', () => {
@@ -96,7 +100,7 @@ it('rejects unknown keys, built-in skill names and oversized configuration befor
     const prompts = promptsOf(store)
     expect(() => prompts.save({ ...defaultPrompts(), shared: 'x' }, 0, 'panel')).toThrow()
     expect(() => prompts.save({ communication: '', scope: '' }, 0, 'panel')).toThrow()
-    for (const name of ['github', 'feishu']) expect(() => prompts.save({ ...defaultPrompts(), skills: { [name]: 'mine' } }, 0, 'panel')).toThrow('built-in skill')
+    for (const name of bundledSkillNames) expect(() => prompts.save({ ...defaultPrompts(), skills: { [name]: 'mine' } }, 0, 'panel')).toThrow('built-in skill')
     expect(() => prompts.save({ ...defaultPrompts(), skills: { 'Bad Name': 'x' } }, 0, 'panel')).toThrow()
     expect(() => promptsOf(store, 1000).save(defaultPrompts(), 0, 'panel')).toThrow('exceeds')
     expect(prompts.current().revision).toBe(0)
@@ -113,14 +117,93 @@ it('lists a ticket\'s execution environment in its prompt, and says setup is inc
   })
 })
 
-it('registers the built-in Source skills, Feishu only with a Feishu bot, before the team skills', () => {
+it('registers the default skills of the scope\'s Source kind, then the team skills', () => {
   withStore(store => {
+    configure(store, { github: { kind: 'github' }, 'folder:ops': { kind: 'folder' } })
     const config = { ...defaultPrompts(), skills: { release: 'Tag releases.' } }
+    // The installation reads every configured Source kind's default skill, in bundled name order, before the team skills.
     const skills = promptsOf(store).skills(config)
-    expect(skills.map(([name]) => name)).toEqual(['feishu', 'github', 'release'])
+    expect(skills.map(([name]) => name)).toEqual(['folder', 'github', 'release'])
+    expect(skills[0]![1]).toContain(bundledSkills.folder!.content)
+    expect(skills[1]![1]).toContain(bundledSkills.github!.content)
     expect(skills[1]![1]).toContain('## CLI usage')
     expect(skills[2]![1]).toBe('Tag releases.')
-    expect(new Prompts(store, () => 100000, variables, () => false).skills(config).map(([name]) => name)).toEqual(['github', 'release'])
+    // A Source instance reads its own kind's default skill, and a kind without a bundled skill reads none.
+    expect(promptsOf(store).skills(config, 'folder:ops').map(([name]) => name)).toEqual(['folder', 'release'])
+    expect(promptsOf(store).skills(config, 'github').map(([name]) => name)).toEqual(['github', 'release'])
+    expect(promptsOf(store).skills(config, 'remote:team').map(([name]) => name)).toEqual(['release'])
+    // The panel's read-only default skills are the same bundled set, by name and description.
+    expect(promptsOf(store).defaultSkills()).toEqual([{ name: 'folder', description: bundledSkills.folder!.description },
+      { name: 'github', description: bundledSkills.github!.description }])
+    expect(promptsOf(store).defaultSkills('directory:home')).toEqual([])
+  })
+})
+
+it('keeps each Source instance\'s prompt configuration as its own versions, inheriting the installation\'s until it saves', () => {
+  withStore(store => {
+    const prompts = promptsOf(store)
+    // A Source that never saved reads the installation's default as an inherited version.
+    expect(prompts.current('folder:ops')).toMatchObject({ revision: 0, source: 'inherited', config: defaultPrompts() })
+    const installation = prompts.save({ ...defaultPrompts(), communication: 'Installation wording.' }, 0, 'panel')
+    expect(prompts.current('folder:ops')).toMatchObject({ revision: installation.revision, source: 'inherited', config: installation.config })
+    expect(prompts.version('folder:ops', installation.revision)).toMatchObject({ revision: installation.revision, config: installation.config })
+    expect(prompts.history('folder:ops', 0, 5)).toEqual(prompts.history(0, 5))
+    // Its first save starts its own chain at revision 1, after a snapshot of what it inherited.
+    const own = prompts.save('folder:ops', { ...installation.config, scope: 'Only the ops folder.' }, installation.revision, 'panel')
+    expect(own).toMatchObject({ revision: 1, previousRevision: 0, source: 'panel' })
+    expect(prompts.version('folder:ops', 0)).toMatchObject({ revision: 0, source: 'inherited', config: installation.config })
+    expect(prompts.current('folder:ops')).toMatchObject({ revision: 1, config: expect.objectContaining({ scope: 'Only the ops folder.' }) })
+    // Its history is its own, compared with the inherited snapshot.
+    expect(prompts.history('folder:ops', 0, 5).revisions.map(version => version.revision)).toEqual([1, 0])
+    expect(prompts.history('folder:ops', 0, 5).revisions[0]!.changed).toEqual(['scope'])
+    // The installation keeps its own configuration, and saving it later leaves the Source's revision alone.
+    expect(prompts.current()).toMatchObject({ revision: installation.revision, config: installation.config })
+    prompts.save({ ...installation.config, communication: 'New installation wording.' }, installation.revision, 'tool')
+    expect(prompts.current('folder:ops')).toMatchObject({ revision: 1, config: expect.objectContaining({ scope: 'Only the ops folder.' }) })
+    expect(prompts.current().config.communication).toBe('New installation wording.')
+    // A save against a stale base revision is refused.
+    expect(() => prompts.save('folder:ops', own.config, 0, 'panel')).toThrow('version changed')
+  })
+})
+
+it('validates a Source\'s configuration against its own saved version', () => {
+  withStore(store => {
+    const prompts = promptsOf(store)
+    prompts.save('github', { ...defaultPrompts(), overrides: { 'runtime/shared': { text: 'Our source.', base: 'earlier' } } }, 0, 'panel')
+    expect(prompts.validate('github', { ...defaultPrompts(), overrides: { 'runtime/shared': { text: 'Our source, edited.' } } }).overrides!['runtime/shared'])
+      .toEqual({ text: 'Our source, edited.', base: 'earlier' })
+    // The installation's own version holds no such base, so it records the built-in text it read.
+    expect(prompts.validate({ ...defaultPrompts(), overrides: { 'runtime/shared': { text: 'Ours.' } } }).overrides!['runtime/shared']!.base)
+      .toBe(builtInBase(sharedPrompt))
+  })
+})
+
+it('drops a Source-skill override a saved configuration holds, as the part no longer exists', () => {
+  withStore(store => {
+    const prompts = promptsOf(store)
+    const config = { ...defaultPrompts(), overrides: { 'skill/feishu': { text: 'Old.', base: 'b' } } }
+    // A configuration a client makes up is refused; one the saved version holds is dropped, as the panel would.
+    expect(() => prompts.validate(config)).toThrow(new UserError('unknownPromptPart', { part: 'skill/feishu' }))
+    expect(() => prompts.save({ ...defaultPrompts(), overrides: { 'skill/github': { text: 'Old.', base: 'b' } } }, 0, 'panel'))
+      .toThrow(new UserError('unknownPromptPart', { part: 'skill/github' }))
+    store.set(KV.prompts.version(1), { revision: 1, previousRevision: 0, savedAt: '', source: 'panel', config }); store.set(KV.prompts.revision, 1)
+    expect(prompts.validate(config)).toEqual(defaultPrompts())
+    expect(prompts.defaultChanged(config)).toEqual([{ part: 'skill/feishu', base: 'b', removed: true }])
+  })
+})
+
+it('previews a Source instance with its default skills and the bundled skill names', () => {
+  withStore(store => {
+    configure(store, { github: { kind: 'github' }, 'folder:ops': { kind: 'folder' } })
+    const prompts = promptsOf(store)
+    const preview = prompts.preview('folder:ops', defaultPrompts())
+    expect(preview.source).toBe('folder:ops')
+    expect(preview.defaultSkills).toEqual([{ name: 'folder', description: bundledSkills.folder!.description }])
+    expect(preview.builtin).toEqual([...bundledSkillNames])
+    expect(Object.keys(preview.skills)).toEqual(['folder'])
+    expect(preview.orchestrator).toBe(prompts.compose(defaultPrompts(), 'orchestrator'))
+    expect(prompts.preview(defaultPrompts()).source).toBeUndefined()
+    expect(Object.keys(prompts.preview(defaultPrompts()).skills)).toEqual(['folder', 'github'])
   })
 })
 
@@ -128,18 +211,21 @@ it('registers the built-in Source skills, Feishu only with a Feishu bot, before 
 describe('overrides of built-in parts', () => {
   const settings = () => SettingsSchema.parse({})
   const config = (overrides: PromptConfig['overrides']) => ({ ...defaultPrompts(), overrides })
-  it('compose in place of the built-in texts, for the roles that read each, the handoff per role and the Source skills', () => {
+  it('compose in place of the built-in texts, for the roles that read each, and the handoff per role', () => {
     withStore(store => {
+      configure(store, { github: { kind: 'github' } })
       const prompts = promptsOf(store)
       const edited = prompts.validate(config({ 'runtime/shared': { text: 'Shared, the team way.' }, 'runtime/dispatch': { text: '## dispatch\nRoute well.' },
-        'runtime/handoff/worker': { text: 'Hand off as a worker.' }, 'skill/github': { text: 'GitHub, the team way.' } }))
+        'runtime/handoff/worker': { text: 'Hand off as a worker.' } }))
       const main = prompts.compose(edited, 'orchestrator'), worker = prompts.compose(edited, 'worker')
       for (const prompt of [main, worker]) expect(prompt.startsWith('Shared, the team way.\n\n')).toBe(true)
       expect(main).toContain('## dispatch\nRoute well.')
       expect(main).not.toContain(guides.dispatch)
       expect(worker).toContain('Hand off as a worker.')
       expect(main).toContain(handoffPolicy('orchestrator'))
-      expect(prompts.skills(edited)).toContainEqual(['github', 'GitHub, the team way.'])
+      // A bundled Source skill's text is the packaged one, with the CLI notes; it is no override key.
+      expect(prompts.skills(edited)).toContainEqual(['github', expect.stringContaining(bundledSkills.github!.content)])
+      expect(prompts.skills(edited)).toContainEqual(['github', expect.stringContaining('## CLI usage')])
       // The parts say what they are edited by.
       expect(promptParts(edited, 'worker').find(part => part.name === 'runtime/handoff')).toMatchObject({ key: 'runtime/handoff/worker',
         text: 'Hand off as a worker.' })

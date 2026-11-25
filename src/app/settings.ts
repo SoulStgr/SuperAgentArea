@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { UserError, type EngineForSettings } from '../core/index.ts'
-import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, policyEffects, policyVersion } from '../policy.ts'
+import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, SourcePolicySchema, policyEffects, policyVersion, rulesFor } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
@@ -25,6 +25,14 @@ const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.di
 /** One Source instance's saved block: its switch and kind configuration, plus the optional label and default Project its routes set. */
 const SourceBlockValue = z.object({ enabled: z.boolean(), config: z.unknown(), label: z.string().trim().max(100).optional(),
   defaultProjectId: z.string().trim().max(200).optional() })
+/** A settings block's kind: the installation-wide `policy`/`eval`/`executor`, a Source instance's `source:<id>`, or its own `policy:<id>`. */
+type BlockKind = 'policy' | 'eval' | 'executor' | 'source' | 'sourcePolicy'
+/** Split a settings block into its kind and the Source instance id the `source:`/`policy:` blocks name. */
+function blockOf(block: string): { kind: string; id: string } {
+  if (block.startsWith('source:')) return { kind: 'source', id: block.slice('source:'.length) }
+  if (block.startsWith('policy:')) return { kind: 'sourcePolicy', id: block.slice('policy:'.length) }
+  return { kind: block, id: block }
+}
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -32,7 +40,7 @@ interface Block {
   merge(settings: SettingsValue, value: unknown, id: string): SettingsValue
   guard?(current: SettingsValue, candidate: SettingsValue, origin: SettingsOrigin): void
 }
-const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
+const BLOCKS: Record<BlockKind, Block> = {
   policy: {
     parse: (value, sources) => {
       const policy = PolicyConfigSchema.parse(value)
@@ -59,6 +67,13 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
       [id]: { ...settings.sources[id], ...value as SettingsValue['sources'][string] } } }),
     // Only the management panel may switch source accounts.
     guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
+  },
+  sourcePolicy: {
+    // A Source's own Policy part: its rules and admission table (validated by the Policy's schemas) and its kind-specific fields
+    // (validated by the kind), merged into the installation's Policy for that Source instance alone.
+    parse: (value, sources, id) => sources.validatePolicy({ [id]: SourcePolicySchema.parse(value) })[id],
+    merge: (settings, value, id) => ({ ...settings, policy: { ...settings.policy,
+      sources: { ...settings.policy.sources, [id]: value as SettingsValue['policy']['sources'][string] } } }),
   },
 }
 
@@ -117,34 +132,52 @@ export class Settings {
   current(): SettingsValue { return this.host.store.settings() }
   /**
    * Returns an overview of all settings blocks with their current block revisions: full values for `pause`, `eval`, and
-   * `executor`; rule summaries and allowed-sender counts for `policy`; and instance status switches for `sources` (with `read: 'settings/<block>'` paths for full block reads).
+   * `executor`; rule summaries and allowed-sender counts for `policy`; and instance status switches for `sources` (with
+   * `read: 'settings/<block>'` paths for full block reads). A Source's `policy` part reports its effective rules, whether
+   * it inherited the installation's default ones, and its own block revision.
    */
   view() {
     const { store, sources } = this.host
     const settings = store.settings(), revision = (block: SettingsSave) => store.blockRevision(block)
     const { rules, sources: parts } = settings.policy
+    const summary = (value: readonly { id: string; name: string; enabled: boolean }[]) =>
+      value.map(rule => ({ id: rule.id, name: rule.name, enabled: rule.enabled }))
     return { revision: store.get(KV.settings.revision) ?? 0,
       pause: { revision: revision('pause'), value: { paused: settings.paused } },
       eval: { revision: revision('eval'), value: settings.eval },
       executor: { revision: revision('executor'), value: settings.executor },
-      policy: { revision: revision('policy'), rules: rules.map(rule => ({ id: rule.id, name: rule.name, enabled: rule.enabled })),
+      policy: { revision: revision('policy'), rules: summary(rules),
         allowed: Object.fromEntries(Object.entries(parts).map(([id, part]) => [id, part.allowed.length])), read: 'settings/policy' },
       sources: sources.instances(settings).map(({ id, kind, enabled, installed }) =>
-        ({ id, kind, enabled, installed, revision: revision(`source:${id}`), read: `settings/source:${id}` })) }
+        ({ id, kind, enabled, installed, revision: revision(`source:${id}`), read: `settings/source:${id}`,
+          // The rules that apply to this Source's work: its own when it saved any, else the installation's default rules.
+          policy: { revision: revision(`policy:${id}`), inherited: parts[id]?.rules === undefined, rules: summary(rulesFor(settings, id)),
+            read: `settings/policy:${id}` } })) }
   }
   /**
-   * Returns one settings block as accepted by `save` (`policy`, `eval`, `executor`, `pause` holding `{ paused }`, or
-   * `source:<id>` holding `{ enabled, config }`) along with its current block revision.
+   * Returns one settings block as accepted by `save` (`policy`, `eval`, `executor`, `pause` holding `{ paused }`, `source:<id>`
+   * holding `{ enabled, config }`, or `policy:<id>` holding that Source's Policy part including its own `rules`) along with its
+   * current block revision.
    * @throws UserError (`unknownBlock`) when no such settings block exists.
    */
   block(block: string): { block: string; revision: number; value: unknown } {
     const { store, sources } = this.host
-    const settings = store.settings(), id = block.startsWith('source:') ? block.slice('source:'.length) : undefined
-    const instance = id === undefined ? undefined : sources.instances(settings).find(item => item.id === id)
-    const value = block === 'pause' ? { paused: settings.paused } : block === 'policy' || block === 'eval' || block === 'executor' ? settings[block]
-      : instance ? { enabled: instance.enabled, config: instance.config } : undefined
+    const settings = store.settings()
+    const { kind, id } = blockOf(block)
+    const instance = kind === 'source' || kind === 'sourcePolicy' ? sources.instances(settings).find(item => item.id === id) : undefined
+    const value = block === 'pause' ? { paused: settings.paused }
+      : kind === 'policy' || kind === 'eval' || kind === 'executor' ? settings[kind]
+        : kind === 'source' ? (instance ? { enabled: instance.enabled, config: instance.config } : undefined)
+          : kind === 'sourcePolicy' ? (instance ? this.policyPart(id) : undefined) : undefined
     if (value === undefined) throw new UserError('unknownBlock', { block })
     return { block, revision: store.blockRevision(block as SettingsSave), value }
+  }
+  /** One Source instance's Policy part as `save` accepts it: its kind's fields with defaults, its admission table, and its own rules. */
+  private policyPart(id: string): SettingsValue['policy']['sources'][string] {
+    const { store, sources } = this.host
+    const settings = store.settings()
+    // `SourceRegistry.policyPart` validates the kind's fields and keeps a stored `rules`; an uninstalled kind keeps its part as stored.
+    return sources.policyPart(id) ?? SourcePolicySchema.parse(settings.policy.sources[id] ?? {})
   }
   /**
    * Validates and saves one settings block against its `revision`; a no-op save records no new revision, a changed policy
@@ -159,11 +192,10 @@ export class Settings {
     const { store, sources, engine, sessions } = this.host
     const stale = () => revision !== store.blockRevision(block)
     if (stale()) throw new SettingsConflict('Settings changed. Reload before saving.')
-    const id = block.startsWith('source:') ? block.slice(7) : block
-    const kind = block.startsWith('source:') ? 'source' : block
+    const { kind, id } = blockOf(block)
     if (!(kind in BLOCKS)) throw new UserError('unknownBlock', { block })
-    const rules = BLOCKS[kind as keyof typeof BLOCKS]
-    if (kind === 'source') {
+    const rules = BLOCKS[kind as BlockKind]
+    if (kind === 'source' || kind === 'sourcePolicy') {
       // Every configured instance, including a kind's synthesized default, is a saveable block; an orphaned instance keeps its stored configuration only.
       const instance = sources.instances().find(item => item.id === id)
       if (!instance) throw new UserError('unknownSource', { source: id })
@@ -172,8 +204,8 @@ export class Settings {
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
-    const model = block === 'eval' ? candidate.eval.model : block === 'executor' ? candidate.executor.model : null
-    const previous = block === 'eval' ? current.eval.model : block === 'executor' ? current.executor.model : null
+    const model = kind === 'eval' ? candidate.eval.model : kind === 'executor' ? candidate.executor.model : null
+    const previous = kind === 'eval' ? current.eval.model : kind === 'executor' ? current.executor.model : null
     if (model && JSON.stringify(model) !== JSON.stringify(previous)) {
       try { await resolveRoleModel(this.host.context, model) }
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
@@ -265,24 +297,27 @@ export class Settings {
     })
   }
   /**
-   * Synchronizes source `id`'s policy section from its external source of truth, saves it as a `'policy'` revision when
-   * changed, and records the outcome in the `sync:<id>` health entry (scheduling exponential-backoff retries via `retrySync` on failure).
+   * Synchronizes source `id`'s policy section from its external source of truth, saves it under that Source's own
+   * `'policy:<id>'` block revision when changed, and records the outcome in the `sync:<id>` health entry (scheduling
+   * exponential-backoff retries via `retrySync` on failure).
    * @returns The synchronized policy section for `id`.
-   * @throws UserError (`nothingToSync`) when `id` cannot sync now, `SettingsConflict` if the `'policy'` block changed during synchronization, or the underlying sync error on failure.
+   * @throws UserError (`nothingToSync`) when `id` cannot sync now, `SettingsConflict` if the installation's Policy or that Source's own part changed during synchronization, or the underlying sync error on failure.
    */
   async sync(id: string) {
     const { store, sources } = this.host
     if (!this.syncable().includes(id)) throw new UserError('nothingToSync', { source: id })
     const health = this.syncHealth(id)
     try {
-      const revision = store.blockRevision('policy')
+      const block: SettingsBlock = `policy:${id}`
+      const revision = store.blockRevision('policy'), partRevision = store.blockRevision(block)
       const part = await sources.kind(id)!.policy!.sync!.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
-      if (revision !== store.blockRevision('policy')) throw new SettingsConflict('Policy changed during synchronization. Retry with the current settings.')
-      const policy = store.settings().policy
-      // Skip saving a new revision when the synced list is unchanged.
-      if (JSON.stringify(part) !== JSON.stringify(policy.sources[id])) {
-        await this.save('policy', { ...policy, sources: { ...policy.sources, [id]: part } }, revision, 'sync')
+      // A save of either the installation's Policy or this Source's part during the read makes this synchronized part stale.
+      if (revision !== store.blockRevision('policy') || partRevision !== store.blockRevision(block)) {
+        throw new SettingsConflict('Policy changed during synchronization. Retry with the current settings.')
       }
+      // Skip saving a new revision when the synchronized part is the one already stored for that Source; compare through the
+      // registry so the same kind defaults and field order are read on both sides.
+      if (JSON.stringify(part) !== JSON.stringify(sources.policyPart(id))) await this.save(block, part, partRevision, 'sync')
       health.set({ state: 'ready', detail: `${part.allowed.length} allowed`, at: now() })
       this.retrySync(id, false)
       return part

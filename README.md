@@ -8,7 +8,7 @@
 >
 > We have adapted it for publication, so it is not identical to our internal version or the implementation described in *Exploring Super-agent Design: Towards a More Autonomous Agent System*. Some designs discussed in the article are directions for future development and are not implemented in this prototype.
 
-SuperAgentArea is a proactive agent for a team's incoming work, packaged as a bundle for [DeepSeek Harness](https://www.deepseek.com/en/harness/). It listens to GitHub, Feishu and local folders — each Source kind can run several named instances — admits requests under a versioned Policy, turns authorized ones into Tickets, runs each Ticket in its own agent Session and directory, and delivers the result and its files back to the conversation it came from. A web panel shows what needs a person.
+SuperAgentArea is a proactive agent for a team's incoming work, packaged as a bundle for [DeepSeek Harness](https://www.deepseek.com/en/harness/). It listens to GitHub, Feishu and local folders — each Source kind can run several named instances, each with its own Policy and prompts — admits requests under a versioned Policy, turns authorized ones into Tickets, runs each Ticket in its own agent Session and directory, and delivers the result and its files back to the conversation it came from. A web panel shows what needs a person.
 
 It is also a way of working with an agent: **take as little human attention as possible, and give as much value as possible.** An agent that can act for a whole team can also waste a whole team's attention, so it acts only when asked or when a rule the team wrote allows it, and speaks only when someone must act or can use a result. [docs/000-philosophy.md](docs/000-philosophy.md) explains the principle and what it asks of the operator.
 
@@ -19,7 +19,7 @@ It is also a way of working with an agent: **take as little human attention as p
 - **Opens a Ticket, not a chat session.** An accept creates an immutable Mandate — who may ask, how far the work may go — and one Ticket. The Ticket owns its Subscriptions, Inputs, Assignments and artifacts.
 - **Works in its own place.** Every Ticket runs in its own Executor Session and directory, follows its production-line prompt, survives a restart, and can be handed back, retried or resumed.
 - **Delivers files, not only replies.** A worker writes its deliverables into `deliver/`; on `ready` the Executor promotes and indexes them, names them in the result reply, and the panel downloads them.
-- **Shows what needs a person.** Overview, Sources, Workstations and Artifacts, with Prompts and Policy & Eval as first-class pages, and Settings behind the header gear.
+- **Shows what needs a person.** Overview, Sources, Workstations and Artifacts, each Source's own **Policy and prompts** on its card and page, and Settings in three groups behind the header gear.
 
 ## Architecture: a production line inside a Super-agent
 
@@ -50,14 +50,15 @@ The design grew out of two inputs: a T0–T5 production-line flow for "how one t
 ### What this fork adds on top of the prototype
 
 - **Multi-source, multi-instance.** Every Source kind can run named instances, with per-instance health, setup checks, statistics, configuration and migration. The local folder Source (inbox → `TASK.md` → Ticket → outbox) is new.
+- **Per-Source Policy and prompts.** Every Source instance owns its accept rules and its prompt configuration, edited from the **策略提示配置 (Policy and prompts)** action on its card or page; an unsaved instance inherits the installation default. Each worker reads its Ticket's Source configuration and its kind's default skill, while the main Session reads the installation default plus every configured kind's default skill. A new Source kind ships its own skill in `skills/dsh-superagent-<kind>/SKILL.md`.
 - **Projects (workstations) as first-class objects.** Work belongs to a station. A request whose station is unknown is refused by Eval and asked back (`needsProject`), answered by a person, then evaluated again; the built-in `workspace` takes work no station owns.
 - **Artifacts as first-class results.** Delivered files are collected on `ready`, promoted into the station's output directory, indexed with hash and size, delivered as files or links, downloadable from the panel, and traceable **Artifact → Ticket → Assignment → worker Session**.
-- **A panel rebuilt around work.** Overview, Sources, Workstations, Artifacts, Prompts and Policy & Eval, plus a project Session and the history a Project collects.
+- **A panel rebuilt around work.** Overview, Sources, Workstations and Artifacts, each Source's own Policy and prompts, Settings in three groups (Routing and Eval, Executor and environment, Deployment), plus a project Session and the history a Project collects.
 - **A bilingual UI** (Chinese and English) and the directory model `<stateDir>/area/{workspace,<station>,<station>.work}`: final deliverables in the station, working copies in its sibling.
 
 ## Status
 
-Version **0.3.0**. Phases P1–P6c are complete — schema 12, Source instances, project attribution, the Sources, Workstations and Artifacts pages, project Sessions and history, and the closing pass. `pnpm check` runs green with more than 1,300 tests, and 0.3.0 passed the desktop end-to-end flow. What is next is recorded in [plan/21-实施总结.md](plan/21-实施总结.md): IM and remote Sources (DingTalk, QQ, SFTP, S3), repository worktree execution, the L2 production-line prompts and skills, governance (Watchdog gates, budgets and leases, sandboxing), and the knowledge pool.
+Version **0.3.1**. Phases P1–P6c are complete — schema 12, Source instances, project attribution, the Sources, Workstations and Artifacts pages, project Sessions and history, and the closing pass — and **0.3.0** passed the desktop end-to-end flow. **0.3.1** moves Policy and prompts under each Source instance: every Source owns its rules and its prompt configuration, its cards carry **策略提示配置**, the four work pages no longer include installation-level Prompts and Policy & Eval pages, and each Source kind ships its own default skill. `pnpm check` runs green with more than 1,300 tests. What is next is recorded in [plan/21-实施总结.md](plan/21-实施总结.md): IM and remote Sources (DingTalk, QQ, SFTP, S3), repository worktree execution, the L2 production-line prompts and skills, governance (Watchdog gates, budgets and leases, sandboxing), and the knowledge pool.
 
 ## Setup
 
@@ -88,6 +89,7 @@ The design archive records how this fork was designed and built, phase by phase.
 - [Overall plan](plan/00-总体方案.md): the gap analysis against the prototype and the phase plan
 - [Workstations and artifacts](plan/10-工作站与产物设计方案.md): the frozen v1.0 design of the panel and the domain model
 - [Implementation summary](plan/21-实施总结.md): the P1–P6 commits, verification and known limits
+- [Per-Source Policy and prompts](plan/22-工单源策略与提示词.md): moving Policy and prompts under each Source instance, with the implementation record
 
 ## Development
 
