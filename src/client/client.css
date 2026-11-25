@@ -380,7 +380,12 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-info-warn { color: var(--dsw-alias-state-warn-primary); }
 .dt-field-segmented { max-width: 240px; }
 .dt-status-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
-.dt-source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.dt-source-grid, .dt-project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.dt-project-card { gap: 10px; }
+.dt-project-card .dt-row-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.dt-project-title { font-size: 15px; font-weight: 600; }
+.dt-project-segments { display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-project-form { display: flex; flex-direction: column; gap: 16px; }
 .dt-source-card { gap: 10px; }
 .dt-source-card .dt-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .dt-source-title { font-size: 15px; font-weight: 600; }

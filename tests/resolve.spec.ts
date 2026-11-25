@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { HealthBoard } from '../src/infra/health.ts'
-import { key, threadKey, type Decision, type Trigger } from '../src/core/index.ts'
+import { key, threadKey, WORKSPACE_PROJECT_ID, type Decision, type Trigger } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { Store } from '../src/app/store.ts'
@@ -220,6 +220,38 @@ it('answers a needsProject question with a Project, a new station or a confirmed
   const unanswered = feishu('15')
   store.triggers.save(unanswered)
   expect(() => projects.answer(unanswered.id, { projectId: aps.id })).toThrow('not waiting for a Project')
+})
+
+it('creates, renames, aliases and archives a Project from the panel, refusing a taken name or an unknown Source', () => {
+  const aps = projects.createStation({ name: 'aps', location: { type: 'managed' } })
+  expect(aps).toMatchObject({ id: 'prj_aps', key: 'aps', status: 'active',
+    value: { name: 'aps', kind: 'station', specifiedBy: PANEL_PERSON, confirmedBy: PANEL_PERSON, sourceIds: [], aliases: [] } })
+  // A name another Project answers to is refused, so the key is the name's own slug rather than one with a suffix.
+  expect(() => projects.createStation({ name: 'APS', location: { type: 'managed' } })).toThrow('already called that')
+  expect(() => projects.createStation({ name: ' ', location: { type: 'managed' } })).toThrow('needs a name')
+  expect(() => projects.createStation({ name: 'bad', location: { type: 'folder', path: 'relative/path' } })).toThrow('absolute path')
+  // The name and the aliases change in place; the key stays through a rename, and aliases lose blanks and repetitions.
+  const renamed = projects.update(aps.id, { name: 'APS 填报', aliases: ['aps', 'aps', ' 填报 ', ''] })
+  expect(renamed).toMatchObject({ id: aps.id, key: 'aps', value: { name: 'APS 填报', aliases: ['aps', '填报'] } })
+  const other = projects.createStation({ name: 'another', location: { type: 'managed' } })
+  expect(() => projects.update(aps.id, { name: 'another' })).toThrow('already called that')
+  // Sources are the configured instances alone, and a repeated one counts once.
+  expect(projects.update(aps.id, { sourceIds: ['folder:ops', 'folder:ops'] }).value.sourceIds).toEqual(['folder:ops'])
+  expect(() => projects.update(aps.id, { sourceIds: ['folder:gone'] })).toThrow('Unknown Source: folder:gone')
+  // Archiving keeps the Project and records when; restoring clears it.
+  const archived = projects.update(aps.id, { archived: true })
+  expect(archived.status).toBe('archived')
+  expect(archived.value.archivedAt).toBeTruthy()
+  expect(store.projects.list('active').map(project => project.id)).not.toContain(aps.id)
+  const restored = projects.update(aps.id, { archived: false })
+  expect(restored).toMatchObject({ id: aps.id, status: 'active' })
+  expect(restored.value).not.toHaveProperty('archivedAt')
+  // The built-in workspace is fixed: it is never archived and never renamed, though its aliases may change.
+  expect(() => projects.update(WORKSPACE_PROJECT_ID, { archived: true })).toThrow('built-in workspace is fixed')
+  expect(() => projects.update(WORKSPACE_PROJECT_ID, { name: 'main' })).toThrow('built-in workspace is fixed')
+  expect(projects.update(WORKSPACE_PROJECT_ID, { aliases: ['ws'] }).value.aliases).toEqual(['ws'])
+  expect(() => projects.update('prj_gone', { name: 'x' })).toThrow('Unknown Project: prj_gone')
+  expect(other.value.name).toBe('another')
 })
 
 /** Makes a directory and returns its path, for fixtures that name one. */

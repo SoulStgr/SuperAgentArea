@@ -12,12 +12,13 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Sources**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
+The tabs follow the workflow: **Overview**, **Sources**, **Workstations**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
 
 | Tab | Shows |
 | --- | --- |
 | Overview | Tickets needing action, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
 | Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. **Add Source** creates a named instance of an installed kind. A card opens the instance's own page with its configuration, statistics, Tickets, filtered and unsent messages and recent Triggers |
+| Workstations | One card per Project: its name, its address kind (managed, folder or repository), its Sources, open Tickets, artifacts, latest activity and latest reporter. The built-in workspace comes first and is fixed: it cannot be archived or renamed. A card's six sections — Sources, Trigger, Eval, Execution, Settings and agent — open the project-level view; **New workstation** creates a station, and **Show archived** lists the archived ones |
 | Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
 | Eval | Decisions with their reason and matched rules |
 | Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
@@ -28,6 +29,12 @@ The tabs follow the workflow: **Overview**, **Sources**, **Trigger**, **Eval**, 
 A dropped message links to its Ticket, or to its Thread when it has no Ticket. The Sources page explains whether its conversation disappeared or the Source stopped listening to it.
 
 A request whose Project is not registered waits in Eval, and its Source card and page offer **Answer**: place it in an existing workstation, confirm the assessment's proposed one, or create a workstation from a name and a local folder or repository address. The request is then evaluated again and, once accepted, appears among that Source's Tickets. Adding a Source of an installed kind takes effect on its next poll; a folder instance answers on the inbox it names.
+
+### Workstations
+
+A Project's card leads with its address kind, its Sources, open Tickets and artifacts, then the six sections. **Sources** lists every Source instance with its state and latest Trigger, and toggling one saves whether the Project names it: a named Source sends its drops to the Project by default. **Trigger** lists the Project's Threads and **Eval** the Decisions on them, each row opening the Thread page. **Execution** lists the Project's Tickets, newest first, and pages through them. **Settings** edits the name and aliases and shows the deliverables, working-copies and rules directories read-only, because a Project's directories are fixed when it is created; **Archive** hides it from the list by default and keeps its Tickets and artifacts, and **Restore** brings it back. **agent** is a disabled entry: the project Session arrives in P6.
+
+The built-in workspace is where Tickets no station owns work; its card is marked **Fixed** and offers neither archiving nor renaming. A Project created from the panel takes its name's own slug as its key and refuses a name another Project already answers to, and its address is validated like an answer's: an absolute writable local folder outside the system directories, or a repository address of a supported protocol.
 
 A human follow-up still owned by an Executor is marked **Delivered to Ticket**, without an Eval. The Thread also shows hand-back reasons and context-only Subscriptions. **Evaluate again** can send that follow-up to Eval, or retry a Trigger with no effective judgement: one filtered by its Source, an unavailable Eval, or a delivered message with neither a non-stop Decision nor an Executor acknowledgement.
 
@@ -53,7 +60,7 @@ Search also finds Threads by references such as `#12` or a GitHub URL, and Ticke
 
 1. **Focus on what matters.** Every element answers one of the three questions, or it is removed. A number appears only when it changes what the supervisor does.
 2. **Precise definitions.** Categories have checkable definitions, are mutually exclusive and cover every case, as the Ticket stages do. A label says whom a row waits for and what it needs, not an internal status code.
-3. **One place per concept.** Source state belongs in Sources; Threads and Triggers in Trigger; Decisions in Eval; Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
+3. **One place per concept.** Source state belongs in Sources; Project cards and their six sections in Workstations; Threads and Triggers in Trigger; Decisions in Eval; Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
 4. **Domain structure.** The panel uses the domain terms. Internal identifiers appear only in folded details, and names replace identifiers where they can be resolved.
 5. **Honest state.** A count equals the length of the list it links to, and no state contradicts another fact.
 6. **Quiet by default.** Healthy states take no extra space. Problems must be actionable; a one-off network error is not enough. Rows needing a person offer their action directly. Keep page explanations to one sentence and put further detail in the (?) tooltip. Destructive actions require confirmation.

@@ -6,6 +6,7 @@ import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SetupError } from '../src/setup.ts'
+import { UserError, type ProjectRecord } from '../src/core/index.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -129,4 +130,51 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
   expect(await call('PUT', 'settings/executor', { value, revision: 0 })).toEqual({ status: 400,
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
+})
+
+it('serves the workstation cards, and routes creating and changing one to the Project service', async () => {
+  const project: ProjectRecord = { id: 'prj_aps', key: 'aps', status: 'active', createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z', value: { name: 'aps', kind: 'station', location: { type: 'managed' },
+      outputDir: '/tmp/aps', scratchDir: '/tmp/aps.work', rulesDir: '/tmp/aps.work/rules', sourceIds: [], aliases: [] } }
+  const created: unknown[] = [], updated: unknown[] = []
+  const call = serve({
+    store: { settings: () => SettingsSchema.parse({}), blockRevision: () => 0, tickets: { list: () => [] },
+      artifacts: { list: () => [] }, projects: { get: (id: string) => id === project.id ? project : undefined,
+        list: () => [project] } },
+    sources: { instances: () => [] },
+    links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    projects: {
+      createStation: (request: unknown) => {
+        created.push(request)
+        if ((request as { name: string }).name === 'taken') throw new UserError('projectExists', { project: 'taken' })
+        return project
+      },
+      update: (id: string, changes: unknown) => {
+        updated.push({ id, changes })
+        if ((changes as { archived?: boolean }).archived) throw new UserError('projectFixed')
+        return project
+      },
+    },
+  })
+  expect(await call('GET', 'projects')).toMatchObject({ status: 200, body: [{ id: 'prj_aps', openTickets: 0 }] })
+  // An unknown status falls back to the active Projects, whose names resolve to their Sources.
+  expect(await call('GET', 'projects?status=nonsense')).toMatchObject({ status: 200, body: [{ id: 'prj_aps', status: 'active' }] })
+  expect(await call('POST', 'projects', { name: 'aps', location: { type: 'managed' } }))
+    .toMatchObject({ status: 200, body: { project: { id: 'prj_aps' } } })
+  expect(created).toEqual([{ name: 'aps', location: { type: 'managed' } }])
+  expect(await call('POST', 'projects', { name: 'taken', location: { type: 'managed' } }))
+    .toMatchObject({ status: 400, body: { code: 'projectExists', values: { project: 'taken' } } })
+  expect(await call('POST', 'projects', { location: { type: 'managed' } })).toMatchObject({ status: 400 })
+  expect(await call('PATCH', 'projects/prj_aps', { name: 'APS', aliases: ['a'], sourceIds: ['github'] }))
+    .toMatchObject({ status: 200, body: { project: { id: 'prj_aps' } } })
+  expect(updated).toEqual([{ id: 'prj_aps', changes: { name: 'APS', aliases: ['a'], sourceIds: ['github'] } }])
+  expect(await call('PATCH', 'projects/prj_aps', { archived: true }))
+    .toMatchObject({ status: 400, body: { code: 'projectFixed' } })
+  // An unknown Project is a missing record on every route that names one.
+  for (const [method, path] of [['GET', 'projects/prj_gone'], ['GET', 'projects/prj_gone/tickets'],
+    ['GET', 'projects/prj_gone/threads'], ['GET', 'projects/prj_gone/decisions'], ['PATCH', 'projects/prj_gone']] as const) {
+    expect(await call(method, path, method === 'PATCH' ? { archived: true } : undefined), path)
+      .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
+  }
+  expect(updated).toHaveLength(2)
 })

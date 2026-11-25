@@ -4,12 +4,13 @@
  * gave until a Project resolves it. An assessment may propose an address, but only a person's answer creates one.
  */
 import { threadKey, type Decision, type PersonRef, type ProjectCandidate, type ProjectHint, type ProjectKind,
-  type ProjectLocation, type ProjectProposal, type ProjectRecord, type Trigger } from '../core/index.ts'
-import { UserError } from '../core/index.ts'
+  type ProjectLocation, type ProjectProposal, type ProjectRecord, type ProjectValue, type Trigger } from '../core/index.ts'
+import { isWorkspaceProject, UserError } from '../core/index.ts'
 import { KV } from '../kv.ts'
 import type { Settings } from '../policy.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
-import { prepareProjectDirectories, projectName, normalizedPath, underPath, uniqueProjectKey, type ProjectDirectories } from './projects.ts'
+import { prepareProjectDirectories, projectKey, projectName, normalizedPath, underPath, uniqueProjectKey,
+  type ProjectDirectories } from './projects.ts'
 import type { Store } from './store.ts'
 
 /** The person a management-panel answer is recorded as: the panel authenticates the machine, not one person. */
@@ -17,10 +18,10 @@ export const PANEL_PERSON: PersonRef = { source: 'panel', id: 'panel', name: 'pa
 /** The person an assessment's proposal is recorded as: the agent proposes, and only a person confirms. */
 export const ASSESSOR_PERSON: PersonRef = { source: 'orchestrator', id: 'orchestrator', name: 'agent' }
 
-/** What the Project service reads and writes: Projects, Decisions, Triggers, the answer records, and the current settings. */
+/** What the Project service reads and writes: Projects, Decisions, Triggers, the answer records, the Sources, and the current settings. */
 export interface ProjectHost {
   readonly store: Pick<Store, 'projects' | 'decisions' | 'triggers' | 'get' | 'set'>
-  readonly sources: Pick<SourceRegistry, 'projectHints'>
+  readonly sources: Pick<SourceRegistry, 'projectHints' | 'instances'>
   settings(): Settings
   readonly stateDir: string
   now?(): string
@@ -51,8 +52,12 @@ export interface PendingProject {
 /** A new Project a person named: its name, its address, and (for `adhoc`) its kind. */
 export interface NewProject { name: string; location: ProjectLocation; kind?: Extract<ProjectKind, 'station' | 'adhoc'>; sourceIds?: string[]
   specifiedBy?: PersonRef; confirmedBy?: PersonRef }
+/** What a person changes on a Project's page: its name, aliases, whether it is archived, and the Sources it names. */
+export interface ProjectChanges { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[] }
 /** A person's answer to a Project question: an existing Project, a new one, or the assessment's proposal confirmed. */
 export type ProjectAnswer = { projectId: string } | { new: NewProject } | { confirmProposal: true }
+/** A list of names with its repetitions and blanks dropped, keeping the first spelling of each. */
+const unique = (values: readonly string[]): string[] => [...new Set(values)]
 
 /** The active stations a question offers: the built-in workspace is not a station, so it is not a candidate. */
 export function projectCandidates(projects: readonly ProjectRecord[], limit = 20): ProjectCandidate[] {
@@ -228,13 +233,62 @@ export class ProjectService {
     const kind: ProjectKind = request.kind ?? 'station'
     const settings = this.host.settings()
     const projects = this.host.store.projects.list()
-    const projectKey = uniqueProjectKey(name, projects.map(project => project.key))
-    const directories: ProjectDirectories = prepareProjectDirectories(request.location, kind, projectKey, settings, this.host.stateDir)
+    const key = uniqueProjectKey(name, projects.map(project => project.key))
+    const directories: ProjectDirectories = prepareProjectDirectories(request.location, kind, key, settings, this.host.stateDir)
     const at = this.now()
-    const project: ProjectRecord = { id: `prj_${projectKey}`, key: projectKey, status: 'active', createdAt: at, updatedAt: at,
+    const project: ProjectRecord = { id: `prj_${key}`, key, status: 'active', createdAt: at, updatedAt: at,
       value: { name, kind, location: request.location, ...directories, sourceIds: [...request.sourceIds ?? []], aliases: [],
         ...request.specifiedBy ? { specifiedBy: request.specifiedBy } : {}, ...request.confirmedBy ? { confirmedBy: request.confirmedBy } : {} } }
     this.host.store.projects.save(project)
     return project
+  }
+  /**
+   * Creates the station a person named on the panel's new-workstation form. The name's own slug is the key, so a name
+   * another Project already answers to is refused instead of taking a suffixed key the person did not ask for.
+   * @throws UserError `projectExists`, `projectLocationInvalid`.
+   */
+  createStation(request: NewProject): ProjectRecord {
+    const name = projectName(request.name)
+    if (!name) throw new UserError('projectLocationInvalid', { reason: 'the Project needs a name' })
+    this.refuseTakenKey(projectKey(name))
+    return this.create({ name, location: request.location, ...request.kind ? { kind: request.kind } : {},
+      sourceIds: request.sourceIds ?? [], specifiedBy: PANEL_PERSON, confirmedBy: PANEL_PERSON })
+  }
+  /**
+   * Changes a Project's settings: its name, its aliases, whether it is archived, and the Source instances it names. Its
+   * directories were fixed when it was created, so no change moves them, and the built-in workspace is fixed altogether.
+   * @throws UserError `projectUnknown`, `projectFixed` for the workspace, `projectExists` for a taken name, or
+   * `unknownSource` for a Source instance no kind provides.
+   */
+  update(id: string, changes: ProjectChanges): ProjectRecord {
+    const project = this.host.store.projects.get(id)
+    if (!project) throw new UserError('projectUnknown', { project: id })
+    const name = changes.name === undefined ? project.value.name : projectName(changes.name)
+    if (!name) throw new UserError('projectLocationInvalid', { reason: 'the Project needs a name' })
+    if (isWorkspaceProject(project) && (changes.archived === true || name !== project.value.name)) throw new UserError('projectFixed')
+    if (name !== project.value.name) this.refuseTakenKey(projectKey(name), project.id)
+    const instances = new Set(this.host.sources.instances(this.host.settings()).map(instance => instance.id))
+    const sourceIds = changes.sourceIds === undefined ? project.value.sourceIds : unique(
+      changes.sourceIds.map(source => source.trim()).filter(Boolean))
+    const unknown = sourceIds.find(source => !instances.has(source))
+    if (unknown) throw new UserError('unknownSource', { source: unknown })
+    const aliases = changes.aliases === undefined ? project.value.aliases : unique(
+      changes.aliases.map(alias => alias.trim()).filter(Boolean))
+    const status: ProjectRecord['status'] = changes.archived === undefined ? project.status
+      : changes.archived ? 'archived' : 'active'
+    const archivedAt = changes.archived === undefined ? project.value.archivedAt
+      : changes.archived ? project.value.archivedAt ?? this.now() : undefined
+    const value: ProjectValue = { ...project.value, name, sourceIds, aliases }
+    if (archivedAt) value.archivedAt = archivedAt
+    else delete value.archivedAt
+    const updated: ProjectRecord = { ...project, value, status, updatedAt: this.now() }
+    this.host.store.projects.save(updated)
+    return updated
+  }
+  /** Refuses a key another Project holds, so two Projects never answer to one name. */
+  private refuseTakenKey(key: string, except?: string): void {
+    if (this.host.store.projects.list().some(project => project.key === key && project.id !== except)) {
+      throw new UserError('projectExists', { project: key })
+    }
   }
 }

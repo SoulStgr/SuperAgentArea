@@ -12,6 +12,7 @@ import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/
 import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourceDetail, sourcesStatus } from '../src/app/views/sources.ts'
+import { projectDecisionList, projectDetail, projectList, projectThreadList, projectTicketList } from '../src/app/views/projects.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { markdown, plain } from '../src/app/views/text.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
@@ -20,7 +21,7 @@ import { feishuLink } from '../src/sources/feishu-channel.ts'
 import { feishuChannel, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
 import { githubLink } from '../src/sources/github-channel.ts'
 import { githubChannel } from '../src/sources/github-trigger.ts'
-import { followupOwners, type ChannelRef } from '../src/core/index.ts'
+import { artifactRecordId, followupOwners, type ChannelRef, type ProjectRecord } from '../src/core/index.ts'
 
 let directory: string
 let store: Store
@@ -399,4 +400,87 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
   const records = { tickets: { get: vi.fn() }, threads: { get: vi.fn() }, triggers: store.triggers }
   expect(followupOwners(store.triggers.get('f3')!, records)).toEqual([])
   expect([records.tickets.get, records.threads.get].map(read => read.mock.calls.length)).toEqual([0, 0])
+})
+
+/** The work the Project views page over: a station's Ticket and artifact, an old workspace Ticket, and a Thread answered into the station. */
+function projectFixture() {
+  const host = views()
+  const station = (id: string, key: string, fields: Partial<ProjectRecord> = {}): ProjectRecord => ({ id, key, status: 'active',
+    createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-22T00:00:00Z',
+    value: { name: key, kind: 'station', location: { type: 'folder', path: `/users/alice/${key}` }, outputDir: `/users/alice/${key}`,
+      scratchDir: `/tmp/${key}.work`, rulesDir: `/tmp/${key}.work/rules`, sourceIds: [], aliases: [] }, ...fields })
+  const saved = station('prj_aps', 'aps')
+  store.projects.save(saved)
+  store.projects.save(station('prj_old', 'old', { status: 'archived', updatedAt: '2026-09-10T00:00:00Z', value: { ...saved.value,
+    name: 'old', outputDir: '/users/alice/old', scratchDir: '/tmp/old.work', rulesDir: '/tmp/old.work/rules',
+    archivedAt: '2026-09-10T00:00:00Z' } }))
+  const thread = (key: string, ref: { source: string; id: string }, lastAt: string) => store.threads.save({ key, ref, createdAt: lastAt,
+    lastAt, subscriptions: [], correlated: [], pending: [], meta: {} })
+  thread('feishu:oc_1:om_root', { source: 'feishu', id: 'oc_1:om_root' }, '2026-09-23T00:00:00Z')
+  thread('github:7', { source: 'github', id: '7' }, '2026-09-24T00:00:00Z')
+  thread('github:9', { source: 'github', id: '9' }, '2026-09-21T00:00:00Z')
+  store.triggers.save(message('e1', { source: 'feishu', id: 'ou_alice' }))
+  store.triggers.save({ id: 'e2', source: 'github', threads: [{ source: 'github', id: '9' }], actor: { source: 'github', id: 'alice' },
+    human: true, at: '2026-09-21T00:00:00Z', text: 'old work', meta: {} })
+  store.decisions.save({ id: 'd1', evalId: 'ev1', threadKey: 'feishu:oc_1:om_root', triggerIds: ['e1'], policyVersion: 'v',
+    at: '2026-09-23T00:00:00Z', kind: 'accept', reason: [], strength: 'explicit', ticketId: 't1' })
+  const ticket = (id: string, projectId: string | undefined, sourceId: string, origin: string, updatedAt: string) => store.tickets.save({
+    id, title: id, decisionId: 'd1', ...projectId ? { projectId } : {}, sourceId, channels: [], undelivered: [], createdAt: updatedAt,
+    updatedAt, reporter: { source: 'feishu', id: 'ou_alice' },
+    mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'feishu', id: 'ou_alice' }, scope: '' },
+    origin: { triggerId: origin, triggerIds: [origin] }, assignments: [], inputs: [] })
+  ticket('t1', 'prj_aps', 'feishu', 'e1', '2026-09-23T00:00:00Z')
+  // An old Ticket saved before Projects existed belongs to the built-in workspace.
+  ticket('t-old', undefined, 'github', 'e2', '2026-09-21T00:00:00Z')
+  store.artifacts.add({ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: 'prj_aps', source: 'feishu', name: 'report.md',
+    value: { hash: 'h1', size: 12, at: '2026-09-23T06:00:00Z', targetRoot: '/users/alice/aps' }, at: '2026-09-23T06:00:00Z' })
+  // A Thread whose Project question a person answered with the station belongs to it, before any Ticket exists.
+  store.set(KV.projects.answers('github:7'), 'prj_aps')
+  return host
+}
+
+it('lists each Project as a card, the workspace first, counting the work each holds', () => {
+  const host = projectFixture()
+  const rows = projectList(host)
+  expect(rows.map(row => [row.id, row.status])).toEqual([['prj_workspace', 'active'], ['prj_aps', 'active']])
+  const [workspace, aps] = [rows[0]!, rows[1]!]
+  expect(workspace).toMatchObject({ name: 'workspace', kind: 'workspace', openTickets: 1, tickets: 1, artifacts: 0,
+    lastActivity: '2026-09-21T00:00:00Z' })
+  expect(workspace.sources).toEqual([{ id: 'github', title: githubKind.title }])
+  expect(aps).toMatchObject({ name: 'aps', kind: 'station', location: { type: 'folder', path: '/users/alice/aps' }, openTickets: 1,
+    tickets: 1, artifacts: 1, lastActivity: '2026-09-23T06:00:00Z' })
+  expect(aps.reporter).toEqual({ source: 'feishu', id: 'ou_alice', name: { zh: 'Alice', en: 'Alice' } })
+  expect(aps.sources).toEqual([{ id: 'feishu', title: feishuKind.title }])
+  expect(projectList(host, 'archived').map(row => row.id)).toEqual(['prj_old'])
+  // A Project's own `sourceIds` name its Sources, even ones its Tickets never came from.
+  const named = host.store.projects.get('prj_aps')!
+  host.store.projects.save({ ...named, value: { ...named.value, sourceIds: ['github'] } })
+  expect(projectList(host).find(row => row.id === 'prj_aps')!.sources).toEqual([{ id: 'github', title: githubKind.title }])
+})
+
+it('opens a Project page with its counts, its Sources and the first page of each section', () => {
+  const host = projectFixture()
+  const detail = projectDetail(host, 'prj_aps', {}, {})!
+  expect(detail.counts).toEqual({ openTickets: 1, tickets: 1, threads: 2, decisions: 1, artifacts: 1 })
+  expect(detail.project).toMatchObject({ id: 'prj_aps', key: 'aps', status: 'active', value: { name: 'aps', aliases: [] } })
+  expect(detail.tickets.items.map(ticket => ticket.id)).toEqual(['t1'])
+  // The answered Thread is the station's newest, before the one its Ticket came from.
+  expect(detail.threads.items.map(thread => thread.key)).toEqual(['github:7', 'feishu:oc_1:om_root'])
+  expect(detail.decisions.items.map(decision => [decision.id, decision.ticketTitle])).toEqual([['d1', 't1']])
+  expect(detail.artifacts).toMatchObject([{ id: artifactRecordId('t1', 'report.md'), name: 'report.md', size: 12,
+    at: '2026-09-23T06:00:00Z', targetRoot: '/users/alice/aps' }])
+  expect(detail.recentTriggers.map(trigger => trigger.id)).toEqual(['e1'])
+  expect(detail.sources.map(source => [source.id, source.linked, source.state, source.installed]))
+    .toEqual([['feishu', true, 'starting', true], ['github', false, 'starting', true]])
+  expect(detail.sources.map(source => source.title)).toEqual([feishuKind.title, githubKind.title])
+  // The workspace page counts the Tickets saved before Projects existed, under their own Triggers' Threads.
+  const workspace = projectDetail(host, 'prj_workspace', {}, {})!
+  expect(workspace.counts).toMatchObject({ openTickets: 1, tickets: 1, threads: 1, decisions: 0, artifacts: 0 })
+  expect(workspace.threads.items.map(thread => thread.key)).toEqual(['github:9'])
+  // Each section pages on its own, by the state the caller asks for.
+  expect(projectTicketList(host, 'prj_aps', undefined, 0, 1)).toMatchObject({ total: 1, next_offset: null })
+  expect(projectTicketList(host, 'prj_aps', 'ended', 0, 10)).toMatchObject({ items: [], total: 0 })
+  expect(projectThreadList(host, 'prj_aps', 'all', 1, 1).items.map(thread => thread.key)).toEqual(['feishu:oc_1:om_root'])
+  expect(projectDecisionList(host, 'prj_aps', 0, 10).items.map(decision => decision.id)).toEqual(['d1'])
+  expect(projectDetail(host, 'prj_gone', {}, {})).toBeUndefined()
 })

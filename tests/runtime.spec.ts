@@ -1961,3 +1961,52 @@ it('serves one card per Source instance, an instance\'s page, added Sources and 
     .toMatchObject({ status: 200, body: { id: 'folder', restarting: false } })
   expect(runtime.sources.instanceFor('folder')?.id).toBe('folder')
 })
+it('serves the workstations: a station the panel creates takes its Source\'s work, and its page and archive follow', async () => {
+  const created = await api('POST', 'projects', { name: 'aps work', location: { type: 'managed' } })
+  expect(created.status).toBe(200)
+  const project = (created.body as { project: { id: string; key: string; value: { outputDir: string } } }).project
+  expect(project).toMatchObject({ id: 'prj_aps-work', key: 'aps-work' })
+  expect(project.value.outputDir).toBe(join(directory, 'area', 'aps-work'))
+  // The name is taken, and an address that cannot hold a Project is refused before one is created.
+  expect(await api('POST', 'projects', { name: 'aps work', location: { type: 'managed' } }))
+    .toMatchObject({ status: 400, body: { code: 'projectExists' } })
+  expect(await api('POST', 'projects', { name: 'bad', location: { type: 'folder', path: 'relative/path' } }))
+    .toMatchObject({ status: 400, body: { code: 'projectLocationInvalid' } })
+  // The Feishu Source sends its work to the station by default, and the Ticket accepted from it belongs there.
+  expect(await api('PATCH', 'sources/feishu', { defaultProjectId: project.id })).toMatchObject({ status: 200 })
+  const trigger = feishu('900', '@bot 填一下表')
+  await receive(trigger)
+  const accepted = await route({ kind: 'accept', trigger_id: trigger.id, title: '填一下表', worktree_name: worktreeName,
+    acknowledgement: '收到，填表。' })
+  const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket.projectId).toBe(project.id)
+  // The card counts its work and names its Source, and the page lists its Threads, Decisions and Tickets.
+  const cards = (await api('GET', 'projects')).body as { id: string; openTickets: number; artifacts: number; sources: { id: string }[] }[]
+  expect(cards[0]!.id).toBe('prj_workspace')
+  expect(cards.find(card => card.id === project.id)).toMatchObject({ openTickets: 1, artifacts: 0, sources: [{ id: 'feishu' }] })
+  const detail = await api('GET', `projects/${project.id}`)
+  expect(detail.status).toBe(200)
+  expect(detail.body).toMatchObject({ counts: { openTickets: 1, tickets: 1, threads: 1, decisions: 1, artifacts: 0 },
+    tickets: { items: [{ id: ticket.id }] }, threads: { items: [{ key: threadKey(trigger.threads[0]!) }] } })
+  expect((detail.body as { decisions: { items: { kind: string }[] } }).decisions.items[0]!.kind).toBe('accept')
+  expect((detail.body as { sources: { id: string; linked: boolean }[] }).sources)
+    .toContainEqual(expect.objectContaining({ id: 'feishu', linked: true }))
+  // Its sections page on their own, and an unknown Project is a missing record.
+  expect((await api('GET', `projects/${project.id}/tickets?state=ended`)).body).toMatchObject({ items: [], total: 0 })
+  expect((await api('GET', `projects/${project.id}/threads?filter=all`)).body).toMatchObject({ total: 1 })
+  expect((await api('GET', `projects/${project.id}/decisions`)).body).toMatchObject({ items: [{ kind: 'accept' }] })
+  expect(await api('GET', 'projects/prj_gone')).toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
+  // Archiving hides the station from the list while its page stays; restoring brings it back.
+  expect(await api('PATCH', `projects/${project.id}`, { archived: true })).toMatchObject({ status: 200 })
+  expect(((await api('GET', 'projects')).body as { id: string }[]).some(card => card.id === project.id)).toBe(false)
+  expect(((await api('GET', 'projects?status=archived')).body as { id: string }[]).map(card => card.id)).toEqual([project.id])
+  expect((await api('GET', `projects/${project.id}`)).body).toMatchObject({ project: { status: 'archived' } })
+  expect(await api('PATCH', `projects/${project.id}`, { archived: false })).toMatchObject({ status: 200 })
+  expect(((await api('GET', 'projects')).body as { id: string }[]).some(card => card.id === project.id)).toBe(true)
+  // Its Sources are validated, the workspace cannot be archived, and its directories never change.
+  expect(await api('PATCH', `projects/${project.id}`, { sourceIds: ['folder:gone'] }))
+    .toMatchObject({ status: 404, body: { code: 'unknownSource' } })
+  expect(await api('PATCH', 'projects/prj_workspace', { archived: true })).toMatchObject({ status: 400, body: { code: 'projectFixed' } })
+  expect(await api('PATCH', `projects/${project.id}`, { name: 'aps work 2' }))
+    .toMatchObject({ status: 200, body: { project: { key: 'aps-work', value: { name: 'aps work 2' } } } })
+})

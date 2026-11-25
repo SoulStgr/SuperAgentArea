@@ -24,6 +24,7 @@ import type { LinkTarget, ViewHost } from './views/records.ts'
 import type { Variable } from './execution-environment.ts'
 import { policyHistory } from './settings-history.ts'
 import { overview } from './views/overview.ts'
+import { projectDecisionList, projectDetail, projectList, projectThreadList, projectTicketList } from './views/projects.ts'
 import { settingsView } from './views/settings.ts'
 import { sourceDetail, sourceKinds, sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
@@ -39,8 +40,8 @@ export interface HttpHost {
   readonly settings: Pick<Settings, 'view' | 'save' | 'add' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
-  /** Project ownership answers: the pending question of a Trigger, and the Project a person answered with. */
-  readonly projects: Pick<ProjectService, 'answer' | 'pending'>
+  /** Project ownership answers: the pending question of a Trigger, the Project a person answered with, and the panel's own workstations. */
+  readonly projects: Pick<ProjectService, 'answer' | 'pending' | 'createStation' | 'update'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -146,6 +147,9 @@ const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optiona
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
   limit: limit(30, 200) })
 const SourcesQuery = z.object({ offset, limit: limit(20, 500) })
+const ProjectsQuery = z.object({ status: z.enum(['active', 'archived']).catch('active') })
+const ProjectTicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).optional().catch(undefined), offset, limit: limit(20, 500) })
+const ProjectThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('all'), offset, limit: limit(20, 500) })
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)])
@@ -175,10 +179,18 @@ const AnswerProjectRequest = z.union([
     kind: z.enum(['station', 'adhoc']).optional() }).strict() }).strict(),
   z.object({ confirmProposal: z.literal(true) }).strict(),
 ])
+/** The panel's new-workstation form: a name, an address, and the kind of Project it makes. */
+const NewProjectRequest = z.object({ name: z.string().trim().min(1).max(100), location: ProjectLocationInput,
+  kind: z.enum(['station', 'adhoc']).optional() }).strict()
+/** What a Project's settings page changes; the directories are fixed when the Project is created. */
+const ProjectPatchRequest = z.object({ name: z.string().trim().min(1).max(100).optional(),
+  aliases: z.array(z.string().trim().max(100)).max(50).optional(), archived: z.boolean().optional(),
+  sourceIds: z.array(z.string().trim().min(1).max(200)).max(100).optional() }).strict()
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
+  const project = (id: string) => { if (!store.projects.get(id)) throw new UserError('projectUnknown', { project: id }); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
@@ -248,6 +260,33 @@ function routes(runtime: HttpHost): Routes {
       runtime.requestPass()
       return { resolved }
     },
+    // The workstations: every Project's card, one Project's page with the first page of each section, its paged sections,
+    // and the two writes a person makes — creating a station, and changing one's settings or archive state.
+    'GET projects': ({ query }) => projectList(views(runtime), ProjectsQuery.parse(query).status),
+    'GET projects/:id': ({ params }) => {
+      const detail = projectDetail(views(runtime), project(params.id), runtime.health, setupState(runtime))
+      if (!detail) throw new UserError('projectUnknown', { project: params.id })
+      return detail
+    },
+    'GET projects/:id/tickets': ({ params, query }) => {
+      const { state, offset, limit } = ProjectTicketsQuery.parse(query)
+      return projectTicketList(views(runtime), project(params.id), state, offset, limit)
+    },
+    'GET projects/:id/threads': ({ params, query }) => {
+      const { filter, offset, limit } = ProjectThreadsQuery.parse(query)
+      return projectThreadList(views(runtime), project(params.id), filter, offset, limit)
+    },
+    'GET projects/:id/decisions': ({ params, query }) => {
+      const { offset, limit } = SourcesQuery.parse(query)
+      return projectDecisionList(views(runtime), project(params.id), offset, limit)
+    },
+    'POST projects': async ({ body }) => {
+      const request = NewProjectRequest.parse(await body())
+      return { project: runtime.projects.createStation({ name: request.name, location: request.location,
+        ...request.kind ? { kind: request.kind } : {} }) }
+    },
+    'PATCH projects/:id': async ({ params, body }) =>
+      ({ project: runtime.projects.update(project(params.id), ProjectPatchRequest.parse(await body())) }),
     'GET decisions': ({ query }) => {
       const { kind, window, offset, limit } = DecisionsQuery.parse(query)
       const since = window ? new Date(Date.now() - 86_400_000).toISOString() : ''

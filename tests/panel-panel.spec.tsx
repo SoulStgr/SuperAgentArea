@@ -43,9 +43,24 @@ it('returns to the exact page after a remount of the main panel', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
 })
 
+it('navigates to a workstation page from its card section, and remembers the section', async () => {
+  await mount()
+  await click(zh['tab.workstations'])
+  const aps = all('.dt-project-card').find(card => card.querySelector('.dt-project-title')?.textContent === 'aps')!
+  const sections = [...aps.querySelectorAll<HTMLElement>('.dt-project-segments button')]
+  expect(sections.map(button => button.textContent)).toEqual(['来源', '触发', '评估', '执行', '设置', 'agent'])
+  await click(sections[3]!)
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('aps')
+  expect(document.querySelector('.dt-main [role="tablist"] [role="tab"][aria-selected="true"]')?.textContent).toBe('执行 1')
+  await remount()
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('aps')
+  expect(document.querySelector('.dt-main [role="tablist"] [role="tab"][aria-selected="true"]')?.textContent).toBe('执行 1')
+})
+
 it('shows domain terms in the interface language only and lists both languages in the (?) glossary', async () => {
   await mount(en)
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Sources', 'Trigger', 'Eval', 'Execution', 'Settings'])
+  expect(all('[role="tab"]').map(tab => tab.textContent))
+    .toEqual(['Overview', 'Sources', 'Workstations', 'Trigger', 'Eval', 'Execution', 'Settings'])
   await click('Glossary')
   const dialog = document.querySelector('[role="dialog"]')!
   const row = [...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Ticket'))!

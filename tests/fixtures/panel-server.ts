@@ -8,7 +8,8 @@ import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
-import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceDetailView, SourceStatusRow, SourceView, StateView,
+import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView, ProjectRow, PromptsView, SetupView,
+  SourceDetailView, SourceStatusRow, SourceView, StateView,
   ThreadPageView,
   ThreadRow, TicketPageView,
   TicketRow, TicketStage,
@@ -80,6 +81,18 @@ export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'g
 })
 const dayAgo = () => new Date(Date.now() - 86_400_000).toISOString()
 export const problemOf = (code: SetupCode, values: Record<string, string> = {}) => new SetupError(code, values).problem
+/** A workstation as the fake host keeps it: its row, and the Tickets, Threads, Decisions and artifacts its page serves. */
+export interface ProjectFixture {
+  id: string; key: string; name: string; kind: ProjectRow['kind']; location: ProjectRow['location']
+  status: ProjectRow['status']; sourceIds: string[]; aliases: string[]; outputDir: string; scratchDir: string; rulesDir: string
+  createdAt: string; updatedAt: string; archivedAt?: string
+  /** The per-section rows of its page; the workspace defaults to the fake server's open and person Tickets and its Threads. */
+  tickets?: string[]; threads?: string[]; decisions?: DecisionRow[]
+  artifacts?: ProjectDetailView['artifacts']; reporter?: Actor
+}
+/** The key a Project's name gives it, as the host's `projectKey` does. */
+const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
+  .slice(0, 60) || 'station'
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
 const KINDS = [feishuKind, githubKind, folderKind] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
@@ -101,6 +114,8 @@ export interface PanelServer {
   queued: Set<string>
   /** Trigger ids that wait for a Project answer, as the Source status reports their `pendingProjects`. */
   projectQuestions: Set<string>
+  /** The workstations the fake host keeps, in the order its page lists them. */
+  projects: ProjectFixture[]
   /** Each Source instance's Project questions, by instance id. */
   pendingProjects: Record<string, SourceStatusRow['pendingProjects']>
   /** Each Source instance's last-day counts and pending Tickets, by instance id. */
@@ -212,6 +227,73 @@ function sourceDetailOf(id: string): SourceDetailView | undefined {
     labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {},
     facts: kind.facts?.(resolved()) ?? {}, tickets: page(tickets) }
 }
+/** The Tickets a Project's page serves: the workspace's are every open and pending Ticket of the fake server. */
+function projectTicketsOf(project: ProjectFixture): TicketRow[] {
+  const ids = project.tickets ?? (project.kind === 'workspace' ? undefined : [])
+  const rows = ids ? ids.flatMap(id => {
+    const ticket = [...server.tickets.open, ...server.person, ...server.tickets.ended].find(item => item.id === id)
+    return ticket ? [ticket] : []
+  }) : [...server.tickets.open, ...server.person]
+  return rows.filter((ticket, index) => rows.findIndex(item => item.id === ticket.id) === index)
+}
+/** The Threads a Project's page serves: the workspace's are the fake server's Threads. */
+function projectThreadsOf(project: ProjectFixture): ThreadRow[] {
+  const keys = project.threads ?? (project.kind === 'workspace' ? server.threads.map(thread => thread.key) : [])
+  return keys.flatMap(key => { const thread = server.threads.find(item => item.key === key); return thread ? [thread] : [] })
+}
+/** The Sources a Project names, or the ones its Tickets came from when it names none. */
+function projectLinkedIds(project: ProjectFixture, tickets: TicketRow[]): string[] {
+  if (project.sourceIds.length) return project.sourceIds
+  return [...new Set(tickets.map(ticket => server.ticketSources[ticket.id] ?? 'feishu'))]
+}
+const projectSourceTitle = (id: string): { zh: string; en: string } => {
+  const status = sourceStatuses().find(source => source.id === id)
+  return status ? status.title : { zh: id, en: id }
+}
+/** A Project's page lists every configured Source, each marked when the Project names it. */
+function projectSourceRows(project: ProjectFixture, tickets: TicketRow[]): ProjectDetailView['sources'] {
+  const linked = new Set(projectLinkedIds(project, tickets))
+  const statuses = sourceStatuses()
+  const rows: ProjectDetailView['sources'] = statuses.map(source => ({ id: source.id, title: source.title, installed: source.installed,
+    state: source.state, lastAt: source.lastAt, linked: linked.has(source.id) }))
+  for (const id of linked) if (!statuses.some(source => source.id === id)) rows.push({ id, title: projectSourceTitle(id),
+    installed: false, state: 'missing', lastAt: '', linked: true })
+  return rows
+}
+/** One Project as its card lists it, counted from the rows its page serves. */
+function projectRowOf(project: ProjectFixture): ProjectRow {
+  const tickets = projectTicketsOf(project), artifacts = project.artifacts ?? []
+  const lastActivity = [...tickets.map(ticket => ticket.updatedAt), ...artifacts.map(artifact => artifact.at)]
+    .reduce((latest, at) => at > latest ? at : latest, '')
+  return { id: project.id, key: project.key, name: project.name, kind: project.kind, location: project.location, status: project.status,
+    ...project.archivedAt ? { archivedAt: project.archivedAt } : {},
+    openTickets: tickets.filter(ticket => ticket.state === 'open').length, tickets: tickets.length, artifacts: artifacts.length,
+    sources: projectLinkedIds(project, tickets).map(id => ({ id, title: projectSourceTitle(id) })),
+    lastActivity, ...project.reporter ? { reporter: project.reporter } : {} }
+}
+/** The Project cards of one status, the built-in workspace first. */
+function projectRows(status: ProjectRow['status']): ProjectRow[] {
+  return server.projects.filter(project => project.status === status)
+    .sort((one, two) => Number(two.kind === 'workspace') - Number(one.kind === 'workspace')).map(projectRowOf)
+}
+/** A Project's stored record, as the write routes return it and its page carries it. */
+const projectRecordOf = (project: ProjectFixture): ProjectDetailView['project'] => ({
+  id: project.id, key: project.key, status: project.status, createdAt: project.createdAt, updatedAt: project.updatedAt,
+  value: { name: project.name, kind: project.kind, location: project.location, outputDir: project.outputDir,
+    scratchDir: project.scratchDir, rulesDir: project.rulesDir, sourceIds: project.sourceIds, aliases: project.aliases,
+    ...project.archivedAt ? { archivedAt: project.archivedAt } : {} } })
+/** One Project's page: its record, its counts, its Sources and the first page of each section. */
+function projectDetailOf(id: string): ProjectDetailView | undefined {
+  const project = server.projects.find(item => item.id === id)
+  if (!project) return undefined
+  const tickets = projectTicketsOf(project), threads = projectThreadsOf(project)
+  const decisions = project.decisions ?? [], artifacts = project.artifacts ?? []
+  return { project: projectRecordOf(project),
+    counts: { openTickets: tickets.filter(ticket => ticket.state === 'open').length, tickets: tickets.length, threads: threads.length,
+      decisions: decisions.length, artifacts: artifacts.length },
+    sources: projectSourceRows(project, tickets), tickets: page(tickets), threads: page(threads),
+    decisions: { items: decisions, next_offset: null }, artifacts, recentTriggers: [] }
+}
 const stateView = (): StateView => ({
   setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
   masterId: 'master', paused: server.settings.paused,
@@ -257,8 +339,8 @@ const overviewView = (): ApiResponse<'GET overview'> => {
   }
 }
 export const acceptDecision = (): NonNullable<TicketPageView['decision']> => ({ id: 'd1', kind: 'accept', outcome: 'accept',
-  reason: [{ code: 'explicitRouted' }], at: '2026-09-22T00:00:00Z', strength: 'explicit', ticketId: undefined,
-  triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], preview: '@bot 修一下', ticketTitle: undefined })
+  reason: [{ code: 'explicitRouted' }], at: '2026-09-22T00:00:00Z', strength: 'explicit', policyVersion: 'abcdef1234567890',
+  ticketId: undefined, triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], preview: '@bot 修一下', ticketTitle: undefined })
 const ticketDetail = (): TicketPageView => ({
   ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()],
   mandate: { strength: 'explicit', policyVersion: 'abcdef1234567890', basis: { via: 'addressed', sender: 'Alice', addressed: 'mention' },
@@ -303,6 +385,23 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
+    projects: [
+      { id: 'prj_workspace', key: 'workspace', name: 'workspace', kind: 'workspace', location: { type: 'managed' },
+        status: 'active', sourceIds: [], aliases: [], outputDir: '/srv/dsh-superagent/area/workspace',
+        scratchDir: '/srv/dsh-superagent/area/workspace/.work', rulesDir: '/srv/dsh-superagent/area/workspace/.work/rules',
+        createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+      { id: 'prj_aps', key: 'aps', name: 'aps', kind: 'station', location: { type: 'folder', path: '/srv/aps' }, status: 'active',
+        sourceIds: ['feishu'], aliases: ['APS'], outputDir: '/srv/aps', scratchDir: '/srv/dsh-superagent/area/aps.work',
+        rulesDir: '/srv/dsh-superagent/area/aps.work/rules', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z',
+        tickets: ['t1'], threads: ['feishu:oc_1:om_root'], decisions: [acceptDecision()],
+        artifacts: [{ id: 'a1', name: 'report.md', size: 120, at: '2026-09-23T00:00:00Z', ticket: 't1', source: 'feishu',
+          targetRoot: '/srv/aps' }], reporter: actor('feishu', MEMBER) },
+      { id: 'prj_legacy', key: 'legacy', name: 'legacy', kind: 'station',
+        location: { type: 'repo', url: 'https://github.com/acme/legacy' }, status: 'archived', sourceIds: [], aliases: [],
+        outputDir: '/srv/dsh-superagent/area/legacy', scratchDir: '/srv/dsh-superagent/area/legacy.work',
+        rulesDir: '/srv/dsh-superagent/area/legacy.work/rules', createdAt: '2026-09-03T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z',
+        archivedAt: '2026-09-20T00:00:00Z' },
+    ],
     pendingProjects: { feishu: [{ triggerId: 'e10', thread: 'feishu:oc_team:om_10', at: '2026-09-23T00:03:00Z', preview: '把导出也做一下',
       candidates: [{ id: 'prj_aps', name: 'aps', kind: 'station' }],
       proposal: { name: 'aps 填报', location: { type: 'managed' } } }] },
@@ -389,6 +488,77 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.revisions[`source:${params.id}`] = (server.revisions[`source:${params.id}`] ?? 0) + 1
     return { revision: server.revisions[`source:${params.id}`]!, restarting: false }
   } },
+  'GET projects': { query: ['status'], answer: ({ query }) => projectRows(query.status === 'archived' ? 'archived' : 'active') },
+  'GET projects/:id': { answer: ({ params }) => projectDetailOf(params.id) ?? refuse(404, 'Unknown Project',
+    { code: 'projectUnknown', values: { project: params.id } }) },
+  'GET projects/:id/tickets': { query: ['state', 'offset', 'limit'], answer: ({ params, query }) => {
+    const project = server.projects.find(item => item.id === params.id)
+    if (!project) return refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
+    const tickets = projectTicketsOf(project).filter(ticket => query.state === 'open' ? ticket.state === 'open'
+      : query.state === 'ended' ? ticket.state === 'ended' : true)
+    return page(tickets)
+  } },
+  'GET projects/:id/threads': { query: ['filter', 'offset', 'limit'], answer: ({ params }) => {
+    const project = server.projects.find(item => item.id === params.id)
+    return project ? page(projectThreadsOf(project))
+      : refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
+  } },
+  'GET projects/:id/decisions': { query: ['offset', 'limit'], answer: ({ params }) => {
+    const project = server.projects.find(item => item.id === params.id)
+    return project ? { items: project.decisions ?? [], next_offset: null }
+      : refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
+  } },
+  'POST projects': { body: true, answer: ({ body }) => {
+    const request = body as { name: string; location: { type: string; path?: string; url?: string; branch?: string } }
+    const name = request.name.trim()
+    if (!name) return refuse(400, 'The Project needs a name',
+      { code: 'projectLocationInvalid', values: { reason: 'the Project needs a name' } })
+    const key = projectKeyOf(name)
+    if (server.projects.some(project => project.key === key)) return refuse(400, 'A Project is already called that',
+      { code: 'projectExists', values: { project: key } })
+    if (request.location.type === 'folder' && !/^(?:[A-Za-z]:[\\/]|\/)/.test(request.location.path ?? '')) return refuse(400,
+      'The Project location is not usable', { code: 'projectLocationInvalid', values: { reason: 'the folder must be an absolute path' } })
+    if (request.location.type === 'repo' && request.location.url && !/^(?:https|ssh|file):\/\//.test(request.location.url)) {
+      return refuse(400, 'The Project location is not usable', { code: 'projectLocationInvalid',
+        values: { reason: 'the repository address must use https, ssh or file' } })
+    }
+    const at = new Date().toISOString()
+    const outputDir = request.location.type === 'folder' ? request.location.path!
+      : request.location.type === 'repo' && request.location.path ? `${request.location.path}/artifacts` : `/srv/dsh-superagent/area/${key}`
+    const project: ProjectFixture = { id: `prj_${key}`, key, name, kind: 'station',
+      location: request.location as ProjectFixture['location'], status: 'active', sourceIds: [], aliases: [], outputDir,
+      scratchDir: `/srv/dsh-superagent/area/${key}.work`, rulesDir: `/srv/dsh-superagent/area/${key}.work/rules`,
+      createdAt: at, updatedAt: at }
+    server.projects = [...server.projects, project]
+    return { project: projectRecordOf(project) }
+  } },
+  'PATCH projects/:id': { body: true, answer: ({ params, body }) => {
+    const project = server.projects.find(item => item.id === params.id)
+    if (!project) return refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
+    const patch = body as { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[] }
+    const fixed = project.kind === 'workspace'
+    if (fixed && (patch.archived === true || patch.name !== undefined && patch.name !== project.name)) {
+      return refuse(400, 'The built-in workspace is fixed', { code: 'projectFixed' })
+    }
+    if (patch.name !== undefined && patch.name !== project.name && server.projects.some(item => item.id !== project.id
+      && item.key === projectKeyOf(patch.name!))) {
+      return refuse(400, 'A Project is already called that', { code: 'projectExists', values: { project: projectKeyOf(patch.name!) } })
+    }
+    if (patch.sourceIds) {
+      const unknown = patch.sourceIds.find(id => !instancesOf().some(instance => instance.id === id))
+      if (unknown) return refuse(404, 'Unknown Source', { code: 'unknownSource', values: { source: unknown } })
+      project.sourceIds = [...new Set(patch.sourceIds)]
+    }
+    if (patch.name !== undefined) project.name = patch.name
+    if (patch.aliases) project.aliases = [...new Set(patch.aliases.map(alias => alias.trim()).filter(Boolean))]
+    if (patch.archived !== undefined && !fixed) {
+      project.status = patch.archived ? 'archived' : 'active'
+      if (patch.archived) project.archivedAt = new Date().toISOString()
+      else delete project.archivedAt
+    }
+    project.updatedAt = new Date().toISOString()
+    return { project: projectRecordOf(project) }
+  } },
   'GET settings': { answer: settingsView },
   'POST sources/:id/labels': { answer: () => {
     // Label refresh failures come from the bot CLI and are returned verbatim.
@@ -414,7 +584,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     // As the host does: the Trigger must wait for a Project question, and a new address is validated before it is created.
     if (!server.projectQuestions.has(params.id)) return refuse(400, 'This Trigger is not waiting for a Project', { code: 'notNeedsProject', values: {} })
     const answer = body as { projectId?: string; new?: { name: string; location: { type: string; path?: string } }; confirmProposal?: true }
-    if (answer.new?.location.type === 'folder' && !/^[A-Za-z]:[\\/]|\//.test(answer.new.location.path ?? '')) {
+    if (answer.new?.location.type === 'folder' && !/^(?:[A-Za-z]:[\\/]|\/)/.test(answer.new.location.path ?? '')) {
       return refuse(400, 'The Project location is not usable', { code: 'projectLocationInvalid', values: { reason: 'the folder must be an absolute path' } })
     }
     const resolved = answer.projectId ?? 'prj_aps'

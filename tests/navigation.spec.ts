@@ -56,6 +56,11 @@ it('reads each page a tab remembered with the parameters it takes, and leaves ou
     .toEqual({ page: 'trigger', id: 'github:1', query: { trigger: 'e1' } })
   expect(parseRoute({ page: 'eval', query: { filter: 'stop', window: '7d' } })).toEqual({ page: 'eval', query: { filter: 'stop' } })
   expect(parseRoute({ page: 'execution', id: 5, query: { filter: 'idle' } })).toEqual({ page: 'execution', query: { filter: 'idle' } })
+  expect(parseRoute({ page: 'workstations', query: { segment: 'tickets' } })).toEqual({ page: 'workstations' })
+  expect(parseRoute({ page: 'workstations', id: 'prj_aps', query: { segment: 'tickets' } }))
+    .toEqual({ page: 'workstations', id: 'prj_aps', query: { segment: 'tickets' } })
+  // A section the panel does not know is left out, opening the first one.
+  expect(parseRoute({ page: 'workstations', id: 'prj_aps', query: { segment: 'gone' } })).toEqual({ page: 'workstations', id: 'prj_aps' })
   expect(parseRoute({ page: 'settings', query: { group: 'policy', source: 'feishu' } }))
     .toEqual({ page: 'settings', query: { group: 'source', source: 'feishu' } })
   expect([parseRoute('overview'), parseRoute(null)]).toEqual([undefined, undefined])

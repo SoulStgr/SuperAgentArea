@@ -75,7 +75,8 @@ export function ThreadLine({ thread, ticketId, context }: { thread: ThreadRow; t
   </li>
 }
 
-export function DecisionLine({ decision }: { decision: DecisionRow }) {
+/** A Decision row; `detail` adds the strength and Policy version a project's Eval section shows. */
+export function DecisionLine({ decision, detail }: { decision: DecisionRow; detail?: boolean }) {
   const { t, navigate } = usePanel()
   const matched = decision.rules.filter(rule => rule.matched).map(rule => rule.name)
   const mark = decisionMark(t, decision.outcome)
@@ -95,6 +96,8 @@ export function DecisionLine({ decision }: { decision: DecisionRow }) {
       <div className="dt-row-meta dt-line">
         {reason && <span className="dt-line-text">{reason}</span>}
         {matched.length > 0 && <LabelValue label={t('ruleLabel')} value={matched.join(t('listSeparator'))} />}
+        {detail && <LabelValue label={t('term.strength')} value={valueLabel(t, 'strength', decision.strength)} />}
+        {detail && <LabelValue label={t('policyVersion')} value={<span title={decision.policyVersion}>{decision.policyVersion.slice(0, 8)}</span>} />}
         <When at={decision.at} />
       </div>
     </div>
