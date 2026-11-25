@@ -3,10 +3,9 @@ import { SETUP_FIELDS } from '../../deployment.ts'
 import { KV } from '../../kv.ts'
 import { policyVersion } from '../../policy.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
-import type { Localized } from '../../sources/kind.ts'
 import { declaredVariables, executionRoot } from '../execution-environment.ts'
 import type { Store } from '../store.ts'
-import { problemOf, sourceHealth, type HealthMap, type SetupState } from './sources.ts'
+import { problemOf, sourceTitle, type HealthMap, type SetupState } from './sources.ts'
 
 function policyOf(sources: SourceRegistry, id: string, kind: string, health: HealthMap) {
   const policy = sources.kind(kind)?.policy
@@ -18,12 +17,6 @@ function policyOf(sources: SourceRegistry, id: string, kind: string, health: Hea
     ? { sync } : {} } }
 }
 /** A kind's title, or a named instance's own title: its label, or its kind and key when it shares the kind with others. */
-function titleOf(kind: { title: Localized; kind: string }, instance: { id: string; label?: string }, shared: boolean): Localized {
-  if (instance.label) return { zh: instance.label, en: instance.label }
-  if (!shared) return kind.title
-  const key = instance.id.startsWith(`${kind.kind}:`) ? instance.id.slice(kind.kind.length + 1) : instance.id
-  return { zh: `${kind.title.zh} · ${key}`, en: `${kind.title.en} · ${key}` }
-}
 /**
  * Builds the settings view by block (`{ value, revision }`), per-Source configuration and restart-sensitive fields,
  * and execution environment details (`stateDir` provides the default ticket working directory root).
@@ -32,8 +25,6 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
   const settings = store.settings()
   const block = <V>(name: 'policy' | 'eval' | 'executor', value: V) => ({ value, revision: store.blockRevision(name) })
   const instances = sources.instances(settings)
-  const counts = new Map<string, number>()
-  for (const instance of instances) counts.set(instance.kind, (counts.get(instance.kind) ?? 0) + 1)
   return {
     policyVersion: policyVersion(settings),
     blocks: { policy: block('policy', settings.policy), eval: block('eval', settings.eval), executor: block('executor',
@@ -41,9 +32,8 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
     sources: instances.map(instance => {
       const kind = sources.kind(instance.kind)
       const problem = problemOf(instance.id, setup) ?? problemOf(instance.kind, setup)
-      const { id } = sourceHealth(sources, instance, health)
-      const title = kind ? titleOf(kind, instance, (counts.get(instance.kind) ?? 0) > 1) : { zh: instance.id, en: instance.id }
-      return { id, kind: instance.kind, title, description: kind?.description ?? { zh: '', en: '' }, installed: instance.installed,
+      const title = sourceTitle(kind, instance)
+      return { id: instance.id, kind: instance.kind, title, description: kind?.description ?? { zh: '', en: '' }, installed: instance.installed,
         value: { enabled: instance.enabled, config: instance.config }, revision: store.blockRevision(`source:${instance.id}`),
         restarts: SETUP_FIELDS[instance.kind] ?? [], fields: kind?.fields ?? [], facts: kind?.facts?.(setup.deployment) ?? {},
         labels: store.get(KV.sources.labels(instance.id)) ?? {}, ...problem ? { problem } : {},

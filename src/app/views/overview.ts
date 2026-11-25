@@ -42,7 +42,8 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
   const now = new Date().toISOString(), since = dayAgo()
   const evaluating = store.threads.active().filter(thread => thread.evaluating)
   const instances = sources.instances()
-  const running = instances.filter(instance => instance.enabled && instance.installed).map(instance => sourceHealth(sources, instance, health))
+  const running = instances.filter(instance => instance.enabled && instance.installed)
+    .map(instance => sourceHealth(sources, instance, health))
   // Exclude source-owned and policy-sync health entries so only core runtime errors surface as `runtime-error`.
   const sourceParts = new Set(instances.flatMap(instance => sources.kind(instance.kind)?.health ?? []))
   const problems = [
@@ -65,7 +66,7 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
       attempts: item.attempts, error: item.error } })),
   ]
   const open = store.tickets.open().sort(newestFirst)
-  const stats = Object.values(store.read.triggerStats(since))
+  const stats = store.read.triggerStats(since)
   const received = stats.reduce((sum, item) => sum + item.received, 0), filtered = stats.reduce((sum, item) => sum + item.filtered, 0)
   const judgement = store.read.flow(since)
   return {

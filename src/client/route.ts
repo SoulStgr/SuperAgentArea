@@ -8,7 +8,9 @@ export const TABS = ['overview', 'source', 'trigger', 'eval', 'execution', 'sett
 export type Tab = typeof TABS[number]
 export const SETTINGS_GROUPS = ['source', 'eval', 'execution', 'prompts', 'deployment'] as const
 export type SettingsGroup = typeof SETTINGS_GROUPS[number]
-export type Route = { page: 'overview' | 'source'; id?: undefined; query?: undefined }
+export type Route = { page: 'overview'; id?: undefined; query?: undefined }
+  | { page: 'source'; id?: undefined; query?: undefined }
+  | { page: 'source'; id: string; query?: undefined }
   | { page: 'trigger'; id?: undefined; query?: { filter?: ThreadFilter } }
   | { page: 'trigger'; id: string; query?: { trigger?: string } }
   | { page: 'eval'; id?: undefined; query?: { filter?: DecisionFilter; window?: '24h' } }
@@ -21,7 +23,7 @@ export const settingsRoute = (group: SettingsGroup, query: { source?: string; ve
 export const setupPage = (place: SetupPlace): Route =>
   place === 'deployment' ? settingsRoute('deployment') : settingsRoute('source', { source: place })
 export const routeLabel = (t: T, route: Route): string =>
-  route.id ? t(route.page === 'trigger' ? 'term.thread' : 'term.ticket') : t(`tab.${route.page}`)
+  route.id ? t(route.page === 'trigger' ? 'term.thread' : route.page === 'source' ? 'term.source' : 'term.ticket') : t(`tab.${route.page}`)
 
 const pick = <V extends string>(values: readonly V[], value: unknown): V | undefined => values.find(item => item === value)
 function compact<Q extends object>(query: Q): Q | undefined {
@@ -34,7 +36,8 @@ export function parseRoute(value: unknown): Route | undefined {
   const text = (name: string) => typeof query?.[name] === 'string' ? query[name] as string : undefined
   const record = typeof id === 'string' && id ? id : undefined
   switch (page) {
-    case 'overview': case 'source': return { page }
+    case 'overview': return { page }
+    case 'source': return record ? { page, id: record } : { page }
     case 'trigger': return record ? { page, id: record, query: compact({ trigger: text('trigger') }) }
       : { page, query: compact({ filter: pick(THREAD_FILTERS, query?.filter) }) }
     case 'eval': return { page, query: compact({ filter: pick(DECISION_FILTERS, query?.filter),

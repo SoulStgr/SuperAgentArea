@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Source status and settings.
+// The Source page (工单源) and the Source settings.
 import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
@@ -7,19 +7,176 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
 
 usePanel()
-it('shows each Source\'s state on the Source status and opens its settings from a setup problem', async () => {
+
+/** Configures two folder instances and the default GitHub instance, each with its own counts, as a running installation has them. */
+function threeInstances() {
+  const github = server.settings.sources.github!
+  server.settings = { ...server.settings, sources: {
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox: '/srv/in-ops', outbox: '/srv/out-ops', operator: 'alice' } },
+    'folder:dev': { kind: 'folder', enabled: true, config: { inbox: '/srv/in-dev', outbox: '/srv/out-dev', operator: 'bob' },
+      label: '开发投件' },
+    github,
+  } }
+  server.sourceStats = { 'folder:ops': { arrived: 3, filtered: 0, judged: 2, accepted: 1 },
+    'folder:dev': { arrived: 0, filtered: 0, judged: 0, accepted: 0 }, github: { arrived: 1, filtered: 1, judged: 0, accepted: 0 } }
+  server.sourcePending = { 'folder:ops': 2, 'folder:dev': 0, github: 0 }
+  server.sourceExec = { 'folder:ops': { working: 1, queued: 0, waiting: 0 }, 'folder:dev': { working: 0, queued: 1, waiting: 0 },
+    github: { working: 0, queued: 0, waiting: 2 } }
+  server.pendingProjects = {}
+  server.ticketSources = { ...server.ticketSources, t1: 'folder:ops' }
+}
+/** Makes `folder:ops` wait on one Project question, as an assessment's `needsProject` refusal leaves it. */
+function ask(candidate: boolean, proposal: boolean) {
+  server.pendingProjects = { 'folder:ops': [{ triggerId: 'e20', thread: 'folder:ops:export', at: '2026-09-23T00:03:00Z',
+    preview: '把导出也做一下', candidates: candidate ? [{ id: 'prj_aps', name: 'aps', kind: 'station' as const }] : [],
+    ...proposal ? { proposal: { name: 'aps 填报', location: { type: 'managed' as const } } } : {} }] }
+  server.projectQuestions = new Set(['e20'])
+}
+const card = (title: string) => all('.dt-source-card').find(item => item.querySelector('.dt-source-title')?.textContent === title)!
+const kv = (scope: Element) => [...scope.querySelectorAll('.dt-lv')].map(item => [item.querySelector('.dt-lv-label')?.textContent,
+  item.querySelector('.dt-lv-value')?.textContent])
+const dialog = () => document.querySelector('[role="dialog"]')!
+
+it('shows one card per Source instance with its own pending Tickets, last day and execution state', async () => {
+  threeInstances()
   await mount()
   await click(zh['tab.source'])
   expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
-  expect(all('.dt-form > .dt-list > .dt-row .dt-row-name').map(title => title.textContent)).toEqual(['飞书', 'GitHub'])
-  expect(all('.dt-form > .dt-list > .dt-row')[0]!.querySelector('.dt-row-meta')?.textContent).toBe('24 小时到达 12被过滤 2最近 ' + document.querySelector('.dt-row-meta time, .dt-row-meta .dt-lv:last-child .dt-lv-value')?.textContent)
+  expect(all('.dt-source-card').map(item => item.querySelector('.dt-source-title')?.textContent))
+    .toEqual(['GitHub', '开发投件', '本地文件夹 · ops'])
+  const ops = card('本地文件夹 · ops'), dev = card('开发投件'), github = card('GitHub')
+  expect(ops.textContent).toContain('待处理工单 2')
+  expect(dev.textContent).toContain(zh.sourcePendingNone)
+  expect(kv(ops.querySelectorAll('.dt-source-kpis')[0]!)).toEqual([['到达', '3'], ['被过滤', '0'], ['已评估', '2'], ['接单或忽略', '1']])
+  expect(kv(dev.querySelectorAll('.dt-source-kpis')[0]!)).toEqual([['到达', '0'], ['被过滤', '0'], ['已评估', '0'], ['接单或忽略', '0']])
+  expect(kv(ops.querySelectorAll('.dt-source-kpis')[1]!)).toEqual([['执行中', '1'], ['排队', '0'], ['等待触发', '0']])
+  expect(kv(dev.querySelectorAll('.dt-source-kpis')[1]!)).toEqual([['执行中', '0'], ['排队', '1'], ['等待触发', '0']])
+  expect(kv(github.querySelectorAll('.dt-source-kpis')[1]!)).toEqual([['执行中', '0'], ['排队', '0'], ['等待触发', '2']])
+  expect(ops.querySelector('.dt-status-text')?.textContent).toBe(zh['sourceState.done'])
+})
+
+it('turns an instance off from its card', async () => {
+  threeInstances()
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh.sourceEnable.replace('{name}', '开发投件'), '.dt-source-card [role="switch"]'))
+  expect(server.requests.find(request => request.path === 'sources/folder:dev')).toMatchObject({ method: 'PATCH', body: { enabled: false } })
+  expect(server.settings.sources['folder:dev']!.enabled).toBe(false)
+  expect(card('开发投件').querySelector('.dt-status-text')?.textContent).toBe(zh.sourceOff)
+})
+
+it('invites the first Source when none is configured', async () => {
+  server.settings = { ...server.settings, sources: {} }
+  await mount()
+  await click(zh['tab.source'])
+  expect(text()).toContain(zh.sourceEmpty)
+  await click(zh.sourceAddFirst)
+  expect(dialog().textContent).toContain(zh.sourceAddTitle)
+})
+
+it('adds a folder Source from the page, keyed as the host normalizes it', async () => {
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh.sourceAdd, '.dt-status-head button'))
+  expect(dialog().textContent).toContain(zh.sourceAddTitle)
+  await type(field<HTMLSelectElement>(zh.sourceKind), 'folder')
+  await type(field<HTMLInputElement>(zh.sourceKey), 'News Ops')
+  await type(field<HTMLInputElement>('收件目录'), '/srv/in-news')
+  await type(field<HTMLInputElement>('交付目录'), '/srv/out-news')
+  await click([...dialog().querySelectorAll('button')].find(button => button.textContent === zh.sourceAdd)!)
+  expect(server.requests.filter(request => request.path === 'sources' && request.method === 'POST').at(-1))
+    .toMatchObject({ method: 'POST', body: { kind: 'folder', key: 'News Ops',
+      config: expect.objectContaining({ inbox: '/srv/in-news', outbox: '/srv/out-news' }) } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', 'News Ops'))
+  expect(all('.dt-source-card').map(item => item.querySelector('.dt-source-title')?.textContent))
+    .toEqual(['飞书', 'GitHub', '本地文件夹 · news-ops'])
+  expect(server.settings.sources['folder:news-ops']).toBeDefined()
+})
+
+it('opens an instance page with its configuration, statistics, Tickets and unanswered Project questions', async () => {
+  threeInstances()
+  ask(false, true)
+  await mount()
+  await click(zh['tab.source'])
+  await click(card('本地文件夹 · ops').querySelector('.dt-source-title')!)
+  expect(server.requests.some(request => request.path === 'sources/folder:ops')).toBe(true)
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('本地文件夹 · ops')
+  expect(field<HTMLInputElement>('收件目录').value).toBe('/srv/in-ops')
+  expect(all('.dt-section-title').map(title => title.textContent))
+    .toEqual(['过去 24 小时', '执行状态', '该来源的工单1', '最近投件', '未归属的工作站问题1'])
+  expect(all('.dt-section .dt-ticket .dt-open').map(open => open.textContent)).toEqual(['修复回归'])
+  expect(text()).toContain('把导出也做一下')
+  // The configuration saves as the instance's own settings block, against the revision the page read.
+  await type(field<HTMLInputElement>('收件目录'), '/srv/in-ops2')
+  await click(find(zh.save, '.dt-card button'))
+  expect(server.requests.find(request => request.path === 'settings/source:folder:ops'))
+    .toMatchObject({ method: 'PUT', body: { revision: 0, value: { enabled: true,
+      config: { inbox: '/srv/in-ops2', outbox: '/srv/out-ops', operator: 'alice' } } } })
+  expect(server.settings.sources['folder:ops']!.config.inbox).toBe('/srv/in-ops2')
+})
+
+it('answers an unanswered Project question by an existing workstation', async () => {
+  threeInstances()
+  ask(true, false)
+  await mount()
+  await click(zh['tab.source'])
+  await click(find('1 个请求还没有归属的工作站', '.dt-source-card button'))
+  expect(dialog().textContent).toContain(zh.sourceAnswerTitle)
+  await click(find(zh.sourceAnswerSubmit, '[role="dialog"] button'))
+  expect(server.requests.find(request => request.path === 'triggers/e20/answer-project')).toMatchObject({ method: 'POST',
+    body: { projectId: 'prj_aps' } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAnswerDone)
+  expect(server.pendingProjects['folder:ops']).toEqual([])
+  expect(text()).not.toContain('把导出也做一下')
+})
+
+it('answers with the assessment\'s proposal once a person confirms it', async () => {
+  threeInstances()
+  ask(true, true)
+  await mount()
+  await click(zh['tab.source'])
+  await click(find('1 个请求还没有归属的工作站', '.dt-source-card button'))
+  expect(dialog().textContent).toContain('aps 填报')
+  await click(find(zh.sourceAnswerSubmit, '[role="dialog"] button'))
+  expect(server.requests.find(request => request.path === 'triggers/e20/answer-project')).toMatchObject({ method: 'POST',
+    body: { confirmProposal: true } })
+})
+
+it('answers by creating a workstation, from a local folder or a repository address', async () => {
+  threeInstances()
+  ask(true, false)
+  await mount()
+  await click(zh['tab.source'])
+  await click(find('1 个请求还没有归属的工作站', '.dt-source-card button'))
+  await click(find(zh.sourceAnswerNew, '[role="dialog"] [role="tab"]'))
+  await type(field<HTMLInputElement>(zh.sourceAnswerName), 'aps 填报')
+  await type(field<HTMLInputElement>(zh.sourceAnswerAddress), '/srv/aps')
+  await click(find(zh.sourceAnswerSubmit, '[role="dialog"] button'))
+  expect(server.requests.find(request => request.path === 'triggers/e20/answer-project')).toMatchObject({ method: 'POST',
+    body: { new: { name: 'aps 填报', location: { type: 'folder', path: '/srv/aps' } } } })
+  ask(true, false)
+  await remount()
+  await click(zh['tab.source'])
+  await click(find('1 个请求还没有归属的工作站', '.dt-source-card button'))
+  await click(find(zh.sourceAnswerNew, '[role="dialog"] [role="tab"]'))
+  await type(field<HTMLInputElement>(zh.sourceAnswerName), 'aps repo')
+  await type(field<HTMLInputElement>(zh.sourceAnswerAddress), 'git@github.com:acme/aps.git')
+  await click(find(zh.sourceAnswerSubmit, '[role="dialog"] button'))
+  expect(server.requests.filter(request => request.path === 'triggers/e20/answer-project').at(-1)).toMatchObject({ method: 'POST',
+    body: { new: { name: 'aps repo', location: { type: 'repo', url: 'git@github.com:acme/aps.git' } } } })
+})
+
+it('shows each Source\'s state on the Source page and opens its settings from a setup problem', async () => {
+  await mount()
+  await click(zh['tab.source'])
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
+  expect(all('.dt-source-card').map(item => item.querySelector('.dt-source-title')?.textContent)).toEqual(['飞书', 'GitHub'])
   expect(text()).toContain(zh['sourceState.error'])
   expect(text()).toContain('socket closed')
-  expect(all('.dt-card')).toHaveLength(0)
   server.setup = { ...server.setup, problem: problemOf('agentCliUnset') }
   await remount()
   await click(zh['tab.source'])
-  await click(zh.sourceOpenSettings)
+  await click(find(zh.sourceOpenSettings, '.dt-source-card button'))
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
   expect(all('.dt-card')[1]!.textContent).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
@@ -64,7 +221,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const cards = all('.dt-card')
-  expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub'])
+  expect(cards.map(item => item.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub'])
   const feishu = cards[0]!
   expect(feishu.textContent).toContain('接收的群')
   await click([...feishu.querySelectorAll('button')].find(button => button.textContent === '添加')!)
@@ -169,7 +326,7 @@ it('shows a failed Feishu bot check as a problem of the Feishu Source only, with
   expect(server.requests.some(request => request.path === 'setup/check')).toBe(true)
   await click(tab(zh['tab.source']))
   // The Source's state carries the problem once, not again as its health.
-  expect(all('.dt-form > .dt-list > .dt-row')[0]!.textContent?.match(/cli_bot 的机器人身份状态是 missing/g)).toHaveLength(1)
+  expect(all('.dt-source-card')[0]!.textContent?.match(/cli_bot 的机器人身份状态是 missing/g)).toHaveLength(1)
 })
 
 it('leaves Feishu out of a GitHub-only deployment', async () => {
@@ -186,12 +343,12 @@ it('shows the Sources waiting for the deployment check, and the problem on the S
   server.setup = { ...server.setup, problem: problemOf('agentCliUnset'), accounts: null }
   await mount()
   await click(zh['tab.source'])
-  const rows = all('.dt-form > .dt-list > .dt-row')
+  const cards = all('.dt-source-card')
   // The GitHub Source is where the problem is fixed, so it shows the error; Feishu waits.
-  expect(rows.map(row => row.querySelector('.dt-status-text')?.textContent)).toEqual(['等待部署检查', '出错'])
+  expect(cards.map(item => item.querySelector('.dt-status-text')?.textContent)).toEqual(['等待部署检查', '出错'])
   expect(text()).not.toContain('Waiting for setup')
-  expect(rows[1]!.textContent).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
-  await click(find(zh.sourceOpenSettings, '.dt-row button'))
+  expect(cards[1]!.textContent).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
+  await click(find(zh.sourceOpenSettings, '.dt-source-card button'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
 })
 
@@ -200,10 +357,10 @@ it('shows a Source\'s health in the interface language, and a diagnostic as repo
     error: 'EOF' } } }
   await mount()
   await click(zh['tab.source'])
-  const github = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === 'GitHub')!
+  const github = card('GitHub')
   expect(github.textContent).toContain('GitHub 来源：连续 3 次轮询失败，最近一次：EOF')
   expect(github.textContent).not.toContain('consecutive')
-  const feishu = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === '飞书')!
+  const feishu = card('飞书')
   expect(feishu.querySelector('.dt-mono')?.textContent).toBe('socket closed')
 })
 
@@ -222,14 +379,14 @@ it('shows a setup problem on its Source card within one read of the settings, wh
   onTestFinished(() => { vi.useRealTimers() })
   at({ page: 'settings', query: { group: 'source' } })
   await mount()
-  const card = () => document.getElementById('dt-source-github')!
-  expect(card().textContent).not.toContain(zh['setup.agentCliUnset'])
+  const source = () => document.getElementById('dt-source-github')!
+  expect(source().textContent).not.toContain(zh['setup.agentCliUnset'])
   server.setup = { ...server.setup, problem: problemOf('agentCliUnset') }
   // The settings are read every five seconds, as the state is; the Source settings do not read the Source status.
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) }); await settle()
   expect(server.requests.filter(request => request.path === 'settings')).toHaveLength(2)
   expect(server.requests.some(request => request.path === 'sources')).toBe(false)
-  expect(card().textContent).toContain(zh['setup.agentCliUnset'])
+  expect(source().textContent).toContain(zh['setup.agentCliUnset'])
 })
 
 it('lists the messages a Source did not send in the last day under it, newest first, with why and where they belong', async () => {
@@ -239,15 +396,15 @@ it('lists the messages a Source did not send in the last day under it, newest fi
     droppedReply('m0', 30, 'feishu', 'channelGone'), droppedReply('g0', 2, 'github', 'channelGone')]
   await mount()
   await click(zh['tab.source'])
-  const [feishu, github] = all('.dt-form > .dt-list > .dt-row')
+  const feishu = card('飞书'), github = card('GitHub')
   const disclosure = (scope: Element) =>
     [...scope.querySelectorAll<HTMLElement>('[data-disclosure-row]')].find(row => row.textContent?.includes(zh.sourceDroppedTitle))!
-  await click(disclosure(feishu!))
-  const rows = [...feishu!.querySelectorAll('.dt-disclosure-body .dt-row')].map(row => [row.querySelector('.dt-row-title')?.textContent,
+  await click(disclosure(feishu))
+  const rows = [...feishu.querySelectorAll('.dt-disclosure-body .dt-row')].map(row => [row.querySelector('.dt-row-title')?.textContent,
     row.querySelector('.dt-tag')?.textContent, row.querySelector('button')?.textContent])
   expect(rows).toEqual([['Reply m3', zh['reason.channelGone'], '修复回归'],
     ['Reply m2', zh['reason.channelIgnored'], zh['term.thread']], ['Reply m1', zh['reason.channelGone'], undefined]])
-  expect(github!.textContent).toContain(`${zh.sourceDroppedTitle} 1`)
+  expect(github.textContent).toContain(`${zh.sourceDroppedTitle} 1`)
   await click(find('修复回归', '.dt-disclosure-body button'))
   expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
   await remount()

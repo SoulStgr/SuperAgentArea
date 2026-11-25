@@ -3,7 +3,7 @@ import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell
   type TicketStage } from '../../core/index.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
 import type { Store } from '../store.ts'
-import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
+import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketInstance, ticketLine, type Snapshot,
   type ViewHost } from './records.ts'
 import { markdown, preview } from './text.ts'
 
@@ -32,11 +32,13 @@ export function basisFacts(basis: MandateBasis, rule: Snapshot['rule']): { facts
   if (authority) facts.push({ name: 'legacyAuthority', value: authority })
   return { facts, legacy: authority !== undefined }
 }
-export function ticketList(host: ViewHost, stage: 'open' | TicketStage['stage'], offset: number, limit: number) {
+export function ticketList(host: ViewHost, stage: 'open' | TicketStage['stage'], offset: number, limit: number, source?: string) {
   const view = snapshot(host)
   const { store } = view
   const shown = (ticket: Ticket) => stage === 'open' ? liveTicket(ticket) : ticketStage(ticket).stage === stage
-  const tickets = (stage === 'ended' ? store.tickets.list() : store.tickets.open()).filter(shown).sort(newestFirst)
+  // A Source's page and a `source` filter show only the Tickets that Source instance originated.
+  const tickets = (stage === 'ended' ? store.tickets.list() : store.tickets.open()).filter(shown)
+    .filter(ticket => !source || ticketInstance(view, ticket) === source).sort(newestFirst)
   const result = page(tickets, offset, limit)
   return { ...result, items: result.items.map(ticket => ticketRow(view, ticket)) }
 }

@@ -6,11 +6,12 @@ import { Store } from '../src/app/store.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
+import { folderKind } from '../src/sources/folder.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/views/records.ts'
 import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
-import { droppedReplies, sourcesStatus } from '../src/app/views/sources.ts'
+import { droppedReplies, sourceDetail, sourcesStatus } from '../src/app/views/sources.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { markdown, plain } from '../src/app/views/text.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
@@ -218,6 +219,86 @@ it('words each settings save by what it changed from the one before, and nothing
   store.delete(KV.settings.version(revision))
   store.saveSettings({ ...store.settings(), paused: true })
   expect(changes(revision + 1)).toBeNull()
+})
+
+it('counts each Source instance by itself, mapping old bare-kind records to the instance their row hint became', () => {
+  store.saveSettings(SettingsSchema.parse({
+    policy: { sources: { feishu: { allowed: [{ id: 'ou_alice' }] }, github: { allowed: [{ id: 'alice' }] },
+      'folder:ops': { allowed: [{ id: 'alice' }] }, 'folder:dev': { allowed: [{ id: 'alice' }] } } },
+    sources: { feishu: { kind: 'feishu', enabled: true, config: {} },
+      github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets' } },
+      'folder:ops': { kind: 'folder', enabled: true, config: { inbox: '/in/ops', outbox: '/out/ops' } },
+      'folder:dev': { kind: 'folder', enabled: true, config: { inbox: '/in/dev', outbox: '/out/dev' } },
+      'github:acme-aps': { kind: 'github', enabled: true, config: { repository: 'acme/aps' } } },
+  }))
+  const sources = new SourceRegistry(() => store.settings())
+  sources.register(feishuKind); sources.register(githubKind); sources.register(folderKind)
+  const host = { store, sources, links }
+  const now = new Date().toISOString()
+  const trigger = (id: string, source: string, row?: string) => store.triggers.save({ id, source,
+    threads: [{ source, id: `t-${id}` }], actor: { source, id: 'alice' }, human: true, at: now, text: id,
+    meta: row ? { row } : {} })
+  const decision = (id: string, kind: 'accept' | 'ignore' | 'stop', triggerId: string, threadKeyValue: string,
+    reason: unknown[] = []) => store.decisions.save({ id, evalId: `e-${id}`, threadKey: threadKeyValue, triggerIds: [triggerId],
+    policyVersion: 'v', at: now, kind, reason: reason as never, strength: 'explicit' })
+  // A named folder instance, the old bare-kind Triggers its row became, and a named GitHub instance the old bare kind maps to.
+  trigger('ops-new', 'folder:ops', 'folder:ops')
+  trigger('ops-old', 'folder', 'ops')
+  trigger('ops-filtered', 'folder', 'ops')
+  trigger('dev-ignored', 'folder:dev', 'folder:dev')
+  trigger('dev-question', 'folder:dev', 'folder:dev')
+  trigger('gh-new', 'github:acme-aps')
+  trigger('gh-old', 'github')
+  trigger('feishu-old', 'feishu')
+  store.triggers.saveDisposition('ops-filtered', { filtered: { code: 'source_disabled' }, fanout: [], at: now })
+  decision('d-ops', 'accept', 'ops-new', 'folder:ops:x')
+  decision('d-old', 'stop', 'ops-old', 'folder:x')
+  decision('d-dev', 'ignore', 'dev-ignored', 'folder:dev:x')
+  decision('d-ask', 'stop', 'dev-question', 'folder:dev:ask',
+    [{ code: 'needsProject', values: { candidates: [{ id: 'prj_aps', name: 'aps', kind: 'station' }] } }])
+  decision('d-gh-new', 'accept', 'gh-new', 'github:acme-aps:1')
+  decision('d-gh-old', 'accept', 'gh-old', 'github:1')
+  decision('d-feishu', 'accept', 'feishu-old', 'feishu:oc_1:om_1')
+  // Tickets: working, accepted but not started, waiting for a follow-up, one on a person, one old one with only its source kind.
+  const ticket = (id: string, sourceId: string, originId: string, assignments: { state: 'running' | 'ended'; started?: boolean }[] = [],
+    extra: Partial<Parameters<typeof store.tickets.save>[0]> = {}) => store.tickets.save({ id, title: id, decisionId: 'd',
+    channels: [], undelivered: [], createdAt: now, updatedAt: now, sourceId,
+    mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: sourceId, id: 'alice' }, scope: '' },
+    origin: { triggerId: originId, triggerIds: [originId] }, inputs: [],
+    assignments: assignments.map((value, index) => ({ id: `a${index}`, state: value.state, createdAt: now,
+      ...value.started ? { startedAt: now } : {} })), ...extra })
+  ticket('t-ops-working', 'folder:ops', 'ops-new', [{ state: 'running', started: true }])
+  ticket('t-ops-queued', 'folder', 'ops-old')
+  ticket('t-ops-person', 'folder:ops', 'ops-new', [{ state: 'running', started: true }],
+    { attention: { id: 'q1', question: 'which one?' } })
+  ticket('t-dev-waiting', 'folder:dev', 'dev-ignored', [{ state: 'ended', started: true }])
+  ticket('t-gh-working', 'github:acme-aps', 'gh-new', [{ state: 'running', started: true }])
+  const rows = sourcesStatus(host, {}, {})
+  const row = (id: string) => rows.find(item => item.id === id)!
+  expect(row('folder:ops')).toMatchObject({ pending: 3, stats24h: { arrived: 3, filtered: 1, judged: 2, accepted: 1 },
+    exec: { working: 1, queued: 1, waiting: 0 }, pendingProjects: [] })
+  expect(row('folder:dev')).toMatchObject({ pending: 1, stats24h: { arrived: 2, filtered: 0, judged: 2, accepted: 1 },
+    exec: { working: 0, queued: 0, waiting: 1 },
+    pendingProjects: [expect.objectContaining({ triggerId: 'dev-question', thread: 'folder:dev:t-dev-question',
+      candidates: [{ id: 'prj_aps', name: 'aps', kind: 'station' }] })] })
+  // An old bare Trigger keeps the kind's default instance, while a named instance counts only its own work.
+  expect(row('github')).toMatchObject({ pending: 0, stats24h: { arrived: 1, filtered: 0, judged: 1, accepted: 1 } })
+  expect(row('github:acme-aps')).toMatchObject({ pending: 1, stats24h: { arrived: 1, filtered: 0, judged: 1, accepted: 1 },
+    exec: { working: 1, queued: 0, waiting: 0 } })
+  expect(row('feishu')).toMatchObject({ pending: 0, stats24h: { arrived: 1, filtered: 0, judged: 1, accepted: 1 } })
+  expect(rows.map(item => item.title)).toEqual([feishuKind.title, { zh: '本地文件夹 · dev', en: 'Local folder · dev' },
+    { zh: '本地文件夹 · ops', en: 'Local folder · ops' }, githubKind.title,
+    { zh: 'GitHub · acme-aps', en: 'GitHub · acme-aps' }])
+  // The detail page carries the instance's form, defaults and its own Tickets, page by page.
+  const detail = sourceDetail(host, 'folder:ops', {}, {}, 0, 2)!
+  expect(detail).toMatchObject({ kind: 'folder', value: { enabled: true, config: { inbox: '/in/ops', outbox: '/out/ops', operator: '',
+    pollSeconds: 10 } }, restarts: [], revision: 0, tickets: { total: 3, next_offset: 2 } })
+  expect(detail.fields.map(field => field.key)).toEqual(['inbox', 'outbox', 'operator', 'pollSeconds'])
+  expect(detail.defaults).toMatchObject({ pollSeconds: 10 })
+  const rest = sourceDetail(host, 'folder:ops', {}, {}, 2, 2)!
+  expect([...detail.tickets.items, ...rest.tickets.items].map(item => item.id).sort())
+    .toEqual(['t-ops-person', 't-ops-queued', 't-ops-working'])
+  expect(sourceDetail(host, 'folder:gone', {}, {}, 0, 2)).toBeUndefined()
 })
 
 it('names a listed bot as the Policy lists it, and gives a bot\'s Mandate a basis fact of its own', () => {

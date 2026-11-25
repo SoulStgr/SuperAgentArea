@@ -25,7 +25,7 @@ import type { Variable } from './execution-environment.ts'
 import { policyHistory } from './settings-history.ts'
 import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
-import { sourcesStatus, type SetupState } from './views/sources.ts'
+import { sourceDetail, sourceKinds, sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
@@ -36,7 +36,7 @@ export interface HttpHost {
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
-  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
+  readonly settings: Pick<Settings, 'view' | 'save' | 'add' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   /** Project ownership answers: the pending question of a Trigger, and the Project a person answered with. */
@@ -140,16 +140,28 @@ interface Input<K extends keyof Api> {
 type Routes = { [K in keyof Api]: (input: Input<K>) => ApiResponse<K> | Promise<ApiResponse<K>> }
 const offset = z.coerce.number().int().nonnegative().catch(0)
 const limit = (fallback: number, max: number) => z.coerce.number().int().positive().catch(fallback).transform(value => Math.min(max, value))
-const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), offset, limit: limit(20, 1000) })
+const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), source: z.string().trim().optional(), offset, limit: limit(20, 1000) })
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
   limit: limit(30, 200) })
+const SourcesQuery = z.object({ offset, limit: limit(20, 500) })
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+const NewSourceRequest = z.object({ kind: z.string().trim().min(1), key: z.string().trim().max(60).optional(),
+  label: z.string().trim().max(100).optional(), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+const SourcePatchRequest = z.object({ enabled: z.boolean().optional(), label: z.string().trim().max(100).optional(),
+  config: z.record(z.string(), z.unknown()).optional(), defaultProjectId: z.string().trim().max(200).optional() }).strict()
+/**
+ * Normalizes a key a person names a Source instance by: lower case, with every run of other characters as one dash, so the
+ * instance id is `<kind>:<key>` and matches the settings block naming. A key that normalizes to nothing is refused.
+ */
+export function instanceKey(text: string): string {
+  return text.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+}
 const ProjectLocationInput = z.discriminatedUnion('type', [
   z.object({ type: z.literal('managed') }).strict(),
   z.object({ type: z.literal('folder'), path: z.string().trim().min(1) }).strict(),
@@ -173,7 +185,40 @@ function routes(runtime: HttpHost): Routes {
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
+    'GET source-kinds': () => sourceKinds(runtime.sources),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
+    // One instance's page: its kind's fields and configuration, its own last day, and the Tickets it originated.
+    'GET sources/:id': ({ params, query }) => {
+      const { offset, limit } = SourcesQuery.parse(query)
+      const detail = sourceDetail(views(runtime), params.id, runtime.health, setupState(runtime), offset, limit)
+      if (!detail) throw new UserError('unknownSource', { source: params.id })
+      return detail
+    },
+    // A person adds a Source: its kind must be installed and its configuration valid, and an optional key names it beside others of its kind.
+    'POST sources': async ({ body }) => {
+      const request = NewSourceRequest.parse(await body())
+      const kind = runtime.sources.kind(request.kind)
+      if (!kind || kind.kind !== request.kind) throw new UserError('sourceNotInstalled', { source: request.kind })
+      const key = request.key === undefined ? undefined : instanceKey(request.key)
+      if (request.key !== undefined && !key) throw new UserError('sourceKeyInvalid', { reason: 'use letters, digits and dashes' })
+      const id = key ? `${kind.kind}:${key}` : kind.kind
+      const added = await runtime.settings.add({ id, kind: kind.kind, config: request.config,
+        ...request.label ? { label: request.label } : {} })
+      return { id, ...added }
+    },
+    // A Source page's own changes: its switch, label, kind configuration, and default Project, validated as a settings save.
+    'PATCH sources/:id': async ({ params, body }) => {
+      const instance = runtime.sources.instances().find(item => item.id === params.id)
+      if (!instance) throw new UserError('unknownSource', { source: params.id })
+      const patch = SourcePatchRequest.parse(await body())
+      if (patch.defaultProjectId && !store.projects.get(patch.defaultProjectId)) throw new UserError('projectUnknown', { project: patch.defaultProjectId })
+      const saved = await runtime.settings.save(`source:${params.id}`, {
+        enabled: patch.enabled ?? instance.enabled, config: patch.config ?? instance.config,
+        label: 'label' in patch ? patch.label : instance.label,
+        defaultProjectId: 'defaultProjectId' in patch ? patch.defaultProjectId : instance.defaultProjectId,
+      }, store.blockRevision(`source:${params.id}`), 'panel')
+      return { revision: saved.revision, restarting: saved.restarting }
+    },
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {
@@ -210,8 +255,10 @@ function routes(runtime: HttpHost): Routes {
     },
     'POST decisions/:id/dismiss': ({ params }) => { runtime.engine.dismiss(params.id); return { dismissed: true } },
     'GET tickets': ({ query }) => {
-      const { state, offset, limit } = TicketsQuery.parse(query)
-      return ticketList(views(runtime), state, offset, limit)
+      const { state, source, offset, limit } = TicketsQuery.parse(query)
+      // An old bare kind names the kind's default instance, as the Source page links with instance ids.
+      const instance = source ? runtime.sources.instanceFor(source)?.id ?? source : undefined
+      return ticketList(views(runtime), state, offset, limit, instance)
     },
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },

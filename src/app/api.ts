@@ -6,7 +6,7 @@ import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
 import type { SettingsView } from './views/settings.ts'
-import type { SourceStatusView } from './views/sources.ts'
+import type { SourceDetailView, SourceKindView, SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
 
@@ -22,6 +22,10 @@ export type AnswerProject =
   | { projectId: string }
   | { new: { name: string; location: ProjectLocation; kind?: 'station' | 'adhoc' } }
   | { confirmProposal: true }
+/** A Source instance the panel creates: its kind, an optional key that names it, and its kind's single-instance configuration. */
+export interface NewSource { kind: string; key?: string; label?: string; config: Record<string, unknown> }
+/** What a Source instance's page changes: its switch, label, kind configuration, and default Project. */
+export interface SourcePatch { enabled?: boolean; label?: string; config?: Record<string, unknown>; defaultProjectId?: string }
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
@@ -30,7 +34,11 @@ export interface Api {
   'GET state': { response: StateView }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
+  'GET source-kinds': { response: SourceKindView[] }
   'GET sources': { response: SourceStatusView[] }
+  'GET sources/:id': { query?: Paged; response: SourceDetailView }
+  'POST sources': { body: NewSource; response: { id: string; revision: number; restarting: boolean } }
+  'PATCH sources/:id': { body: SourcePatch; response: { revision: number; restarting: boolean } }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }
@@ -40,7 +48,7 @@ export interface Api {
   'POST triggers/:id/answer-project': { body: AnswerProject; response: { resolved: string } }
   'GET decisions': { query?: Paged & { kind?: string; window?: '24h' }; response: DecisionListView }
   'POST decisions/:id/dismiss': { response: { dismissed: true } }
-  'GET tickets': { query?: Paged & { state?: TicketFilter }; response: TicketListView }
+  'GET tickets': { query?: Paged & { state?: TicketFilter; source?: string }; response: TicketListView }
   'GET tickets/:id': { response: TicketPageView }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }

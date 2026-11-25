@@ -22,6 +22,9 @@ export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands])
+/** One Source instance's saved block: its switch and kind configuration, plus the optional label and default Project its routes set. */
+const SourceBlockValue = z.object({ enabled: z.boolean(), config: z.unknown(), label: z.string().trim().max(100).optional(),
+  defaultProjectId: z.string().trim().max(200).optional() })
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -45,8 +48,13 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     guard: (current, candidate, origin) => { if (origin !== 'panel' && environment(current) !== environment(candidate)) throw new UserError('panelOnlyEnvironment') },
   },
   source: {
-    parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
-    // A save keeps the instance's kind and its optional label and default Project; the panel edits only its switch and configuration.
+    // A save keeps the instance's kind and its optional label and default Project; the panel edits its switch and configuration.
+    parse: (value, sources, id) => {
+      const parsed = SourceBlockValue.parse(value)
+      return { ...sources.validate(id, { enabled: parsed.enabled, config: parsed.config }),
+        ...parsed.label !== undefined ? { label: parsed.label } : {},
+        ...parsed.defaultProjectId !== undefined ? { defaultProjectId: parsed.defaultProjectId } : {} }
+    },
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources,
       [id]: { ...settings.sources[id], ...value as SettingsValue['sources'][string] } } }),
     // Only the management panel may switch source accounts.
@@ -155,7 +163,12 @@ export class Settings {
     const kind = block.startsWith('source:') ? 'source' : block
     if (!(kind in BLOCKS)) throw new UserError('unknownBlock', { block })
     const rules = BLOCKS[kind as keyof typeof BLOCKS]
-    if (kind === 'source' && !sources.kind(id)) throw new UserError('sourceNotInstalled', { source: id })
+    if (kind === 'source') {
+      // Every configured instance, including a kind's synthesized default, is a saveable block; an orphaned instance keeps its stored configuration only.
+      const instance = sources.instances().find(item => item.id === id)
+      if (!instance) throw new UserError('unknownSource', { source: id })
+      if (!instance.installed) throw new UserError('sourceNotInstalled', { source: id })
+    }
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
@@ -195,6 +208,33 @@ export class Settings {
     if (restarting) this.host.setup.restart()
     else this.host.requestPass()
     return { saved: true, revision: store.blockRevision(block), policy_changed: before !== after, restarting, context_delivery: delivery }
+  }
+  /**
+   * Creates a Source instance from the management panel: validates its configuration against its kind, stores it enabled
+   * with the optional label, and records the save as the instance's own block revision. A kind whose setup fields change
+   * restarts `dsh-superagent`, as any saved account change does; a folder instance takes effect on the next poll.
+   * @throws UserError `sourceNotInstalled` for a kind that is not installed, or `sourceExists` when the id is taken.
+   */
+  async add(request: { id: string; kind: string; label?: string; config: unknown }): Promise<{ revision: number; restarting: boolean }> {
+    const { store, sources, sessions } = this.host
+    const kind = sources.kind(request.kind)
+    if (!kind) throw new UserError('sourceNotInstalled', { source: request.kind })
+    const current = store.settings()
+    if (current.sources[request.id]) throw new UserError('sourceExists', { source: request.id })
+    const value = { kind: kind.kind, enabled: true, config: kind.schema.parse(request.config ?? {}),
+      ...request.label ? { label: request.label } : {} }
+    const candidate = SettingsSchema.parse({ ...current, sources: { ...current.sources, [request.id]: value } })
+    const block: SettingsBlock = `source:${request.id}`
+    const restarting = setupChanged(current, candidate) || !this.host.setup.configured()
+    if (setupChanged(current, candidate)) await this.host.setup.checkAccounts(block, candidate)
+    store.atomic(() => {
+      store.saveSettings(candidate, { source: 'panel', block, policyVersion: policyVersion(candidate), policyChanged: false, notified: [] })
+      sessions.notify(...settingsNotice(block, changedPaths(current, candidate)))
+    })
+    const delivery = restarting ? 'pending' : await sessions.delivery(`settings:${block}`)
+    if (restarting) this.host.setup.restart()
+    else this.host.requestPass()
+    return { revision: store.blockRevision(block), restarting }
   }
   /**
    * Pauses or resumes processing (new evaluations, worker dispatch, and channel delivery, while Sources continue recording

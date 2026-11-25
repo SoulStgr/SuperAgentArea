@@ -325,12 +325,12 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, the Project registry and artifact index beside the domain aggregates, and `Receipt`, a message of the outbox |
-| `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write, among them the Threads whose newest Decision is a `needsProject` stop |
+| `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write, among them each `(source, row)` group's Trigger counts and the day's judged and accepted Decisions by group, and the Threads whose newest Decision is a `needsProject` stop |
 | `src/app/migration.ts` | The schema 12 migration: `migrateTo11` writes a schema 10 database in schema 11's shapes, and `migrateTo12` creates the Project registry and artifact index, gives every old ticket its Project, Source and reporter, and indexes the artifacts earlier versions collected. `migrateSettingsToInstances` upgrades a database saved before Source instances once: one `{kind, enabled, config}` entry per Source, one `folder:<row id>` instance per folder row, Policy parts and admission rows keyed by instance, and a `migration` settings revision |
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
-| `src/app/settings.ts` | Settings |
+| `src/app/settings.ts` | Settings: block-scoped validation and saves, the Source instance a person adds (`add`), the label and default Project a save keeps, processing pause, and Source policy synchronization |
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
 | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
@@ -353,13 +353,13 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/tools/tool.ts` | The `Tool` type, `readTool`, the `orchestrator_read` of both roles, and `AcknowledgementSchema` |
 | `src/app/tools/main.ts` | The main Session's tools, among them `orchestrator_route`, whose accept refuses a request that names an unregistered Project with the `needsProject` question instead of creating a ticket |
 | `src/app/tools/executor.ts` | An Executor Session's tools |
-| `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits, one status per kind of failure, and `POST triggers/:id/answer-project`, a person's answer to a Project question |
-| `src/app/api.ts` | `Api`, every route with its parameters, query, body and response (among them `AnswerProject`), and the filters of the lists; it imports only types, so the panel bundles it |
+| `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits, one status per kind of failure, the installed Source kinds a person chooses from, `GET`/`POST sources` and `PATCH sources/:id` (instance keys normalized, configurations validated by their kind), `GET sources/:id` for one instance's page, the `source` filter of `GET tickets`, and `POST triggers/:id/answer-project`, a person's answer to a Project question |
+| `src/app/api.ts` | `Api`, every route with its parameters, query, body and response (among them `AnswerProject`, `NewSource` and `SourcePatch`), and the filters of the lists; it imports only types, so the panel bundles it |
 | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
-| `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
-| `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
+| `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, `ticketInstance`, the Source instance a Ticket came from, and `ownersOf`, the owners of follow-ups as one request reads them |
+| `src/app/views/tickets.ts` | The Ticket lists by stage, optionally of one Source instance, a Ticket's page, the Mandate basis facts and the Executor's load |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
-| `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, what it filtered and dropped in that day, and the Project questions its requests wait on (`pendingProjects`) |
+| `src/app/views/sources.ts` | The Source page: every instance's state, pending Tickets, last day's arrivals, filtering, judgements and acceptances, execution buckets and recent Triggers, with its filtered or dropped messages and unanswered Project questions; one instance's page with its kind's form; and the installed kinds the add-Source form offers |
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions`; a Ticket of a station works in its Project's scratch directory and has its deliverables promoted into that Project's output directory |
@@ -370,7 +370,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
 | `src/sources/kind.ts` | The `SourceKind` protocol, one instance's configuration and its optional `commands` adaptation, the `projectHints` an event states, the `people` an instance knows beside the Policy, the Channel's `mention`, and `SourceInstance` |
-| `src/sources/registry.ts` | `SourceRegistry`: registered kinds and their instances, `kindOf` resolution for old bare-kind records, validation, Channels and their mentions, links, Project hints and the people an instance knows, environment values and Thread context per instance |
+| `src/sources/registry.ts` | `SourceRegistry`: registered kinds and their instances, `kindOf` resolution for old bare-kind records, the catalog the add-Source form offers, validation, Channels and their mentions, links, Project hints and the people an instance knows, environment values and Thread context per instance |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads, run per enabled instance with its own repository, CLI, Thread keys and KV shard; without a repository it reports that and polls nothing. A repository maps to its Project through the instance's default (`projectHints` adds nothing), and its Channel mentions people as `@login` |
@@ -392,7 +392,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, and the Decision filters of the Eval status |
 | `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, and the route memory with the settings group opened last |
 | `src/client/overview.tsx` | The overview |
-| `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | One file per stage: its status, and its settings where it has some |
+| `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | The stages: the Source page's instance cards, added Sources, an instance's own page and the dialog answering its Project questions, and each other stage's status and settings |
 | `src/client/thread.tsx`, `ticket.tsx` | The record pages: a Thread with its timeline, and a Ticket with its authorization, Inputs and Assignments |
 | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
 | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
@@ -420,7 +420,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances of one kind, `kindOf` and old bare-kind resolution, default instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, several instances of one kind with their own repositories, inboxes and KV shards, the pull request rules, health, a chat title's Project hints and each kind's mention syntax |
-| `tests/folder.spec.ts` | The folder Source on a `SourceContext`: drop translation, write-completeness, per-instance cursors and duplicates, outbox reply files, the Project question's `QUESTION.md` and its language, the plugin entry |
+| `tests/folder.spec.ts` | The folder Source on a `SourceContext`: drop translation, write-completeness, per-instance cursors and duplicates, an instance added while the Source runs, outbox reply files, the Project question's `QUESTION.md` and its language, the plugin entry |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
@@ -441,12 +441,12 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
-| `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP: routing, proactive assessment with its Project, execution, replies, settings and restarts |
+| `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP: routing, proactive assessment with its Project, execution, replies, settings and restarts, and the Source instances the API serves, adds and patches |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
-| `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
+| `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries, and the routes that add, patch and read Source instances |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
-| `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
+| `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to, and each Source instance's own last day, pending Tickets and execution buckets, with old bare-kind records mapped to the instance their row hint became |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 10 and 11 migrations: every stored record in its current shape, the schema 12 Project registry, ticket owners and artifact rows, the settings upgrade to Source instances, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts`, a Ticket's Source and Project columns, and the migration, settings history and queries |
@@ -456,7 +456,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
-| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
+| `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, among them the Source page's instance cards, added Sources, an instance's page and the answers to its Project questions, against a fake management API answered by route |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |

@@ -25,6 +25,40 @@ function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.
   }
 }
 
+it('adds and patches Source instances through their own routes', async () => {
+  const added: unknown[] = []
+  const call = serve({
+    store: { settings: () => SettingsSchema.parse({}), blockRevision: () => 4,
+      projects: { get: (id: string) => id === 'prj_aps' ? { id } : undefined } },
+    sources: {
+      instances: () => [{ id: 'folder:ops', kind: 'folder', enabled: true, config: {}, installed: true }],
+      kind: (id: string) => id === 'folder' || id === 'folder:ops'
+        ? { kind: 'folder', schema: z.object({ inbox: z.string().default('') }) } : undefined,
+      catalog: () => [{ kind: 'folder', title: { zh: '本地文件夹', en: 'Local folder' }, description: { zh: '', en: '' },
+        fields: [], defaults: { inbox: '' } }],
+      instanceFor: (id: string) => id === 'folder' ? { id: 'folder:ops' } : undefined,
+    },
+    settings: {
+      add: async (request: unknown) => { added.push(request); return { revision: 1, restarting: false } },
+      save: async () => ({ saved: true, revision: 5, restarting: false, policy_changed: false, context_delivery: 'injected' }),
+    },
+  })
+  expect(await call('GET', 'source-kinds')).toMatchObject({ status: 200, body: [{ kind: 'folder', defaults: { inbox: '' } }] })
+  // A key names the instance beside others of its kind, normalized to the instance id's own alphabet.
+  expect(await call('POST', 'sources', { kind: 'folder', key: 'Dev Ops', config: { inbox: '/x' } }))
+    .toEqual({ status: 200, body: { id: 'folder:dev-ops', revision: 1, restarting: false } })
+  expect(added).toEqual([{ id: 'folder:dev-ops', kind: 'folder', config: { inbox: '/x' } }])
+  expect(await call('POST', 'sources', { kind: 'slack', config: {} }))
+    .toMatchObject({ status: 400, body: { code: 'sourceNotInstalled' } })
+  expect(await call('POST', 'sources', { kind: 'folder', key: '!!!', config: {} }))
+    .toMatchObject({ status: 400, body: { code: 'sourceKeyInvalid' } })
+  expect(await call('PATCH', 'sources/folder:gone', { enabled: false })).toMatchObject({ status: 404, body: { code: 'unknownSource' } })
+  expect(await call('PATCH', 'sources/folder:ops', { enabled: false, label: 'Ops' }))
+    .toEqual({ status: 200, body: { revision: 5, restarting: false } })
+  expect(await call('PATCH', 'sources/folder:ops', { defaultProjectId: 'prj_gone' }))
+    .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
+})
+
 it('answers each kind of failure with its own status', async () => {
   const saves: unknown[] = []
   const call = serve({

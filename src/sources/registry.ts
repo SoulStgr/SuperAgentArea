@@ -3,7 +3,7 @@ import type { ChannelRef, OutboundMessage, PersonRef, ProjectHint, ScopeResult, 
 import type { Commands } from '../infra/commands.ts'
 import { HealthBoard, type HealthEntry } from '../infra/health.ts'
 import { AdmissionTableSchema, type Settings } from '../policy.ts'
-import type { ChannelLink, ChannelLinks, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.ts'
+import type { ChannelLink, ChannelLinks, FieldSpec, Localized, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.ts'
 
 /** A stored Source instance: its kind, whether it runs, and its kind's single-instance configuration. */
 type Stored = Settings['sources'][string]
@@ -81,6 +81,13 @@ export class SourceRegistry implements SourceScope {
     const stored = Object.entries(settings.sources).filter(([, instance]) => instance.kind === kind).sort(([a], [b]) => a.localeCompare(b))
     if (!stored.length) return [this.resolve(plugin, kind, undefined) as SourceInstance<C>]
     return stored.map(([id, instance]) => this.resolve(plugin, id, instance) as SourceInstance<C>)
+  }
+  /** Every installed kind in id order, with the form a new instance of it is configured by, as the panel's add-Source form reads it. */
+  catalog(): { kind: string; title: Localized; description: Localized; fields: FieldSpec[]; defaults: Record<string, unknown> }[] {
+    return [...this.kinds.keys()].sort((a, b) => a.localeCompare(b)).map(name => {
+      const kind = this.kinds.get(name)!
+      return { kind: kind.kind, title: kind.title, description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}) }
+    })
   }
   /** One instance by id: a stored instance, or the default instance of a registered kind (`id` is then the kind). */
   instance<C extends Record<string, unknown>>(id: string, settings = this.settings()): SourceInstance<C> | undefined {

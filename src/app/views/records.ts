@@ -15,6 +15,16 @@ export const page = <T>(items: T[], offset: number, limit: number) => ({ items: 
 const DAY = 86_400_000
 export const dayAgo = () => new Date(Date.now() - DAY).toISOString()
 export const newestFirst = (a: Ticket, b: Ticket) => b.updatedAt.localeCompare(a.updatedAt)
+/**
+ * The Source instance a Ticket came from: its stored `sourceId`, or its origin Trigger's Source; the Trigger's row hint
+ * finds the folder instance a Ticket stored before instances existed belonged to.
+ */
+export function ticketInstance({ store, sources }: Pick<ViewHost, 'store' | 'sources'>, ticket: Ticket): string | undefined {
+  const trigger = ticket.origin?.triggerId ? store.triggers.get(ticket.origin.triggerId) : undefined
+  const source = ticket.sourceId ?? trigger?.source
+  if (!source) return undefined
+  return sources.instanceFor(source, attribute(trigger?.meta.row))?.id
+}
 
 /** Sender projection for the UI; automated notices have an empty `id` and no `name`. */
 export interface ActorView { source: string; id: string; name?: Localized }

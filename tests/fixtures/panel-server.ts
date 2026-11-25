@@ -8,7 +8,8 @@ import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
-import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
+import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceDetailView, SourceStatusRow, SourceView, StateView,
+  ThreadPageView,
   ThreadRow, TicketPageView,
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
@@ -18,6 +19,7 @@ import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
+import { folderKind } from '../../src/sources/folder.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
@@ -79,7 +81,7 @@ export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'g
 const dayAgo = () => new Date(Date.now() - 86_400_000).toISOString()
 export const problemOf = (code: SetupCode, values: Record<string, string> = {}) => new SetupError(code, values).problem
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
-const KINDS = [feishuKind, githubKind] as unknown as SourceKind[]
+const KINDS = [feishuKind, githubKind, folderKind] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
@@ -99,6 +101,14 @@ export interface PanelServer {
   queued: Set<string>
   /** Trigger ids that wait for a Project answer, as the Source status reports their `pendingProjects`. */
   projectQuestions: Set<string>
+  /** Each Source instance's Project questions, by instance id. */
+  pendingProjects: Record<string, SourceStatusRow['pendingProjects']>
+  /** Each Source instance's last-day counts and pending Tickets, by instance id. */
+  sourceStats: Record<string, SourceStatusRow['stats24h']>
+  sourcePending: Record<string, number>
+  sourceExec: Record<string, SourceStatusRow['exec']>
+  /** The Source instance each Ticket came from, by Ticket id. */
+  ticketSources: Record<string, string>
   searching?: (query: string) => Promise<void>
   setup: SetupView
   health: Record<string, Health>
@@ -149,9 +159,9 @@ function sourceSettings(): SourceView[] {
       health: server.health[`sync:${instance.id}`] }
     const policy = kind.policy && { fields: kind.policy.fields, explicit: kind.policy.explicit, ...kind.policy.rows
       ? { rows: kind.policy.rows(config, instance.id) } : {}, ...sync ? { sync } : {} }
-    const shared = instances.filter(item => item.kind === instance.kind).length > 1
     const title = instance.label ? { zh: instance.label, en: instance.label }
-      : shared ? { zh: `${kind.title.zh} · ${instance.id.slice(kind.kind.length + 1)}`, en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
+      : instance.id.startsWith(`${kind.kind}:`) ? { zh: `${kind.title.zh} · ${instance.id.slice(kind.kind.length + 1)}`,
+        en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
         : kind.title
     return { id: instance.id, kind: instance.kind, title, description: kind.description, installed: true,
       value: { enabled: instance.enabled, config }, revision: server.revisions[`source:${instance.id}`] ?? 0,
@@ -169,20 +179,38 @@ function sourceStatuses(): SourceStatusRow[] {
     const problem = problemOf_(kind.kind)
     const state = !enabled ? 'off' : problem || health.some(item => item.state === 'error') ? 'error' : server.setup.problem ? 'setup'
       : health.some(item => item.state === 'starting') ? 'starting' : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
-    const feishu = kind.kind === 'feishu'
-    const shared = instances.filter(item => item.kind === instance.kind).length > 1
     const title = instance.label ? { zh: instance.label, en: instance.label }
-      : shared ? { zh: `${kind.title.zh} · ${instance.id.slice(kind.kind.length + 1)}`, en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
+      : instance.id.startsWith(`${kind.kind}:`) ? { zh: `${kind.title.zh} · ${instance.id.slice(kind.kind.length + 1)}`,
+        en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
         : kind.title
-    return { id: instance.id, title, installed: true, enabled, state, health, ...problem ? { problem } : {},
-      stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
-      pendingProjects: feishu ? [{ triggerId: 'e10', thread: 'feishu:oc_team:om_10', at: '2026-09-23T00:03:00Z',
-        candidates: [{ id: 'prj_aps', name: 'aps', kind: 'station' }],
-        proposal: { name: 'aps 填报', location: { type: 'managed' } } }] : [],
-      filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
-        reason: { code: 'source_disabled' } }],
-      dropped: server.dropped.filter(item => item.channel.source === instance.id && item.dropped.at >= dayAgo()) }
+    return { id: instance.id, kind: instance.kind, ...instance.label ? { label: instance.label } : {}, title, installed: true, enabled, state, health,
+      ...problem ? { problem } : {},
+      pending: server.sourcePending[instance.id] ?? 0,
+      stats24h: server.sourceStats[instance.id] ?? { arrived: 0, filtered: 0, judged: 0, accepted: 0 },
+      exec: server.sourceExec[instance.id] ?? { working: 0, queued: 0, waiting: 0 },
+      pendingProjects: server.pendingProjects[instance.id] ?? [],
+      recent: instance.kind === 'feishu' ? [{ id: 'e3', at: '2026-09-23T00:00:00Z', actor: actor('feishu', MEMBER),
+        preview: '这个文案好奇怪' }] : [],
+      filtered: instance.kind === 'feishu' ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'),
+        preview: 'looks wrong', reason: { code: 'source_disabled' } }],
+      dropped: server.dropped.filter(item => item.channel.source === instance.id && item.dropped.at >= dayAgo()),
+      lastAt: (server.sourceStats[instance.id] ?? { arrived: 0 }).arrived > 0 ? '2026-09-23T00:00:00Z' : '' }
   })
+}
+/** One instance's page as the fake host builds it: the same status plus its form, and the Tickets that instance originated. */
+function sourceDetailOf(id: string): SourceDetailView | undefined {
+  const status = sourceStatuses().find(source => source.id === id)
+  const instance = instancesOf().find(item => item.id === id)
+  if (!status || !instance) return undefined
+  const kind = KINDS.find(item => item.kind === instance.kind)!
+  const config = kind.schema.parse(instance.config)
+  const tickets = [...server.tickets.open, ...server.person]
+    .filter(ticket => (server.ticketSources[ticket.id] ?? 'feishu') === id)
+    .filter((ticket, index, list) => list.findIndex(item => item.id === ticket.id) === index)
+  return { ...status, value: { enabled: instance.enabled, config }, revision: server.revisions[`source:${id}`] ?? 0,
+    restarts: SETUP_FIELDS[kind.kind] ?? [], description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}),
+    labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {},
+    facts: kind.facts?.(resolved()) ?? {}, tickets: page(tickets) }
 }
 const stateView = (): StateView => ({
   setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
@@ -274,7 +302,15 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']), dropped: [], failing: [],
+    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
+    pendingProjects: { feishu: [{ triggerId: 'e10', thread: 'feishu:oc_team:om_10', at: '2026-09-23T00:03:00Z', preview: '把导出也做一下',
+      candidates: [{ id: 'prj_aps', name: 'aps', kind: 'station' }],
+      proposal: { name: 'aps 填报', location: { type: 'managed' } } }] },
+    sourceStats: { feishu: { arrived: 12, filtered: 2, judged: 5, accepted: 1 } },
+    sourcePending: { feishu: 2 },
+    sourceExec: { feishu: { working: 1, queued: 1, waiting: 0 } },
+    ticketSources: { t1: 'feishu', t0: 'feishu', t4: 'feishu' },
+    dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -326,6 +362,33 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { tickets: [], threads: server.search.threads, items: server.search.items.filter(item => item.preview.includes(q)) }
   } },
   'GET sources': { answer: sourceStatuses },
+  'GET source-kinds': { answer: () => KINDS.map(kind => ({ kind: kind.kind, title: kind.title, description: kind.description,
+    fields: kind.fields, defaults: kind.schema.parse({}) })) },
+  'GET sources/:id': { query: ['offset', 'limit'], answer: ({ params }) => sourceDetailOf(params.id) ?? refuse(404, 'Unknown Source', {
+    code: 'unknownSource', values: { source: params.id } }) },
+  'POST sources': { body: true, answer: ({ body }) => {
+    const request = body as { kind: string; key?: string; label?: string; config: Record<string, unknown> }
+    const kind = KINDS.find(item => item.kind === request.kind)
+    if (!kind) return refuse(400, 'The Source kind is not installed', { code: 'sourceNotInstalled', values: { source: request.kind } })
+    const key = request.key ? request.key.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') : ''
+    const id = key ? `${kind.kind}:${key}` : kind.kind
+    if (server.settings.sources[id]) return refuse(400, 'A Source instance with that id already exists', { code: 'sourceExists', values: { source: id } })
+    server.settings = { ...server.settings, sources: { ...server.settings.sources, [id]: { kind: kind.kind, enabled: true,
+      config: kind.schema.parse(request.config), ...request.label ? { label: request.label } : {} } } }
+    server.revisions[`source:${id}`] = 1
+    return { id, revision: 1, restarting: false }
+  } },
+  'PATCH sources/:id': { body: true, answer: ({ params, body }) => {
+    const instance = server.settings.sources[params.id]
+    if (!instance) return refuse(404, 'Unknown Source', { code: 'unknownSource', values: { source: params.id } })
+    const patch = body as { enabled?: boolean; label?: string; config?: Record<string, unknown>; defaultProjectId?: string }
+    const kind = KINDS.find(item => item.kind === instance.kind)!
+    server.settings = { ...server.settings, sources: { ...server.settings.sources, [params.id]: { ...instance,
+      enabled: patch.enabled ?? instance.enabled, config: patch.config ? kind.schema.parse(patch.config) : instance.config,
+      ...'label' in patch ? { label: patch.label } : {}, ...'defaultProjectId' in patch ? { defaultProjectId: patch.defaultProjectId } : {} } } }
+    server.revisions[`source:${params.id}`] = (server.revisions[`source:${params.id}`] ?? 0) + 1
+    return { revision: server.revisions[`source:${params.id}`]!, restarting: false }
+  } },
   'GET settings': { answer: settingsView },
   'POST sources/:id/labels': { answer: () => {
     // Label refresh failures come from the bot CLI and are returned verbatim.
@@ -356,14 +419,18 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     }
     const resolved = answer.projectId ?? 'prj_aps'
     server.projectQuestions.delete(params.id)
+    for (const [source, items] of Object.entries(server.pendingProjects))
+      server.pendingProjects[source] = items.filter(item => item.triggerId !== params.id)
     return { resolved }
   } },
   'GET decisions': { query: ['kind', 'window', 'offset', 'limit'], answer: ({ query }) =>
     ({ items: query.kind === 'ignore' ? [] : [acceptDecision()], next_offset: null }) },
   'POST decisions/:id/dismiss': { answer: ({ params }) => params.id === 'u1' ? { dismissed: true } : refuse(404,
     'Unavailable Eval not found') },
-  'GET tickets': { query: ['state', 'offset', 'limit'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'
-    : 'open']) },
+  'GET tickets': { query: ['state', 'source', 'offset', 'limit'], answer: ({ query }) => {
+    const tickets = server.tickets[query.state === 'ended' ? 'ended' : 'open']
+    return page(query.source ? tickets.filter(ticket => (server.ticketSources[ticket.id] ?? 'feishu') === query.source) : tickets)
+  } },
   'GET tickets/:id': { answer: ({ params }) => server.ticketDetails[params.id] ?? refuse(404, 'Ticket not found') },
   'POST tickets/:id/retry': { answer: ({ params }) => {
     const ticket = ticketOf(params.id)

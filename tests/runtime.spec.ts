@@ -51,9 +51,11 @@ let guards: Map<string, Guard>
 let restricts: Map<string, unknown[]>
 type HttpHandler = (req: unknown, res: unknown) => Promise<void>
 let http: HttpHandler
-async function api(method: string, path: string): Promise<{ status: number; body: unknown }> {
+async function api(method: string, path: string, json?: unknown): Promise<{ status: number; body: unknown }> {
   let status = 0, text = ''
-  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' } }
+  const chunks = json === undefined ? [] : [Buffer.from(JSON.stringify(json))]
+  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' },
+    async *[Symbol.asyncIterator]() { yield* chunks } }
   await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
   return { status, body: JSON.parse(text) }
 }
@@ -1881,4 +1883,81 @@ it('keeps two folder instances apart: their Threads, Tickets, environments and r
   expect(runtime.store.replyStatus(key('ticket-card', opsTicket.id))).toBe('sent')
   // A folder card names its reporter in plain text, since the folder Source has no @ syntax.
   expect(readFileSync(join(inbox('out-ops'), opsTicket.id, `${key('ticket-card', opsTicket.id)}.md`), 'utf8')).toContain('alice')
+})
+it('serves one card per Source instance, an instance\'s page, added Sources and the Tickets of one Source', async () => {
+  const path = (name: string) => join(directory, name)
+  for (const name of ['in-ops', 'out-ops']) mkdirSync(path(name))
+  runtime.sources.register(folderKind)
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox: path('in-ops'), outbox: path('out-ops'), operator: 'alice',
+      pollSeconds: 10 } } },
+  policy: { ...settings.policy, sources: { ...settings.policy.sources, 'folder:ops': { allowed: [{ id: 'alice' }] } } } })
+  const now = new Date().toISOString()
+  // An old bare-kind Trigger and Ticket name their row hint, which resolves to the folder instance the row became.
+  const old = { id: 'old-drop', source: 'folder', threads: [{ source: 'folder', id: 'ops:old.txt' }],
+    actor: { source: 'folder', id: 'alice' }, human: true, at: now, text: 'old drop', meta: { row: 'ops' } }
+  runtime.store.triggers.save(old)
+  const ticket = (id: string, sourceId: string, originId: string) => runtime.store.tickets.save({ id, title: id, decisionId: 'd',
+    channels: [], undelivered: [], createdAt: now, updatedAt: now, sourceId,
+    mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: sourceId, id: 'alice' }, scope: '' },
+    origin: { triggerId: originId, triggerIds: [originId] }, assignments: [], inputs: [] })
+  ticket('t-old', 'folder', 'old-drop')
+  const fresh = folderTrigger({ rel: 'new.txt', kind: 'file', hash: 'h-new', at: now, text: 'new drop', files: ['new.txt'] },
+    { id: 'folder:ops', inbox: path('in-ops'), outbox: path('out-ops') }, 'alice')
+  runtime.store.triggers.save(fresh)
+  ticket('t-new', 'folder:ops', fresh.id)
+  const sources = await api('GET', 'sources')
+  expect(sources.status).toBe(200)
+  const card = (sources.body as { id: string; kind: string; pending: number; stats24h: unknown; exec: unknown; recent: unknown[] }[])
+    .find(item => item.id === 'folder:ops')!
+  expect(card).toMatchObject({ kind: 'folder', pending: 2, stats24h: { arrived: 2, filtered: 0, judged: 0, accepted: 0 },
+    exec: { working: 0, queued: 2, waiting: 0 } })
+  expect(card.recent).toHaveLength(2)
+  // The instance's page carries its form, its defaults and its own Tickets, page by page.
+  const detail = await api('GET', 'sources/folder:ops')
+  expect(detail.status).toBe(200)
+  expect(detail.body).toMatchObject({ id: 'folder:ops', kind: 'folder', restarts: [], tickets: { total: 2, next_offset: null },
+    value: { enabled: true, config: { inbox: path('in-ops'), outbox: path('out-ops'), operator: 'alice', pollSeconds: 10 } } })
+  expect((detail.body as { fields: { key: string }[] }).fields.map(field => field.key)).toEqual(['inbox', 'outbox', 'operator', 'pollSeconds'])
+  expect((detail.body as { defaults: Record<string, unknown> }).defaults).toMatchObject({ pollSeconds: 10 })
+  // The Tickets of one Source, by its instance id or by the bare kind its old data names.
+  for (const source of ['folder:ops', 'folder']) {
+    const tickets = await api('GET', `tickets?source=${source}&state=open`)
+    expect((tickets.body as { items: { id: string }[] }).items.map(item => item.id).sort()).toEqual(['t-new', 't-old'])
+  }
+  expect(await api('GET', 'sources/folder:gone')).toMatchObject({ status: 404, body: { code: 'unknownSource' } })
+  expect((await api('GET', 'source-kinds')).body).toMatchObject([{ kind: 'feishu' }, { kind: 'folder' }, { kind: 'github' }])
+  // A person adds a folder Source: its key names it beside the existing instance, and it listens at once.
+  const created = await api('POST', 'sources', { kind: 'folder', key: 'Dev Drops', label: '开发投件',
+    config: { inbox: path('in-dev'), outbox: path('out-dev'), operator: 'bob', pollSeconds: 10 } })
+  expect(created).toEqual({ status: 200, body: { id: 'folder:dev-drops', revision: 1, restarting: false } })
+  expect(runtime.sources.instances().some(instance => instance.id === 'folder:dev-drops')).toBe(true)
+  expect(runtime.sources.scope({ source: 'folder:dev-drops', meta: {} })).toEqual({ listened: true, observed: false, row: 'folder:dev-drops' })
+  // A key that is taken, an unusable key, an unknown kind and an invalid configuration are refused.
+  expect(await api('POST', 'sources', { kind: 'folder', key: 'dev-drops', config: {} }))
+    .toMatchObject({ status: 400, body: { code: 'sourceExists', values: { source: 'folder:dev-drops' } } })
+  expect(await api('POST', 'sources', { kind: 'folder', key: '!!!', config: {} }))
+    .toMatchObject({ status: 400, body: { code: 'sourceKeyInvalid' } })
+  expect(await api('POST', 'sources', { kind: 'slack', config: {} }))
+    .toMatchObject({ status: 400, body: { code: 'sourceNotInstalled', values: { source: 'slack' } } })
+  expect(await api('POST', 'sources', { kind: 'folder', key: 'bad', config: { inbox: 5 } })).toMatchObject({ status: 400 })
+  // Its card's changes: the switch, the label, and the default Project, which must exist.
+  expect(await api('PATCH', 'sources/folder:dev-drops', { enabled: false, label: 'Dev drops' }))
+    .toMatchObject({ status: 200, body: { revision: 2, restarting: false } })
+  expect((await api('GET', 'sources')).body).toContainEqual(expect.objectContaining({ id: 'folder:dev-drops', enabled: false,
+    label: 'Dev drops' }))
+  expect(await api('PATCH', 'sources/folder:dev-drops', { defaultProjectId: 'prj_gone' }))
+    .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
+  expect(await api('PATCH', 'sources/folder:dev-drops', { config: { inbox: 5 } })).toMatchObject({ status: 400 })
+  // The instance's own settings block saves its kind's configuration against its revision.
+  const saved = await api('PUT', 'settings/source:folder:dev-drops', { revision: 2,
+    value: { enabled: true, config: { inbox: path('in-dev2'), outbox: path('out-dev2'), operator: 'bob', pollSeconds: 20 } } })
+  expect(saved).toMatchObject({ status: 200, body: { restarting: false, revision: 3 } })
+  expect(runtime.store.settings().sources['folder:dev-drops']).toMatchObject({ label: 'Dev drops', enabled: true,
+    config: { inbox: path('in-dev2'), outbox: path('out-dev2') } })
+  // Without a key an instance takes its kind's default id, which an old bare-kind record keeps naming.
+  expect(await api('POST', 'sources', { kind: 'folder', config: { inbox: path('in-default'), outbox: path('out-default') } }))
+    .toMatchObject({ status: 200, body: { id: 'folder', restarting: false } })
+  expect(runtime.sources.instanceFor('folder')?.id).toBe('folder')
 })

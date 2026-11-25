@@ -201,4 +201,23 @@ describe('the plugin loop', () => {
     expect(Object.keys(h.store.get(KV.folder.seen('folder:dev'))!)).toEqual(['two.txt'])
     expect(existsSync(join(outbox, 'x'))).toBe(false)
   }, 15_000)
+  it('polls an instance added while the Source runs, without a restart', async () => {
+    const extra = join(dir, 'inbox-extra'), extraOut = join(dir, 'outbox-extra')
+    mkdirSync(extra); mkdirSync(extraOut)
+    const h = host({}, {})
+    const controller = new AbortController()
+    const running = watchFolder(h.ctx, controller.signal)
+    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'ready' }), { timeout: 12_000 })
+    // A Source added through the settings is polled from the next round, with its own inbox and cursor.
+    const settings = h.store.settings()
+    h.store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...settings.sources,
+      'folder:extra': { kind: 'folder', enabled: true, config: { inbox: extra, outbox: extraOut, operator: 'alice', pollSeconds: 2 } } },
+    policy: { ...settings.policy, sources: { ...settings.policy.sources, 'folder:extra': { allowed: [{ id: 'alice' }] } } } }))
+    drop('late.txt', 'from extra', extra)
+    await vi.waitFor(() => expect(h.receive.mock.calls.map(([trigger]) => trigger.source)).toContain('folder:extra'),
+      { timeout: 12_000 })
+    controller.abort()
+    await running
+    expect(Object.keys(h.store.get(KV.folder.seen('folder:extra'))!)).toEqual(['late.txt'])
+  }, 15_000)
 })

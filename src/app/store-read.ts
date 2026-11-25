@@ -3,18 +3,29 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type { Decision, Thread, Trigger } from '../core/index.ts'
 import type { Dropped, Receipt, TimelinePlace } from './store.ts'
 
+/** Stored Source counts of one `(source, row)` group: `row` is the old folder row id an earlier version recorded in `meta.row`. */
+export interface SourceTriggerCount { source: string; row?: string; received: number; filtered: number; lastAt: string }
+/** Judged and accepted counts of one `(source, row)` group, as `flow` counts them across all Sources. */
+export interface SourceFlowCount { source: string; row?: string; judged: number; accepted: number }
+/** The kinds of Decision that say what became of a Trigger: accepting it, continuing it, or ignoring it deliberately. */
+const HANDLED = ['accept', 'reopen', 'ignore'] as const
+
 export function storeReads(db: DatabaseSync) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
   return {
   /** Newest first by arrival (`rowid`) order rather than trigger timestamp. */
   recentTriggers: (offset = 0, limit = 50): Trigger[] => db.prepare('SELECT value FROM trigger ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Trigger),
-  /** Per-source trigger counts since `since`, plus the latest arrival timestamp across all time. */
-  triggerStats: (since: string): Record<string, { received: number; filtered: number; lastAt: string }> => {
-    const result: Record<string, { received: number; filtered: number; lastAt: string }> = {}
-    for (const row of db.prepare("SELECT json_extract(t.value, '$.source') AS source, MAX(t.at) AS last, SUM(t.at >= ?) AS received, SUM(t.at >= ? AND json_extract(d.value, '$.filtered') IS NOT NULL) AS filtered FROM trigger t LEFT JOIN disposition d ON d.id = t.id GROUP BY source").all(since, since))
-      result[String(row.source)] = { received: Number(row.received ?? 0), filtered: Number(row.filtered ?? 0), lastAt: String(row.last ?? '') }
-    return result
-  },
+  /**
+   * Trigger counts since `since` grouped by the Source each Trigger records and the row hint an earlier version kept in
+   * `meta.row`, plus the latest arrival time of each group; the registry resolves a group to its instance.
+   */
+  triggerStats: (since: string): SourceTriggerCount[] => db.prepare(`SELECT json_extract(t.value, '$.source') AS source,
+      json_extract(t.value, '$.meta.row') AS hint, MAX(t.at) AS last, SUM(t.at >= ?) AS received,
+      SUM(t.at >= ? AND json_extract(d.value, '$.filtered') IS NOT NULL) AS filtered
+      FROM trigger t LEFT JOIN disposition d ON d.id = t.id GROUP BY source, hint`).all(since, since).map(row => ({
+    source: String(row.source), ...row.hint === null || row.hint === undefined ? {} : { row: String(row.hint) },
+    received: Number(row.received ?? 0), filtered: Number(row.filtered ?? 0), lastAt: String(row.last ?? '') }))
+  ,
   /**
    * Counts triggers arriving at or after `since` that passed source filtering and reached a decision,
    * and how many accept/reopen decisions those same arrivals produced.
@@ -24,6 +35,30 @@ export function storeReads(db: DatabaseSync) {
     const judged = db.prepare(`SELECT COUNT(DISTINCT t.id) AS n FROM decision d, json_each(json_extract(d.value, '$.triggerIds')) j JOIN trigger t ON t.id = j.value WHERE ${passed}`).get(since)
     const accepted = db.prepare(`SELECT COUNT(DISTINCT d.id) AS n FROM decision d, json_each(json_extract(d.value, '$.triggerIds')) j JOIN trigger t ON t.id = j.value WHERE json_extract(d.value, '$.kind') IN ('accept', 'reopen') AND t.at >= ?`).get(since)
     return { judged: Number(judged?.n ?? 0), accepted: Number(accepted?.n ?? 0) }
+  },
+  /**
+   * The same two counts as `flow`, grouped by each Trigger's recorded Source and row hint for per-instance Source cards.
+   * `accepted` counts the accept/reopen/ignore Decisions here, the "accepted or ignored" the Source cards report; the
+   * overview's `flow` counts accept/reopen Decisions alone, so the two questions stay separately answerable.
+   */
+  flowBySource: (since: string): SourceFlowCount[] => {
+    const passed = "t.at >= ? AND NOT EXISTS (SELECT 1 FROM disposition s WHERE s.id = t.id AND json_extract(s.value, '$.filtered') IS NOT NULL)"
+    const grouped = (count: string, condition: string, ...parameters: SQLInputValue[]) => db.prepare(`SELECT json_extract(t.value, '$.source') AS source,
+        json_extract(t.value, '$.meta.row') AS hint, COUNT(DISTINCT ${count}) AS n
+        FROM decision d, json_each(json_extract(d.value, '$.triggerIds')) j JOIN trigger t ON t.id = j.value
+        WHERE ${condition} GROUP BY source, hint`).all(...parameters) as { source: string; hint: string | null; n: number }[]
+    const judged = grouped('t.id', passed, since)
+    const accepted = grouped('d.id', `json_extract(d.value, '$.kind') IN (${HANDLED.map(() => '?').join(',')}) AND t.at >= ?`, ...HANDLED, since)
+    const rows = new Map<string, SourceFlowCount>()
+    const row = (item: { source: string; hint: string | null }) => {
+      const key = `${item.source}\u0000${item.hint ?? ''}`
+      let entry = rows.get(key)
+      if (!entry) rows.set(key, entry = { source: item.source, ...item.hint === null ? {} : { row: item.hint }, judged: 0, accepted: 0 })
+      return entry
+    }
+    for (const item of judged) row(item).judged = Number(item.n)
+    for (const item of accepted) row(item).accepted = Number(item.n)
+    return [...rows.values()]
   },
   triggers: (options: { source?: string; filtered?: boolean }, offset = 0, limit = 50): { items: Trigger[]; more: boolean } => {
     const where = [...(options.source ? ["json_extract(t.value, '$.source') = ?"] : []), ...(options.filtered ? ["json_extract(d.value, '$.filtered') IS NOT NULL"] : [])]

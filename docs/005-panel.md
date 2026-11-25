@@ -12,12 +12,12 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
+The tabs follow the workflow: **Overview**, **Sources**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
 
 | Tab | Shows |
 | --- | --- |
 | Overview | Tickets needing action, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
-| Source | Source state, setup problems and non-zero counts. Filtered Triggers and dropped messages cover the same 24-hour window as Overview |
+| Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. **Add Source** creates a named instance of an installed kind. A card opens the instance's own page with its configuration, statistics, Tickets, filtered and unsent messages and recent Triggers |
 | Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
 | Eval | Decisions with their reason and matched rules |
 | Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
@@ -25,7 +25,9 @@ The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, *
 
 ### Reading individual records
 
-A dropped message links to its Ticket, or to its Thread when it has no Ticket. The Source page explains whether its conversation disappeared or the Source stopped listening to it.
+A dropped message links to its Ticket, or to its Thread when it has no Ticket. The Sources page explains whether its conversation disappeared or the Source stopped listening to it.
+
+A request whose Project is not registered waits in Eval, and its Source card and page offer **Answer**: place it in an existing workstation, confirm the assessment's proposed one, or create a workstation from a name and a local folder or repository address. The request is then evaluated again and, once accepted, appears among that Source's Tickets. Adding a Source of an installed kind takes effect on its next poll; a folder instance answers on the inbox it names.
 
 A human follow-up still owned by an Executor is marked **Delivered to Ticket**, without an Eval. The Thread also shows hand-back reasons and context-only Subscriptions. **Evaluate again** can send that follow-up to Eval, or retry a Trigger with no effective judgement: one filtered by its Source, an unavailable Eval, or a delivered message with neither a non-stop Decision nor an Executor acknowledgement.
 
@@ -33,7 +35,7 @@ Ticket details show the originating Trigger, Decision and reason, scope and Poli
 
 ## Settings groups
 
-- **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.
+- **Sources:** one card per Source instance with its switch, fields and verified account facts; **Add Source** on the Sources page creates another instance of an installed kind, under a key of its own. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced. An instance's page edits the same fields for that instance alone.
 - **Eval:** the Policy version and rules, followed by **On each Source** and the Eval settings. Each Source tab contains its allowed list, membership sync, admission table and bot list. Sync runs at startup and on **Sync now**. The admission table distinguishes receiving scope, sender membership and whether the message addresses the agent. Eval settings select the accept mode, timeout and assessment model.
 - **Execution:** worker model, concurrency, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
 - **Prompts:** **Edit** changes team sections, built-in parts and skills. **Full prompt** shows the assembled text and compares it with saved text or defaults. **History** lists versions. Edited built-in parts are marked changed and can be reset; templates list their required placeholders.
@@ -51,7 +53,7 @@ Search also finds Threads by references such as `#12` or a GitHub URL, and Ticke
 
 1. **Focus on what matters.** Every element answers one of the three questions, or it is removed. A number appears only when it changes what the supervisor does.
 2. **Precise definitions.** Categories have checkable definitions, are mutually exclusive and cover every case, as the Ticket stages do. A label says whom a row waits for and what it needs, not an internal status code.
-3. **One place per concept.** Source state belongs in Source; Threads and Triggers in Trigger; Decisions in Eval; Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
+3. **One place per concept.** Source state belongs in Sources; Threads and Triggers in Trigger; Decisions in Eval; Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
 4. **Domain structure.** The panel uses the domain terms. Internal identifiers appear only in folded details, and names replace identifiers where they can be resolved.
 5. **Honest state.** A count equals the length of the list it links to, and no state contradicts another fact.
 6. **Quiet by default.** Healthy states take no extra space. Problems must be actionable; a one-off network error is not enough. Rows needing a person offer their action directly. Keep page explanations to one sentence and put further detail in the (?) tooltip. Destructive actions require confirmation.

@@ -273,7 +273,6 @@ div.dt-preview-head { color: var(--dsw-alias-label-secondary); }
 .dt-status-line .dt-status-text { margin-left: 0; }
 .dt-status-text[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }
 .dt-status-text[data-state='error'] { color: var(--dsw-alias-state-error-primary); }
-.dt-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .dt-lv { white-space: nowrap; }
 .dt-lv-label { color: var(--dsw-alias-label-caption); }
 .dt-lv-value { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
@@ -380,3 +379,15 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-admission-slot { display: inline-flex; flex: none; width: 16px; }
 .dt-info-warn { color: var(--dsw-alias-state-warn-primary); }
 .dt-field-segmented { max-width: 240px; }
+.dt-status-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.dt-source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.dt-source-card { gap: 10px; }
+.dt-source-card .dt-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dt-source-title { font-size: 15px; font-weight: 600; }
+.dt-source-pending { margin: 0; font-size: 14px; font-weight: 600; }
+.dt-source-block { display: flex; flex-direction: column; gap: 4px; }
+.dt-source-label { margin: 0; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-caption); }
+.dt-source-kpis { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; }
+.dt-source-unassigned { display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); }
+.dt-source-answer { display: flex; flex-direction: column; gap: 16px; }
+.dt-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 24px; border: 0.5px dashed var(--dsw-alias-border-l3); border-radius: 16px; }
