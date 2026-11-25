@@ -5,7 +5,6 @@ import { ArtifactsPage } from './artifacts.tsx'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { DecisionsPage } from './eval.tsx'
-import { DecisionsPage } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
@@ -163,7 +162,6 @@ function Pages({ route, openTab, openSettings, deploymentForm }: { route: Route;
       case 'workstations': return route.id !== undefined ? <ProjectPage key={route.id} id={route.id} segment={route.query?.segment} />
         : <ProjectPage />
       case 'artifacts': return <ArtifactsPage key={route.id ?? 'index'} id={route.id} query={route.id === undefined ? route.query : undefined} />
-      case 'decisions': return <DecisionsPage filter={route.query?.filter ?? 'work'} window={route.query?.window} paused={!!state?.paused} />
       case 'decisions': return <DecisionsPage filter={route.query?.filter ?? 'work'} window={route.query?.window} paused={!!state?.paused} />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />

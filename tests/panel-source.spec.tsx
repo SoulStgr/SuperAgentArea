@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 // The Source page (工单源): its cards, an instance's sections, and its Policy and prompts.
-// The Source page (工单源): its cards, an instance's sections, and its Policy and prompts.
 import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
@@ -119,60 +118,12 @@ it('opens an instance page at its overview and its settings, saving its configur
   // The settings are their own section, saved as the instance's own settings block against the revision the page read.
   await click(segment(zh['sourceSegment.config']))
   expect(field<HTMLInputElement>('收件目录').value).toBe('/srv/in-ops')
-  // The settings are their own section, saved as the instance's own settings block against the revision the page read.
-  await click(segment(zh['sourceSegment.config']))
-  expect(field<HTMLInputElement>('收件目录').value).toBe('/srv/in-ops')
   await type(field<HTMLInputElement>('收件目录'), '/srv/in-ops2')
   await click(find(zh.save, '.dt-card button'))
   expect(server.requests.find(request => request.path === 'settings/source:folder:ops'))
     .toMatchObject({ method: 'PUT', body: { revision: 0, value: { enabled: true,
       config: { inbox: '/srv/in-ops2', outbox: '/srv/out-ops', operator: 'alice' } } } })
   expect(server.settings.sources['folder:ops']!.config.inbox).toBe('/srv/in-ops2')
-  // The Policy and prompts have their own section, with the two parts inside it.
-  await click(segment(zh['sourceSegment.governance']))
-  expect(all('.dt-governance-parts [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceGovernancePolicy,
-    zh.sourceGovernancePrompts])
-})
-
-it('opens the Policy and prompts from the page head and from a card action', async () => {
-  await mount()
-  await click(zh['tab.source'])
-  await click([...card('GitHub').querySelectorAll<HTMLButtonElement>('.dt-row-buttons button')]
-    .find(button => button.textContent === zh.sourcePolicyPrompts)!)
-  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('GitHub')
-  expect(segment(zh['sourceSegment.governance']).getAttribute('aria-selected')).toBe('true')
-  expect(all('.dt-rule').length).toBe(1)
-  // The page head's action opens it too; the button says where it is already.
-  await click(segment(zh['sourceSegment.overview']))
-  await click(find(zh.sourcePolicyPrompts, '.dt-page-head button'))
-  expect(segment(zh['sourceSegment.governance']).getAttribute('aria-selected')).toBe('true')
-  expect(find(zh.sourcePolicyPrompts, '.dt-page-head button').matches(':disabled')).toBe(true)
-})
-
-it('keeps「打开来源」and「策略提示配置」apart: the card\'s main action opens the Source and its own secondary entry the Policy and prompts page',
-  async () => {
-  await mount()
-  await click(zh['tab.source'])
-  const github = card('GitHub')
-  // Only the main action sits in the card's button row; the Policy and prompts are a secondary entry of their own.
-  expect([...github.querySelectorAll('.dt-row-buttons button')].map(button => button.textContent)).toEqual([zh.sourceOpen])
-  expect(github.querySelector('.dt-source-governance')?.textContent).toBe(zh.sourcePolicyPrompts)
-  // The main action opens the Source page, which has only the overview and config sections.
-  await click(github.querySelector('.dt-source-title')!)
-  expect(all('.dt-source-segments [role="tab"]').map(item => item.textContent)).toEqual([zh['sourceSegment.overview'],
-    zh['sourceSegment.config']])
-  // Its head keeps its own action to the Policy and prompts page, a page of its own with the two parts.
-  await click(find(zh.sourcePolicyPrompts, '.dt-page-head button'))
-  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('GitHub')
-  expect(all('.dt-governance-parts [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceGovernancePolicy,
-    zh.sourceGovernancePrompts])
-  expect(all('.dt-rule').length).toBe(1)
-  // The card's secondary entry opens the same page.
-  await click(find(zh['tab.source'], '[role="tab"]'))
-  await click(card('GitHub').querySelector('.dt-source-governance')!)
-  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('GitHub')
-  expect(all('.dt-governance-parts [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceGovernancePolicy,
-    zh.sourceGovernancePrompts])
 })
 
 it('keeps「打开来源」and「策略提示配置」apart: the card\'s main action opens the Source and its own secondary entry the Policy and prompts page',
@@ -253,7 +204,6 @@ it('answers by creating a workstation, from a local folder or a repository addre
 })
 
 it('shows each Source\'s state on the Source page and opens its settings from a setup problem', async () => {
-it('shows each Source\'s state on the Source page and opens its settings from a setup problem', async () => {
   await mount()
   await click(zh['tab.source'])
   expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
@@ -266,7 +216,6 @@ it('shows each Source\'s state on the Source page and opens its settings from a 
   await click(find(zh.sourceOpenSettings, '.dt-source-card button'))
   expect(tab(zh['tab.source']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('GitHub')
-  expect(segment(zh['sourceSegment.config']).getAttribute('aria-selected')).toBe('true')
   expect(segment(zh['sourceSegment.config']).getAttribute('aria-selected')).toBe('true')
   expect(text()).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
 })
@@ -306,14 +255,12 @@ it('folds more than six chats into a line of their names', async () => {
   const chats = Array.from({ length: 7 }, (_, n) => ({ chatId: n ? `oc_c${n}` : 'oc_team', listen: 'all' as const }))
   server.settings.sources.feishu = { ...server.settings.sources.feishu!, config: { ...server.settings.sources.feishu!.config, chats } }
   openSource('feishu', 'config')
-  openSource('feishu', 'config')
   await mount()
   const summary = all('.dt-card')[0]!.querySelector('.dt-rows-summary')!
   expect(summary.textContent).toBe(['团队群', 'oc_c1', 'oc_c2', 'oc_c3', 'oc_c4', 'oc_c5', 'oc_c6'].join('、'))
 })
 
 it('rereads the chats the bot has joined on request and says which are new, keeping unsaved edits', async () => {
-  openSource('feishu', 'config')
   openSource('feishu', 'config')
   await mount()
   const feishu = () => all('.dt-card')[0]!
@@ -334,13 +281,11 @@ it('rereads the chats the bot has joined on request and says which are new, keep
   expect(button().disabled).toBe(false)
   // Only a field whose key column offers a refresh shows the button.
   openSource('github', 'config')
-  openSource('github', 'config')
   await remount()
   expect([...all('.dt-card')[0]!.querySelectorAll('button')].some(item => item.textContent === '刷新群列表')).toBe(false)
 })
 
 it('renders each Source\'s settings from its kind\'s fields and saves one Source against its own revision', async () => {
-  openSource('feishu', 'config')
   openSource('feishu', 'config')
   await mount()
   const feishu = all('.dt-card')[0]!
@@ -362,7 +307,6 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   expect(server.settings.sources.feishu!.config).toMatchObject({ directMessages: false })
   // Another instance's page saves that instance alone, against its own revision.
   openSource('github', 'config')
-  openSource('github', 'config')
   await remount()
   const github = all('.dt-card')[0]!
   await click(github.querySelector('[role="switch"]')!)
@@ -376,7 +320,6 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
 })
 
 it('shows the account each CLI signs in as, and keeps a saved CLI on screen while dsh-superagent restarts', async () => {
-  openSource('github', 'config')
   openSource('github', 'config')
   await mount()
   const github = all('.dt-card')[0]!
@@ -414,7 +357,6 @@ it('points a setup problem at the Source page that fixes it, or at Deployment', 
   await click(find(zh.problemSetup, 'button, a, [role="button"]'))
   expect(tab(zh['tab.source']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('GitHub')
-  expect(segment(zh['sourceSegment.config']).getAttribute('aria-selected')).toBe('true')
   expect(segment(zh['sourceSegment.config']).getAttribute('aria-selected')).toBe('true')
   expect(text()).toContain(zh['setup.agentCliUnset'])
   // The machine's own limits and state directory live on the Deployment settings.
@@ -481,7 +423,6 @@ it('shows a Source\'s health in the interface language, and a diagnostic as repo
 
 it('shows a refused Source save with the output of the tool that failed on its own line', async () => {
   openSource('feishu', 'config')
-  openSource('feishu', 'config')
   await mount()
   const feishu = all('.dt-card')[0]!
   await type(field<HTMLInputElement>('机器人的 lark-cli'), 'lark-broken')
@@ -538,7 +479,6 @@ it('takes no space for messages that were all sent', async () => {
 it('reads the instance again as soon as dsh-superagent answers after a save restarted it', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   onTestFinished(() => { vi.useRealTimers() })
-  openSource('github', 'config')
   openSource('github', 'config')
   await mount()
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), '/opt/bin/gh-agent')

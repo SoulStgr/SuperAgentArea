@@ -122,8 +122,6 @@ function SourceInstanceCard({ source, onOpen, onAnswer, onReload }: {
     {source.dropped.length > 0 && <DroppedReplies items={source.dropped} />}
     <div className="dt-row-buttons">
       <Button variant="outline" size="sm" onClick={onOpen}>{t('sourceOpen')}</Button>
-      {source.installed && <Button variant="outline" size="sm" icon={<Icon name="shield" size={14} />}
-        onClick={() => navigate(sourceRoute(source.id, 'governance'))}>{t('sourcePolicyPrompts')}</Button>}
       {busy && <span className="dt-hint" role="status">{t('loading')}</span>}
     </div>
     {source.installed && <button type="button" className="dt-textlink dt-source-governance"

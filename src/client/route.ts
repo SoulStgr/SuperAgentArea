@@ -27,7 +27,6 @@ export type Route = { page: 'overview'; id?: undefined; query?: undefined }
   | { page: 'artifacts'; id?: undefined; query?: { project?: string; source?: string; q?: string } }
   | { page: 'artifacts'; id: string; query?: undefined }
   | { page: 'decisions'; id?: undefined; query?: { filter?: DecisionFilter; window?: '24h' } }
-  | { page: 'decisions'; id?: undefined; query?: { filter?: DecisionFilter; window?: '24h' } }
   | { page: 'trigger'; id?: undefined; query?: { filter?: ThreadFilter } }
   | { page: 'trigger'; id: string; query?: { trigger?: string } }
   | { page: 'execution'; id?: undefined; query?: { filter?: TicketFilter } }
@@ -89,26 +88,10 @@ export function parseRoute(value: unknown): Route | undefined {
     case 'decisions': return decisionsRoute({ filter: pick(DECISION_FILTERS, query?.filter),
       window: query?.window === '24h' ? '24h' : undefined })
     case 'eval': return decisionsRoute({ filter: pick(DECISION_FILTERS, query?.filter),
-    case 'prompts': return { page: 'source' }
-    case 'policy':
-      if (query?.segment === 'eval') return settingsRoute('routing')
-      if (query?.segment === 'decisions') return decisionsRoute({ filter: pick(DECISION_FILTERS, query?.filter),
-        window: query?.window === '24h' ? '24h' : undefined })
-      return { page: 'source' }
-    case 'decisions': return decisionsRoute({ filter: pick(DECISION_FILTERS, query?.filter),
-      window: query?.window === '24h' ? '24h' : undefined })
-    case 'eval': return decisionsRoute({ filter: pick(DECISION_FILTERS, query?.filter),
       window: query?.window === '24h' ? '24h' : undefined })
     case 'trigger': return record ? { page, id: record, query: compact({ trigger: text('trigger') }) }
       : { page, query: compact({ filter: pick(THREAD_FILTERS, query?.filter) }) }
     case 'execution': return record ? { page, id: record } : { page, query: compact({ filter: pick(TICKET_FILTERS, query?.filter) }) }
-    case 'settings': {
-      const group = pick(SETTINGS_GROUPS, query?.group)
-      // Older groups: Eval settings live in Routing and Eval, and the Source and Prompts groups open the Sources page.
-      if (group) return { page, query: { group } }
-      if (query?.group === 'eval') return settingsRoute('routing')
-      return query?.group === 'source' || query?.group === 'prompts' ? { page: 'source' } : settingsRoute('execution')
-    }
     case 'settings': {
       const group = pick(SETTINGS_GROUPS, query?.group)
       // Older groups: Eval settings live in Routing and Eval, and the Source and Prompts groups open the Sources page.

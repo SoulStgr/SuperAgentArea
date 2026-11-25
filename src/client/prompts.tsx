@@ -1,24 +1,18 @@
 /** One Source instance's prompts: section/skill editor, full composed prompt preview with diffing, and revision history. */
-/** One Source instance's prompts: section/skill editor, full composed prompt preview with diffing, and revision history. */
 import { Fragment, useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import type { ApiResponse } from '../app/api.ts'
 import type { PromptConfig, PromptsView } from './api.ts'
 import { SaveBar, useDraft, type DraftWords } from './draft.tsx'
 import { changedSections, isDefaultSkill, isPart, isSkill, lineDiff, partKey, partText, partWith, sectionLabel,
   sectionText, skillNameFree, withOverride, withOverrides, withSection, withoutSkill, type BuiltInPart, type DiffLine } from './prompt-config.ts'
-import { changedSections, isDefaultSkill, isPart, isSkill, lineDiff, partKey, partText, partWith, sectionLabel,
-  sectionText, skillNameFree, withOverride, withOverrides, withSection, withoutSkill, type BuiltInPart, type DiffLine } from './prompt-config.ts'
 import { useAction, usePanel } from './provider.tsx'
 import { errorText, valueLabel, when, type T } from './text.ts'
 import { Hint, LoadState } from './widgets.tsx'
-import { Button, Icon, InfoTip, Input, SegmentedControl, Tag } from './controls.tsx'
 import { Button, Icon, InfoTip, Input, SegmentedControl, Tag } from './controls.tsx'
 
 type Tab = 'edit' | 'full' | 'history'
 type Origin = { revision: number } | 'defaults' | { reset: string }
 interface PromptNote { from?: Origin; selection?: string }
-type Preview = ApiResponse<'POST prompts/preview'>
-type Query = { revision?: number; offset?: number }
 type Preview = ApiResponse<'POST prompts/preview'>
 type Query = { revision?: number; offset?: number }
 const originText = (t: T, view: PromptsView, from: Origin | undefined): string | undefined => from === undefined ? undefined
@@ -27,34 +21,24 @@ const originText = (t: T, view: PromptsView, from: Origin | undefined): string |
 
 /** One Source instance's prompt configuration, the one its Tickets' worker Sessions read. */
 export function SourcePrompts({ id }: { id: string }) {
-/** One Source instance's prompt configuration, the one its Tickets' worker Sessions read. */
-export function SourcePrompts({ id }: { id: string }) {
   const { t, call } = usePanel()
   const [view, setView] = useState<PromptsView>()
   const [error, setError] = useState<Error>()
   const reload = useCallback(async () => { setView(await call('GET sources/:id/prompts', { id })) }, [call, id])
-  const reload = useCallback(async () => { setView(await call('GET sources/:id/prompts', { id })) }, [call, id])
   useEffect(() => { reload().catch(setError) }, [reload])
   return <div className="dt-form">
-    <Hint>{t('sourcePromptsIntro')}</Hint>
-    {view ? <PromptsEditor view={view} reload={reload} scope={id} /> : <LoadState loading error={error} />}
     <Hint>{t('sourcePromptsIntro')}</Hint>
     {view ? <PromptsEditor view={view} reload={reload} scope={id} /> : <LoadState loading error={error} />}
   </div>
 }
 
 function PromptsEditor({ view, reload, scope }: { view: PromptsView; reload: () => Promise<void>; scope?: string }) {
-function PromptsEditor({ view, reload, scope }: { view: PromptsView; reload: () => Promise<void>; scope?: string }) {
   const { t, call, notify } = usePanel()
   const saved = withOverrides(view.current.config)
   const draft = useDraft<PromptConfig, PromptNote>({ key: `dsh-superagent/prompts/${view.masterId}${scope === undefined ? ''
     : `/${scope}`}`, saved, revision: view.revision,
-  const draft = useDraft<PromptConfig, PromptNote>({ key: `dsh-superagent/prompts/${view.masterId}${scope === undefined ? ''
-    : `/${scope}`}`, saved, revision: view.revision,
     reload,
     save: async (config, baseRevision) => {
-      const result = scope === undefined ? await call('PUT prompts', { body: { config, baseRevision } })
-        : await call('PUT sources/:id/prompts', { id: scope, body: { config, baseRevision } })
       const result = scope === undefined ? await call('PUT prompts', { body: { config, baseRevision } })
         : await call('PUT sources/:id/prompts', { id: scope, body: { config, baseRevision } })
       notify(t(result.context_delivery === 'pending' ? 'promptSavedPending' : 'saved'))
@@ -145,16 +129,6 @@ function PromptSections({ config, view, changed, selected, onSelect, onEdit }: {
     {part ? <BuiltInEditor config={config} view={view} part={part} onEdit={onEdit} />
       : defaultSkill ? <DefaultSkillEditor skill={defaultSkill} />
         : <TeamEditor config={config} view={view} selected={selected} onSelect={onSelect} onEdit={onEdit} />}
-  </div>
-}
-/** A bundled skill of the Source kind: read-only here, registered for its Sessions by the plugin. */
-function DefaultSkillEditor({ skill }: { skill: PromptsView['defaultSkills'][number] }) {
-  const { t } = usePanel()
-  return <div className="dt-prompt-main">
-    <div className="dt-subhead"><h3 className="dt-section-title">{t('promptDefaultSkill')}</h3>
-      <Tag tone="neutral">{skill.name}</Tag></div>
-    <Hint>{t('promptReadBy.defaultSkill')}</Hint>
-    <p className="dt-prompt-description">{skill.description}</p>
   </div>
 }
 /** A bundled skill of the Source kind: read-only here, registered for its Sessions by the plugin. */
