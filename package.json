@@ -2,7 +2,7 @@
   "name": "dsh-superagent",
   "author": "DeepSeek Harness Team <team@dsh.dev>",
   "license": "MIT",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "SuperAgentArea (saa): a proactive multi-source agent as a DSH (DeepSeek Harness) bundle. It listens to GitHub, Feishu and local folders, evaluates requests under a Policy, turns authorized ones into Tickets, and executes each in its own DSH Session with file artifacts delivered back to the origin conversation.",
   "type": "module",
