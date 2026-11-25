@@ -1,6 +1,7 @@
 /** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { SearchView } from './api.ts'
+import { ArtifactsPage } from './artifacts.tsx'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
@@ -151,6 +152,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
       case 'source': return route.id !== undefined ? <SourcePage key={route.id} id={route.id} /> : <SourcePage />
       case 'workstations': return route.id !== undefined ? <ProjectPage key={route.id} id={route.id} segment={route.query?.segment} />
         : <ProjectPage />
+      case 'artifacts': return <ArtifactsPage key={route.id ?? 'index'} id={route.id} query={route.id === undefined ? route.query : undefined} />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
       case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}

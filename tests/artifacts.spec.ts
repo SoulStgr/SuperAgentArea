@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { artifactRecordId, type ArtifactRecord, type Ticket, type Trigger } from '../src/core/index.ts'
+import { artifactRecordId, type ArtifactRecord, type Reply, type Ticket, type Trigger } from '../src/core/index.ts'
 import { artifactNotice, collectDeliverables, conflictName, copyArtifacts, deliverArtifacts, promoteArtifacts, type Artifact }
   from '../src/app/artifacts.ts'
 import { Store } from '../src/app/store.ts'
@@ -74,11 +74,12 @@ describe('delivery', () => {
     execution: { name: 'fix-t1', directory: work, assignment: '' }, ...overrides } as unknown as Ticket)
   const trigger = (folderOutbox?: string): Trigger => ({ id: 'trig-1', source: 'folder', threads: [], actor: { source: 'folder', id: 'alice' },
     human: true, at: new Date().toISOString(), text: 'x', meta: folderOutbox ? { outbox: folderOutbox } : {} })
-  const host = (stored = ticket(), storedTrigger = trigger(outbox)) => {
+  const host = (stored = ticket(), storedTrigger = trigger(outbox), reply: () => Reply = () => ({ id: 'reply-1', status: 'pending',
+    reused: false })) => {
     const rows: ArtifactRecord[] = []
     return { store: { tickets: { get: () => stored }, triggers: { get: () => storedTrigger },
-      artifacts: { add: (artifact: ArtifactRecord) => { rows.push(artifact) } }, set: vi.fn() }, engine: { reply: vi.fn() }, targetRoot: target,
-    rows }
+      artifacts: { add: (artifact: ArtifactRecord) => { rows.push(artifact) } }, set: vi.fn() },
+    engine: { reply: vi.fn(reply) }, targetRoot: target, rows }
   }
   it('records the deliverables, promotes them to the workspace, copies them to the origin outbox, indexes them, and replies', async () => {
     write('report.md', 'done')
@@ -89,7 +90,7 @@ describe('delivery', () => {
     expect(readFileSync(join(outbox, 't1', 'artifacts', 'report.md'), 'utf8')).toBe('done')
     expect(h.rows).toEqual([{ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: 'prj_workspace', source: 'folder', name: 'report.md',
       value: { hash: expect.stringMatching(/^[0-9a-f]{16}$/), size: 4, at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
-        targetRoot: target, deliveredTo: join(outbox, 't1', 'artifacts') }, at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) }])
+        targetRoot: target, deliveredTo: join(outbox, 't1', 'artifacts'), messageId: 'reply-1' }, at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) }])
     // The reply names the workspace, where people find the deliverables.
     expect(h.engine.reply).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'result', ticketId: 't1',
       text: artifactNotice(await collectDeliverables(work), target) }))
@@ -118,6 +119,21 @@ describe('delivery', () => {
     const h = host(ticket({ projectId: undefined, sourceId: undefined }))
     expect(await deliverArtifacts(h, 't1')).toBe(1)
     expect(h.rows[0]).toMatchObject({ project: 'prj_workspace', source: 'folder' })
+  })
+  it('records the id of the reply that names the files, also when that reply was already queued', async () => {
+    write('a.md', 'a')
+    write('b.md', 'b')
+    const queued = host(ticket(), trigger(), () => ({ id: 'reply-9', status: 'sent', reused: true }))
+    expect(await deliverArtifacts(queued, 't1')).toBe(2)
+    expect(queued.rows.map(row => row.value.messageId)).toEqual(['reply-9', 'reply-9'])
+  })
+  it('keeps the promoted files and their index rows when the result reply is refused, and reports the refusal', async () => {
+    write('report.md', 'done')
+    const refused = host(ticket(), trigger(), () => { throw new Error('no channel') })
+    await expect(deliverArtifacts(refused, 't1')).rejects.toThrow('no channel')
+    expect(readFileSync(join(target, 'report.md'), 'utf8')).toBe('done')
+    expect(refused.rows).toHaveLength(1)
+    expect(refused.rows[0]!.value).not.toHaveProperty('messageId')
   })
   it('does nothing for an unknown ticket, an unset directory, or no deliverables', async () => {
     expect(await deliverArtifacts(host(undefined as unknown as Ticket), 't1')).toBe(0)

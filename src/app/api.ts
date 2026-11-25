@@ -4,6 +4,7 @@ import type { ProjectLocation, ProjectRecord, ProjectStatus } from '../core/inde
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
+import type { ArtifactDetailView, ArtifactListView } from './views/artifacts.ts'
 import type { OverviewView } from './views/overview.ts'
 import type { ProjectDetailView, ProjectListView, ProjectTicketListView } from './views/projects.ts'
 import type { SettingsView } from './views/settings.ts'
@@ -51,6 +52,8 @@ export interface Api {
   'GET projects/:id/decisions': { query?: Paged; response: DecisionListView }
   'POST projects': { body: NewProject; response: { project: ProjectRecord } }
   'PATCH projects/:id': { body: ProjectPatch; response: { project: ProjectRecord } }
+  'GET artifacts': { query?: Paged & { q?: string; project?: string; source?: string; ticket?: string }; response: ArtifactListView }
+  'GET artifacts/:id': { query?: { assignment?: string }; response: ArtifactDetailView }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }

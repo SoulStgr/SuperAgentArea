@@ -1,12 +1,13 @@
-/** Ticket detail page: stage and actions, Mandate details, undelivered/delivered Inputs, subscribed Threads, and Assignments. */
+/** Ticket detail page: stage and actions, Mandate details, delivered artifacts, undelivered/delivered Inputs, Threads, and Assignments. */
 import { useState, type ReactNode } from 'react'
 import { ApiError, usePoll, type TicketPageView } from './api.ts'
-import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
+import { Button, DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { settingsRoute } from './route.ts'
 import { Earlier, ThreadLine, automatedRuns } from './rows.tsx'
-import { actorName, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
+import { sizeText } from './artifacts.tsx'
+import { actorName, errorText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { ActionLink, ConfirmButton, ExternalLink, Hint, KeyValues, LabelValue, LoadState, MarkdownLite, PageHead, Section, SessionButton,
   StageMark, When } from './widgets.tsx'
 
@@ -105,6 +106,32 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
   </Section>
 }
 
+/** The deliverables of one Ticket, by the rows the 产物 page uses: their names, sizes and hashes, and their downloads. */
+function TicketArtifacts({ id }: { id: string }) {
+  const { t, call, navigate, download, notify } = usePanel()
+  const { data } = usePoll(() => call('GET artifacts', { query: { ticket: id, limit: 50 } }), [id])
+  if (!data?.items.length) return null
+  return <Section title={t('artifactTicketTitle')} count={data.total}>
+    <ul className="dt-list">{data.items.map(artifact => <li key={artifact.id} className="dt-row">
+      <div className="dt-row-main">
+        <div className="dt-row-title">
+          <button type="button" className="dt-textlink dt-mono"
+            onClick={() => navigate({ page: 'artifacts', id: artifact.id })}>{artifact.name}</button>
+          {!artifact.deliverable && <Tag tone="warning">{t('artifactGone')}</Tag>}
+        </div>
+        <div className="dt-row-meta"><span>{sizeText(artifact.size)}</span><span className="dt-mono">{artifact.hash}</span>
+          <When at={artifact.at} /></div>
+      </div>
+      <div className="dt-row-actions">
+        <Button variant="outline" size="sm" icon={<Icon name="download" size={14} />} disabled={!artifact.deliverable}
+          onClick={() => { void download({ id: artifact.id, name: artifact.name }).catch(failure => notify(errorText(failure))) }}>
+          {t('artifactDownload')}
+        </Button>
+      </div>
+    </li>)}</ul>
+  </Section>
+}
+
 export function TicketPage({ id }: { id: string }) {
   const { t, call } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET tickets/:id', { id }), [id])
@@ -154,6 +181,7 @@ export function TicketPage({ id }: { id: string }) {
       <span className="dt-banner-label">{t('deliveryFailedPrefix')}</span>{data.deliveryError}
     </p>}
     <MandateDetails ticket={data} actor={actor} />
+    <TicketArtifacts id={id} />
     {undelivered.length > 0 && <Section title={t('undeliveredInputs')} count={undelivered.length}>
       <Hint>{data.deliveryError ? t('inputRetryHint') : data.paused ? t('inputPausedHint') : t('inputWaitingHint')}</Hint>
       <InputList inputs={undelivered} />

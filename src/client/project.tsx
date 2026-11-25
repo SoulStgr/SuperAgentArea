@@ -298,7 +298,8 @@ function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: 
     <div className="dt-row-meta">
       <LabelValue label={t('projectOpenTickets')} value={counts.openTickets} />
       <LabelValue label={t('projectTickets')} value={counts.tickets} />
-      <LabelValue label={t('projectArtifacts')} value={counts.artifacts} /><InfoTip text={t('projectArtifactsPending')} />
+      <LabelValue label={t('projectArtifacts')} value={<button type="button" className="dt-textlink"
+        onClick={() => navigate({ page: 'artifacts', query: { project: project.id } })}>{counts.artifacts}</button>} />
       <InfoTip text={t('projectDetailIntro')} />
     </div>
     <SegmentedControl label={t('projectSegmentLabel')} value={segment} options={segments} onChange={go} />

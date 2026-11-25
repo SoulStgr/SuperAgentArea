@@ -60,7 +60,7 @@ it('navigates to a workstation page from its card section, and remembers the sec
 it('shows domain terms in the interface language only and lists both languages in the (?) glossary', async () => {
   await mount(en)
   expect(all('[role="tab"]').map(tab => tab.textContent))
-    .toEqual(['Overview', 'Sources', 'Workstations', 'Trigger', 'Eval', 'Execution', 'Settings'])
+    .toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts', 'Trigger', 'Eval', 'Execution', 'Settings'])
   await click('Glossary')
   const dialog = document.querySelector('[role="dialog"]')!
   const row = [...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Ticket'))!

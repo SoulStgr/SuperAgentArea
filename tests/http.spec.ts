@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { z } from 'zod'
 import { registerHttp } from '../src/app/http.ts'
@@ -6,24 +9,36 @@ import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SetupError } from '../src/setup.ts'
-import { UserError, type ProjectRecord } from '../src/core/index.ts'
+import { UserError, type ArtifactRecord, type ProjectRecord, type Ticket, type Trigger } from '../src/core/index.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
-/** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
+interface Answer { status: number; headers: Record<string, unknown>; bytes: Buffer }
+/**
+ * Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers.
+ * `raw` returns the response's headers and bytes, for the download route that answers with a file rather than JSON.
+ */
 function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
   let handler: Handler = async () => {}
   const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
   registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime } as unknown as HttpHost)
-  return async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
-    let status = 0, text = ''
-    const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
-    const sent = Object.fromEntries(Object.entries({ host: '127.0.0.1:3082', 'x-orchestrator-request': '1', ...headers }).filter(([,
-      value]) => value !== undefined))
-    const req = { method, url: `/orchestrator/api/${path}`, headers: sent, async *[Symbol.asyncIterator]() { yield* chunks } }
-    await handler(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
-    return { status, body: JSON.parse(text) as Record<string, unknown> }
+  const send = async (method: string, path: string, body?: unknown, headers: Headers = {}): Promise<Answer> => {
+    let status = 0, head: Record<string, unknown> = {}
+    const chunks: Buffer[] = []
+    const sent = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
+    const requestHeaders = Object.fromEntries(Object.entries({ host: '127.0.0.1:3082', 'x-orchestrator-request': '1', ...headers })
+      .filter(([, value]) => value !== undefined))
+    const req = { method, url: `/orchestrator/api/${path}`, headers: requestHeaders,
+      async *[Symbol.asyncIterator]() { yield* sent } }
+    await handler(req, { writeHead: (code: number, values: Record<string, unknown> = {}) => { status = code; head = values },
+      end: (data?: string | Buffer) => { if (data !== undefined) chunks.push(Buffer.from(data)) } })
+    return { status, headers: head, bytes: Buffer.concat(chunks) }
   }
+  const call = async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
+    const { status, bytes } = await send(method, path, body, headers)
+    return { status, body: JSON.parse(bytes.toString()) as Record<string, unknown> }
+  }
+  return Object.assign(call, { raw: send })
 }
 
 it('adds and patches Source instances through their own routes', async () => {
@@ -177,4 +192,104 @@ it('serves the workstation cards, and routes creating and changing one to the Pr
       .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
   }
   expect(updated).toHaveLength(2)
+})
+
+it('serves the artifact index and one artifact\'s chain, and downloads a file only from the artifact\'s own landing', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-http-'))
+  const root = join(directory, 'area', 'aps'), outbox = join(directory, 'outbox', 't1', 'artifacts')
+  mkdirSync(root, { recursive: true })
+  mkdirSync(outbox, { recursive: true })
+  writeFileSync(join(root, 'report.md'), 'done')
+  writeFileSync(join(root, '报告.md'), 'x')
+  writeFileSync(join(outbox, 'old.csv'), 'a,b')
+  writeFileSync(join(directory, 'secret.txt'), 'secret')
+  const row = (id: string, name: string, at: string, value: ArtifactRecord['value']): ArtifactRecord =>
+    ({ id, ticket: 't1', project: 'prj_aps', source: 'feishu', name, value, at })
+  const rows: ArtifactRecord[] = [
+    row('a1', 'report.md', '2026-09-23T06:00:00Z', { hash: 'h1', size: 4, at: '2026-09-23T06:00:00Z', targetRoot: root, messageId: 'reply-1' }),
+    row('a-gone', 'gone.txt', '2026-09-23T05:00:00Z', { hash: 'h2', size: 1, at: '2026-09-23T05:00:00Z', targetRoot: join(directory, 'nowhere') }),
+    row('a-escape', '../secret.txt', '2026-09-23T04:00:00Z', { hash: 'h3', size: 6, at: '2026-09-23T04:00:00Z', targetRoot: root }),
+    row('a-unicode', '报告.md', '2026-09-23T03:00:00Z', { hash: 'h4', size: 1, at: '2026-09-23T03:00:00Z', targetRoot: root }),
+    // An artifact of a Ticket saved before Projects: its landing is empty, and the outbox copy is what is left.
+    { id: 'a-old', ticket: 't-old', source: 'github', name: 'old.csv',
+      value: { hash: 'h-old', size: 3, at: '2026-09-22T00:00:00Z', targetRoot: '', deliveredTo: outbox }, at: '2026-09-22T00:00:00Z' },
+  ]
+  const ticket = { id: 't1', title: '修复回归', projectId: 'prj_aps', sourceId: 'feishu', channels: [], inputs: [], undelivered: [],
+    createdAt: '2026-09-22T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z', reporter: { source: 'feishu', id: 'ou_alice' },
+    mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'feishu', id: 'ou_alice' }, scope: '' },
+    origin: { triggerId: 'e1', triggerIds: ['e1'] },
+    assignments: [{ id: 'as1', state: 'running', createdAt: '2026-09-22T00:00:00Z', startedAt: '2026-09-22T00:01:00Z',
+      report: { state: 'progress', summary: 'working', at: '2026-09-22T00:02:00Z' } }] } as unknown as Ticket
+  const trigger = { id: 'e1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_1:om_root' }], actor: { source: 'feishu',
+    id: 'ou_alice' }, human: true, at: '2026-09-22T00:00:00Z', text: 'please', meta: {} } as unknown as Trigger
+  const projects = [
+    { id: 'prj_aps', key: 'aps', value: { name: 'aps' } },
+    { id: 'prj_workspace', key: 'workspace', value: { name: 'workspace' } },
+  ] as unknown as ProjectRecord[]
+  try {
+    const call = serve({
+      store: { settings: () => SettingsSchema.parse({}), artifacts: { get: (id: string) => rows.find(item => item.id === id),
+        list: () => rows }, tickets: { get: (id: string) => id === 't1' ? ticket : undefined },
+        triggers: { get: (id: string) => id === 'e1' ? trigger : undefined },
+        projects: { get: (id: string) => projects.find(project => project.id === id) } },
+      sources: { instances: () => [], kind: () => undefined },
+      links: () => () => ({ url: '', label: { zh: '', en: '' } }),
+    })
+    // The index is newest first, names each row's Project and Source, and says whether the file is still readable.
+    const index = await call('GET', 'artifacts')
+    expect(index.status).toBe(200)
+    expect(index.body).toMatchObject({ total: 5, next_offset: null, items: [
+      { id: 'a1', name: 'report.md', ticket: 't1', ticketTitle: '修复回归', project: 'prj_aps', projectName: 'aps', source: 'feishu',
+        size: 4, hash: 'h1', deliverable: true, targetRoot: root },
+      { id: 'a-gone', deliverable: false },
+      { id: 'a-escape', deliverable: false },
+      { id: 'a-unicode', deliverable: true },
+      { id: 'a-old', project: 'prj_workspace', projectName: 'workspace', deliverable: true },
+    ] })
+    expect((index.body as { items: { sourceLabel: unknown }[] }).items[0]!.sourceLabel).toEqual({ zh: 'feishu', en: 'feishu' })
+    // Filters: a name or hash search, and the Project (also by its key), Source and Ticket.
+    expect(await call('GET', 'artifacts?q=REPORT')).toMatchObject({ status: 200, body: { total: 1, items: [{ id: 'a1' }] } })
+    expect(await call('GET', 'artifacts?q=h-old')).toMatchObject({ status: 200, body: { total: 1, items: [{ id: 'a-old' }] } })
+    expect(await call('GET', 'artifacts?project=prj_workspace')).toMatchObject({ body: { total: 1, items: [{ id: 'a-old' }] } })
+    expect(await call('GET', 'artifacts?project=workspace')).toMatchObject({ body: { total: 1, items: [{ id: 'a-old' }] } })
+    expect(await call('GET', 'artifacts?source=feishu&limit=2')).toMatchObject({ body: { total: 4, items: [{ id: 'a1' }, { id: 'a-gone' }],
+      next_offset: 2 } })
+    expect(await call('GET', 'artifacts?ticket=t1&offset=3')).toMatchObject({ body: { total: 4, items: [{ id: 'a-unicode' }],
+      next_offset: null } })
+    // One artifact's page: its delivery and the chain back to its Ticket, its Assignment and the worker Session.
+    expect(await call('GET', 'artifacts/a1')).toMatchObject({ status: 200, body: {
+      artifact: { id: 'a1', name: 'report.md', value: { hash: 'h1', targetRoot: root } },
+      project: { id: 'prj_aps', name: 'aps', key: 'aps' }, source: { id: 'feishu' },
+      ticket: { id: 't1', title: '修复回归', stage: 'working', state: 'open' },
+      assignment: { id: 'as1', state: 'running', report: { state: 'progress', summary: 'working' } },
+      workerSessionId: 'worker-t1', delivery: { path: join(root, 'report.md'), exists: true, messageId: 'reply-1' },
+      links: { ticket: 't1', thread: 'feishu:oc_1:om_root' } } })
+    // A named Assignment the Ticket does not have leaves the chain without one, and an unknown artifact is a 404.
+    expect((await call('GET', 'artifacts/a1?assignment=as-gone')).body).not.toHaveProperty('assignment')
+    expect(await call('GET', 'artifacts/unknown')).toMatchObject({ status: 404, body: { error: 'Artifact not found' } })
+    // The file comes back as a download with its own length, name and media type.
+    const download = await call.raw('GET', 'artifacts/a1/file')
+    expect(download.status).toBe(200)
+    expect(download.headers).toMatchObject({ 'content-type': 'application/octet-stream', 'content-length': '4',
+      'x-content-type-options': 'nosniff' })
+    expect(download.headers['content-disposition']).toBe('attachment; filename="report.md"; filename*=UTF-8\'\'report.md')
+    expect(download.bytes.toString()).toBe('done')
+    // A non-ASCII name keeps an ASCII fallback and resolves exactly in the encoded form.
+    const unicode = await call.raw('GET', 'artifacts/a-unicode/file')
+    expect(unicode.headers['content-disposition']).toBe('attachment; filename="__.md"; filename*=UTF-8\'\'%E6%8A%A5%E5%91%8A.md')
+    expect(unicode.bytes.toString()).toBe('x')
+    // An old artifact downloads its outbox copy; a missing file, a name that would leave the landing root, and an unknown id
+    // are all 404.
+    expect((await call.raw('GET', 'artifacts/a-old/file')).bytes.toString()).toBe('a,b')
+    for (const id of ['a-gone', 'a-escape', 'unknown']) {
+      const refused = await call.raw('GET', `artifacts/${id}/file`)
+      expect(refused.status, id).toBe(404)
+      expect(JSON.parse(refused.bytes.toString())).toEqual({ error: 'Artifact not found' })
+    }
+    // The download keeps the panel's same-origin check.
+    expect((await call.raw('GET', 'artifacts/a1/file', undefined, { 'x-orchestrator-request': undefined })))
+      .toMatchObject({ status: 403 })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

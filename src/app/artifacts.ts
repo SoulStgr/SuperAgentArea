@@ -8,7 +8,8 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, relative } from 'node:path'
-import { artifactRecordId, WORKSPACE_PROJECT_ID, type ArtifactRecord, type ReplyRequest, type Ticket, type Trigger } from '../core/index.ts'
+import { artifactRecordId, WORKSPACE_PROJECT_ID, type ArtifactRecord, type Reply, type ReplyRequest, type Ticket, type Trigger }
+  from '../core/index.ts'
 import { KV, type Key } from '../kv.ts'
 
 /** One deliverable file: its path relative to `deliver/` with forward slashes, content hash, size, and collection time. */
@@ -89,16 +90,17 @@ export interface ArtifactHost {
     artifacts: { add(artifact: ArtifactRecord): void }
     set<V>(key: Key<V>, value: V): void
   }
-  readonly engine: { reply(request: ReplyRequest): unknown }
+  readonly engine: { reply(request: ReplyRequest): Reply }
   /** The Project directory the deliverables are promoted into, such as `<stateDir>/area/workspace`. */
   readonly targetRoot: string
 }
 
 /**
- * Collects a ticket's deliverables once its worker reported ready: records them under `KV.artifacts` for the stages that still
- * read it, promotes them into `host.targetRoot`, keeps the folder Source's outbox copy when the origin Trigger names one,
- * indexes each file as an artifact row, and posts the result reply naming them. Returns the number of artifacts; zero when
- * there is nothing.
+ * Collects a ticket's deliverables once its worker reported ready: keeps the write-only `KV.artifacts` compatibility copy,
+ * promotes them into `host.targetRoot`, keeps the folder Source's outbox copy when the origin Trigger names one, indexes each
+ * file as an artifact row (with the id of the result reply that names them when one is queued), and posts that reply. A
+ * refused reply keeps the already promoted files and their index rows, as it did before the message id was recorded, and is
+ * thrown so the effect tries again. Returns the number of artifacts; zero when there is nothing.
  */
 export async function deliverArtifacts(host: ArtifactHost, ticketId: string): Promise<number> {
   const ticket = host.store.tickets.get(ticketId)
@@ -113,11 +115,17 @@ export async function deliverArtifacts(host: ArtifactHost, ticketId: string): Pr
   if (outbox) await copyArtifacts(directory, artifacts, outbox)
   const project = ticket.projectId ?? WORKSPACE_PROJECT_ID
   const source = ticket.sourceId ?? trigger?.source ?? ''
+  // The reply is queued after the files are in place; its message id is the delivery's, also when the reply is reused.
+  let messageId: string | undefined
+  let refused: unknown
+  try { messageId = host.engine.reply({ purpose: 'result', ticketId, text: artifactNotice(artifacts, host.targetRoot) }).id }
+  catch (error) { refused = error }
   for (const artifact of artifacts) {
     host.store.artifacts.add({ id: artifactRecordId(ticketId, artifact.name), ticket: ticketId, project, source, name: artifact.name,
-      value: { hash: artifact.hash, size: artifact.size, at: artifact.at, targetRoot: host.targetRoot, ...outbox ? { deliveredTo: outbox } : {} },
+      value: { hash: artifact.hash, size: artifact.size, at: artifact.at, targetRoot: host.targetRoot,
+        ...outbox ? { deliveredTo: outbox } : {}, ...messageId ? { messageId } : {} },
       at: artifact.at })
   }
-  host.engine.reply({ purpose: 'result', ticketId, text: artifactNotice(artifacts, host.targetRoot) })
+  if (refused) throw refused
   return artifacts.length
 }

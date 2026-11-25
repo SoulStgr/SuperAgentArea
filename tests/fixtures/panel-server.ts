@@ -13,7 +13,8 @@ import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView
   ThreadPageView,
   ThreadRow, TicketPageView,
   TicketRow, TicketStage,
-  TriggerRow } from '../../src/client/api.ts'
+  TriggerRow,
+  ArtifactDetailView, ArtifactRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
@@ -71,6 +72,24 @@ export function found(id: string, at: string, { threadTitle, filtered,
 }
 export const promptVersion = (revision: number, config: PromptsView['current']['config']): PromptsView['current'] =>
   ({ revision, previousRevision: revision ? revision - 1 : null, savedAt: '', source: 'panel', config })
+/** A delivered artifact as the 产物 list shows it; a test overrides the file, its work or whether it is still readable. */
+export function artifactRow(fields: Partial<ArtifactRow> = {}): ArtifactRow {
+  return { id: 'a1', name: 'report.md', ticket: 't1', ticketTitle: '修复回归', project: 'prj_aps', projectName: 'aps',
+    source: 'feishu', sourceLabel: feishuKind.title, size: 120, hash: 'abcdef0123456789', at: '2026-09-23T00:00:00Z',
+    targetRoot: '/srv/aps', deliverable: true, ...fields }
+}
+/** One artifact's page: its row, Project, Source, Ticket, Assignment, worker Session, delivery and links. */
+export function artifactDetail(fields: Partial<ArtifactDetailView> = {}): ArtifactDetailView {
+  const at = '2026-09-23T00:00:00Z'
+  return { artifact: { id: 'a1', ticket: 't1', project: 'prj_aps', source: 'feishu', name: 'report.md',
+      value: { hash: 'abcdef0123456789', size: 120, at, targetRoot: '/srv/aps', messageId: 'reply-a1' }, at },
+    project: { id: 'prj_aps', name: 'aps', key: 'aps' }, source: { id: 'feishu', label: feishuKind.title },
+    ticket: { id: 't1', title: '修复回归', stage: 'working', state: 'open', reporter: actor('feishu', MEMBER) },
+    assignment: { id: 'a1', state: 'running', startedAt: '2026-09-22T00:01:00Z',
+      report: { state: 'progress', summary: 'working' } },
+    workerSessionId: 'worker-t1', delivery: { path: '/srv/aps/report.md', exists: true, messageId: 'reply-a1' },
+    links: { ticket: 't1', thread: 'feishu:oc_1:om_root' }, ...fields }
+}
 /** Build a dropped outbound reply fixture (`feishu` replies to `oc_1`/`om_root`; `github` comments on PR #42). */
 export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'github', reason: DroppedReply['dropped']['reason'],
   { ticket, thread }: { ticket?: DroppedReply['ticket']; thread?: false } = {}): DroppedReply => ({
@@ -135,6 +154,12 @@ export interface PanelServer {
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
+  /** The delivered artifacts the 产物 pages list, the page served for one of them, and the file each download answers with. */
+  artifacts: ArtifactRow[]
+  artifactDetails: Record<string, ArtifactDetailView>
+  artifactFiles: Record<string, { name: string; body: string }>
+  /** The artifact ids the panel downloaded, in order. */
+  downloads: string[]
 }
 export let server: PanelServer
 
@@ -335,6 +360,8 @@ const overviewView = (): ApiResponse<'GET overview'> => {
     person: server.person, executor: { running: 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers, idle: 1 },
     flow: { received: 12, filtered: 2, triggers: 10, judged: 5, accepted: 1, evaluating: 0,
       dropped: server.dropped.filter(item => item.dropped.at >= dayAgo()).length },
+    artifacts: server.artifacts.slice(0, 5).map(row => ({ id: row.id, name: row.name, project: row.project,
+      projectName: row.projectName, at: row.at })),
     policyVersion: 'abcdef1234567890',
   }
 }
@@ -409,7 +436,7 @@ function initial(): PanelServer {
     sourcePending: { feishu: 2 },
     sourceExec: { feishu: { working: 1, queued: 1, waiting: 0 } },
     ticketSources: { t1: 'feishu', t0: 'feishu', t4: 'feishu' },
-    dropped: [], failing: [],
+    dropped: [], failing: [], artifacts: [], artifactDetails: {}, artifactFiles: {}, downloads: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -559,6 +586,18 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     project.updatedAt = new Date().toISOString()
     return { project: projectRecordOf(project) }
   } },
+  // The artifact index filters by Project, Source, Ticket or a name/hash search; one artifact's page carries its chain.
+  'GET artifacts': { query: ['q', 'project', 'source', 'ticket', 'offset', 'limit'], answer: ({ query }) => {
+    const text = (query.q ?? '').toLowerCase()
+    const filtered = server.artifacts.filter(row => (!query.project || row.project === query.project)
+      && (!query.source || row.source === query.source) && (!query.ticket || row.ticket === query.ticket)
+      && (!text || row.name.toLowerCase().includes(text) || row.hash.toLowerCase().includes(text)))
+    const from = Number(query.offset ?? 0), size = Number(query.limit ?? 20)
+    const items = filtered.slice(from, from + size)
+    return { items, total: filtered.length, next_offset: from + size < filtered.length ? from + size : null }
+  } },
+  'GET artifacts/:id': { query: ['assignment'], answer: ({ params }) => server.artifactDetails[params.id]
+    ?? refuse(404, 'Artifact not found') },
   'GET settings': { answer: settingsView },
   'POST sources/:id/labels': { answer: () => {
     // Label refresh failures come from the bot CLI and are returned verbatim.
@@ -717,6 +756,17 @@ export function usePanelServer(cleanup: () => void) {
       const method = init?.method ?? 'GET'
       const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined
       server.requests.push({ path: decodeURIComponent(`${path}${address.search}`), method, ...body === undefined ? {} : { body } })
+      // A download answers with bytes, which the client hands to the browser, not with the JSON of a management route.
+      const file = /^artifacts\/([^/]+)\/file$/.exec(path)
+      if (method === 'GET' && file) {
+        const id = decodeURIComponent(file[1]!)
+        const content = server.artifactFiles[id]
+        if (!content) return new Response(JSON.stringify({ error: 'Artifact not found' }), { status: 404,
+          headers: { 'content-type': 'application/json' } })
+        server.downloads.push(id)
+        return new Response(content.body, { status: 200, headers: { 'content-type': 'application/octet-stream',
+          'content-disposition': `attachment; filename="${content.name}"`, 'content-length': String(content.body.length) } })
+      }
       const route = match(method, path.split('/'))
       if (!route) return new Reply({ error: 'Unknown operation' }, 404)
       const answer = await run(route.key, route.params, address.searchParams, body)

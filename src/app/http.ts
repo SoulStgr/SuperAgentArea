@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { readFile } from 'node:fs/promises'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
@@ -23,6 +24,7 @@ import type { TextCache } from './cache.ts'
 import type { LinkTarget, ViewHost } from './views/records.ts'
 import type { Variable } from './execution-environment.ts'
 import { policyHistory } from './settings-history.ts'
+import { artifactDetail, artifactFile, artifactList, type ArtifactFile } from './views/artifacts.ts'
 import { overview } from './views/overview.ts'
 import { projectDecisionList, projectDetail, projectList, projectThreadList, projectTicketList } from './views/projects.ts'
 import { settingsView } from './views/settings.ts'
@@ -75,6 +77,25 @@ async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<un
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value))
+}
+/** A filename that an HTTP header can carry as its plain fallback: printable ASCII, with quotes and backslashes replaced. */
+const asciiFilename = (name: string): string => name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+/**
+ * Answers with one artifact's bytes as a download: the filename is safe for both header forms, the length is the file's
+ * own, and nothing is served for a file that disappeared between resolving and reading it.
+ */
+async function sendFile(res: ServerResponse, file: ArtifactFile): Promise<void> {
+  let body: Buffer
+  try {
+    body = await readFile(file.path)
+  } catch {
+    throw new RouteError(404, 'Artifact not found')
+  }
+  const encoded = encodeURIComponent(file.name).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+  res.writeHead(200, { 'content-type': 'application/octet-stream',
+    'content-disposition': `attachment; filename="${asciiFilename(file.name)}"; filename*=UTF-8''${encoded}`,
+    'content-length': String(body.length), 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+  res.end(body)
 }
 export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
   const host = req.headers.host
@@ -150,6 +171,10 @@ const SourcesQuery = z.object({ offset, limit: limit(20, 500) })
 const ProjectsQuery = z.object({ status: z.enum(['active', 'archived']).catch('active') })
 const ProjectTicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).optional().catch(undefined), offset, limit: limit(20, 500) })
 const ProjectThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('all'), offset, limit: limit(20, 500) })
+/** The artifact index's filters, its page, and the Assignment one artifact's chain shows when a person names one. */
+const ArtifactsQuery = z.object({ q: z.string().trim().optional(), project: z.string().trim().optional(),
+  source: z.string().trim().optional(), ticket: z.string().trim().optional(), offset, limit: limit(20, 200) })
+const ArtifactQuery = z.object({ assignment: z.string().trim().min(1).optional() })
 const count = z.coerce.number().int().nonnegative()
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)])
@@ -287,6 +312,17 @@ function routes(runtime: HttpHost): Routes {
     },
     'PATCH projects/:id': async ({ params, body }) =>
       ({ project: runtime.projects.update(project(params.id), ProjectPatchRequest.parse(await body())) }),
+    // The artifact index: one page of delivered files, filtered by Project, Source, Ticket or a name or hash; and one
+    // artifact's page with the chain back to its Ticket, Assignment and worker Session. Its file is served beside these routes.
+    'GET artifacts': ({ query }) => {
+      const { q, project: projectId, source, ticket, offset: from, limit: size } = ArtifactsQuery.parse(query)
+      return artifactList(views(runtime), { q, project: projectId, source, ticket }, from, size)
+    },
+    'GET artifacts/:id': ({ params, query }) => {
+      const detail = artifactDetail(views(runtime), params.id, ArtifactQuery.parse(query).assignment)
+      if (!detail) throw new RouteError(404, 'Artifact not found')
+      return detail
+    },
     'GET decisions': ({ query }) => {
       const { kind, window, offset, limit } = DecisionsQuery.parse(query)
       const since = window ? new Date(Date.now() - 86_400_000).toISOString() : ''
@@ -347,7 +383,16 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
       if (!sameOrigin(req, ctx.webServer.port)) { json(res, 403, { error: 'Same-origin management request required' }); return }
       try {
         await runtime.ready
-        const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
+        const segments = url.pathname.slice('/orchestrator/api/'.length).split('/')
+        // An artifact download answers with the file's bytes, not the JSON of a management route; it keeps the same-origin
+        // check above, so the panel fetches it with the request header and hands the bytes to the browser.
+        if ((req.method ?? 'GET') === 'GET' && segments.length === 3 && segments[0] === 'artifacts' && segments[2] === 'file') {
+          const file = artifactFile(runtime.store, decoded(segments[1]!))
+          if (!file) throw new RouteError(404, 'Artifact not found')
+          await sendFile(res, file)
+          return
+        }
+        const route = match(table, req.method ?? 'GET', segments)
         if (!route) throw new RouteError(404, 'Unknown operation')
         const query = Object.fromEntries(url.searchParams)
         json(res, 200, await route.run({ params: route.params as never, query, body: maxBytes => readBody(req, maxBytes) }))

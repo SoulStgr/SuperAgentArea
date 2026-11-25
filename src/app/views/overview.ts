@@ -4,6 +4,7 @@ import type { Health } from '../../sources/host.ts'
 import type { SetupProblem } from '../../setup.ts'
 import { anyoneAllowed } from '../../policy.ts'
 import type { Store } from '../store.ts'
+import { recentArtifacts } from './artifacts.ts'
 import { awaitingEval, dayAgo, newestFirst, ownersOf, snapshot, threadSummary, type ViewHost } from './records.ts'
 import { sourceHealth, type HealthMap } from './sources.ts'
 import { ticketRow, type ExecutorLoad } from './tickets.ts'
@@ -32,7 +33,8 @@ export function evalsHealth(store: Store, now = Date.now()): Health {
     + `the latest on ${latest.threadKey}: ${reasonText(latest.reason)}` }
 }
 /**
- * Builds the operator overview: active system problems, tickets awaiting human action, executor load, and 24-hour trigger flow.
+ * Builds the operator overview: active system problems, tickets awaiting human action, the newest artifacts, executor load,
+ * and 24-hour trigger flow.
  * @param setup - Setup problem to surface first (where setup stopped, or a Source paused by setup).
  */
 export function overview(host: ViewHost, health: HealthMap, policyVersionValue: string, load: ExecutorLoad, setup?: SetupProblem) {
@@ -75,6 +77,7 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
     executor: { ...load, maxWorkers: settings.executor.maxWorkers, idle: open.filter(ticket => ticketStage(ticket).stage === 'idle').length },
     flow: { received, filtered, triggers: received - filtered, judged: judgement.judged, accepted: judgement.accepted,
       evaluating: evaluating.length, dropped: store.read.droppedSince(since) },
+    artifacts: recentArtifacts(host, 5),
     policyVersion: policyVersionValue,
   }
 }

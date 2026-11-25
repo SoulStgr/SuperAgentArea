@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -13,6 +13,7 @@ import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourceDetail, sourcesStatus } from '../src/app/views/sources.ts'
 import { projectDecisionList, projectDetail, projectList, projectThreadList, projectTicketList } from '../src/app/views/projects.ts'
+import { artifactDetail, artifactFile, artifactList, recentArtifacts } from '../src/app/views/artifacts.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { markdown, plain } from '../src/app/views/text.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
@@ -21,7 +22,7 @@ import { feishuLink } from '../src/sources/feishu-channel.ts'
 import { feishuChannel, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
 import { githubLink } from '../src/sources/github-channel.ts'
 import { githubChannel } from '../src/sources/github-trigger.ts'
-import { artifactRecordId, followupOwners, type ChannelRef, type ProjectRecord } from '../src/core/index.ts'
+import { artifactRecordId, followupOwners, type ArtifactRecord, type ChannelRef, type ProjectRecord } from '../src/core/index.ts'
 
 let directory: string
 let store: Store
@@ -403,7 +404,7 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
 })
 
 /** The work the Project views page over: a station's Ticket and artifact, an old workspace Ticket, and a Thread answered into the station. */
-function projectFixture() {
+function projectFixture({ artifact = true }: { artifact?: boolean } = {}) {
   const host = views()
   const station = (id: string, key: string, fields: Partial<ProjectRecord> = {}): ProjectRecord => ({ id, key, status: 'active',
     createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-22T00:00:00Z',
@@ -432,8 +433,9 @@ function projectFixture() {
   ticket('t1', 'prj_aps', 'feishu', 'e1', '2026-09-23T00:00:00Z')
   // An old Ticket saved before Projects existed belongs to the built-in workspace.
   ticket('t-old', undefined, 'github', 'e2', '2026-09-21T00:00:00Z')
-  store.artifacts.add({ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: 'prj_aps', source: 'feishu', name: 'report.md',
-    value: { hash: 'h1', size: 12, at: '2026-09-23T06:00:00Z', targetRoot: '/users/alice/aps' }, at: '2026-09-23T06:00:00Z' })
+  if (artifact) store.artifacts.add({ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: 'prj_aps', source: 'feishu',
+    name: 'report.md', value: { hash: 'h1', size: 12, at: '2026-09-23T06:00:00Z', targetRoot: '/users/alice/aps' },
+    at: '2026-09-23T06:00:00Z' })
   // A Thread whose Project question a person answered with the station belongs to it, before any Ticket exists.
   store.set(KV.projects.answers('github:7'), 'prj_aps')
   return host
@@ -483,4 +485,84 @@ it('opens a Project page with its counts, its Sources and the first page of each
   expect(projectThreadList(host, 'prj_aps', 'all', 1, 1).items.map(thread => thread.key)).toEqual(['feishu:oc_1:om_root'])
   expect(projectDecisionList(host, 'prj_aps', 0, 10).items.map(decision => decision.id)).toEqual(['d1'])
   expect(projectDetail(host, 'prj_gone', {}, {})).toBeUndefined()
+})
+
+/** The artifacts the artifact views read: a station file that is there, an old outbox copy, and rows whose files are not. */
+function artifactFixture() {
+  const host = projectFixture({ artifact: false })
+  const root = join(directory, 'area', 'aps'), outbox = join(directory, 'outbox')
+  mkdirSync(root, { recursive: true })
+  writeFileSync(join(root, 'report.md'), 'done')
+  mkdirSync(join(outbox, 't-old', 'artifacts'), { recursive: true })
+  writeFileSync(join(outbox, 't-old', 'artifacts', 'old.csv'), 'a,b')
+  // The Ticket's one Assignment ran in its worker Session.
+  const ticket = host.store.tickets.get('t1')!
+  host.store.tickets.save({ ...ticket, assignments: [{ id: 'as1', state: 'running', createdAt: '2026-09-22T00:00:00Z',
+    startedAt: '2026-09-22T00:01:00Z', report: { state: 'progress', summary: 'working', at: '2026-09-22T00:02:00Z' } }] })
+  const add = (id: string, ticketId: string, fields: Partial<ArtifactRecord> = {}) => host.store.artifacts.add({ id, ticket: ticketId,
+    project: 'prj_aps', source: 'feishu', name: 'report.md', value: { hash: 'h1', size: 4, at: '2026-09-23T06:00:00Z',
+      targetRoot: root, messageId: 'reply-1' }, at: '2026-09-23T06:00:00Z', ...fields })
+  add('a-station', 't1')
+  // An artifact of a Ticket saved before Projects: its landing is empty, so only the outbox copy is left.
+  host.store.artifacts.add({ id: 'a-outbox', ticket: 't-old', source: 'github', name: 'old.csv',
+    value: { hash: 'h-old', size: 3, at: '2026-09-22T00:00:00Z', targetRoot: '', deliveredTo: join(outbox, 't-old', 'artifacts') },
+    at: '2026-09-22T00:00:00Z' })
+  // A row whose file is gone, and one whose name tries to leave the landing directory.
+  add('a-gone', 't1', { name: 'gone.txt', value: { hash: 'h-gone', size: 1, at: '2026-09-23T05:00:00Z',
+    targetRoot: join(directory, 'nowhere') }, at: '2026-09-23T05:00:00Z' })
+  add('a-escape', 't1', { source: 'github', name: '../escape.txt', value: { hash: 'h-escape', size: 1,
+    at: '2026-09-23T04:00:00Z', targetRoot: root }, at: '2026-09-23T04:00:00Z' })
+  return { host, root, outbox }
+}
+
+it('lists the artifact index newest first, with each row\'s work and whether its file is still readable', () => {
+  const { host, root } = artifactFixture()
+  const result = artifactList(host, {}, 0, 20)
+  expect(result.total).toBe(4)
+  expect(result.items.map(row => row.id)).toEqual(['a-station', 'a-gone', 'a-escape', 'a-outbox'])
+  expect(result.items[0]).toMatchObject({ name: 'report.md', ticket: 't1', ticketTitle: 't1', project: 'prj_aps', projectName: 'aps',
+    source: 'feishu', size: 4, hash: 'h1', targetRoot: root, deliverable: true })
+  expect(result.items[0]!.sourceLabel).toEqual(feishuKind.title)
+  // A row saved before Projects belongs to the built-in workspace, and one whose file is gone says so.
+  expect(result.items.find(row => row.id === 'a-outbox')).toMatchObject({ project: 'prj_workspace', projectName: 'workspace',
+    deliverable: true })
+  expect(result.items.find(row => row.id === 'a-gone')).toMatchObject({ deliverable: false })
+  expect(result.items.find(row => row.id === 'a-escape')).toMatchObject({ deliverable: false })
+  // Filters: by Project (the workspace also under its key), Source, Ticket, and a name or hash.
+  expect(artifactList(host, { project: 'prj_workspace' }, 0, 20).items.map(row => row.id)).toEqual(['a-outbox'])
+  expect(artifactList(host, { project: 'workspace' }, 0, 20).items.map(row => row.id)).toEqual(['a-outbox'])
+  expect(artifactList(host, { source: 'github' }, 0, 20).items.map(row => row.id)).toEqual(['a-escape', 'a-outbox'])
+  expect(artifactList(host, { ticket: 't1' }, 0, 20).items.map(row => row.id)).toEqual(['a-station', 'a-gone', 'a-escape'])
+  expect(artifactList(host, { q: 'REPORT' }, 0, 20).items.map(row => row.id)).toEqual(['a-station'])
+  expect(artifactList(host, { q: 'h-old' }, 0, 20).items.map(row => row.id)).toEqual(['a-outbox'])
+  // Pages are newest first, then by id, and the recent list is the head of the same order.
+  expect(artifactList(host, {}, 1, 2)).toMatchObject({ total: 4, next_offset: 3, items: [{ id: 'a-gone' }, { id: 'a-escape' }] })
+  expect(artifactList(host, {}, 3, 2)).toMatchObject({ next_offset: null, items: [{ id: 'a-outbox' }] })
+  expect(recentArtifacts(host, 3).map(row => row.id)).toEqual(['a-station', 'a-gone', 'a-escape'])
+})
+
+it('opens one artifact with its delivery and the chain back to its Ticket, Assignment and worker Session', () => {
+  const { host, root, outbox } = artifactFixture()
+  const detail = artifactDetail(host, 'a-station')!
+  expect(detail.artifact).toMatchObject({ id: 'a-station', ticket: 't1', project: 'prj_aps', source: 'feishu', name: 'report.md' })
+  expect(detail.project).toEqual({ id: 'prj_aps', name: 'aps', key: 'aps' })
+  expect(detail.source).toEqual({ id: 'feishu', label: feishuKind.title })
+  expect(detail.ticket).toMatchObject({ id: 't1', title: 't1', stage: 'working', state: 'open',
+    reporter: { source: 'feishu', id: 'ou_alice', name: { zh: 'Alice', en: 'Alice' } } })
+  expect(detail.assignment).toEqual({ id: 'as1', state: 'running', startedAt: '2026-09-22T00:01:00Z',
+    report: { state: 'progress', summary: 'working' } })
+  expect(detail.workerSessionId).toBe('worker-t1')
+  expect(detail.delivery).toEqual({ path: join(root, 'report.md'), exists: true, messageId: 'reply-1' })
+  expect(detail.links).toEqual({ ticket: 't1', thread: 'feishu:oc_1:om_root' })
+  // An old artifact names its outbox copy; one whose file is gone says so, and a name that would leave the landing root is
+  // never readable nor served.
+  expect(artifactDetail(host, 'a-outbox')!.delivery).toEqual({ path: join(outbox, 't-old', 'artifacts', 'old.csv'), exists: true })
+  expect(artifactDetail(host, 'a-gone')!.delivery).toMatchObject({ exists: false })
+  expect(artifactDetail(host, 'a-escape')!.delivery.exists).toBe(false)
+  expect(artifactFile(host.store, 'a-escape')).toBeUndefined()
+  expect(artifactFile(host.store, 'a-station')).toEqual({ path: join(root, 'report.md'), name: 'report.md', size: 4 })
+  expect(artifactFile(host.store, 'nope')).toBeUndefined()
+  // A named Assignment is shown instead of the latest, and a missing one leaves the chain without an Assignment.
+  expect(artifactDetail(host, 'a-station', 'as-missing')!.assignment).toBeUndefined()
+  expect(artifactDetail(host, 'nope')).toBeUndefined()
 })

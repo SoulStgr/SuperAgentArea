@@ -12,16 +12,17 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Sources**, **Workstations**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
+The tabs follow the workflow: **Overview**, **Sources**, **Workstations**, **Artifacts**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
 
 | Tab | Shows |
 | --- | --- |
-| Overview | Tickets needing action, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
+| Overview | Tickets needing action, recent artifacts, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
 | Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. **Add Source** creates a named instance of an installed kind. A card opens the instance's own page with its configuration, statistics, Tickets, filtered and unsent messages and recent Triggers |
-| Workstations | One card per Project: its name, its address kind (managed, folder or repository), its Sources, open Tickets, artifacts, latest activity and latest reporter. The built-in workspace comes first and is fixed: it cannot be archived or renamed. A card's six sections — Sources, Trigger, Eval, Execution, Settings and agent — open the project-level view; **New workstation** creates a station, and **Show archived** lists the archived ones |
+| Workstations | One card per Project: its name, its address kind (managed, folder or repository), its Sources, open Tickets, artifacts, latest activity and latest reporter. The built-in workspace comes first and is fixed: it cannot be archived or renamed. A card's six sections — Sources, Trigger, Eval, Execution, Settings and agent — open the project-level view; **New workstation** creates a station, and **Show archived** lists the archived ones. On a Project's page, its artifact count opens the index filtered to that Project |
+| Artifacts | Delivered files newest collection first: name, Project, Source, Ticket, size and time, each with its download. Filters cover the Project (the workspace first) and Source instance, and a search matches a name or hash; the filters stay in the route. Each row opens the artifact's page, and a file that is no longer readable at its landing says so. Until a Ticket reports ready, the page explains that its delivered files will appear here |
 | Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
 | Eval | Decisions with their reason and matched rules |
-| Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
+| Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions, Assignments and the artifacts the Ticket delivered |
 | Settings | Sources, Eval, Execution, Prompts and Deployment. Each group includes its save history |
 
 ### Reading individual records
@@ -36,9 +37,15 @@ A Project's card leads with its address kind, its Sources, open Tickets and arti
 
 The built-in workspace is where Tickets no station owns work; its card is marked **Fixed** and offers neither archiving nor renaming. A Project created from the panel takes its name's own slug as its key and refuses a name another Project already answers to, and its address is validated like an answer's: an absolute writable local folder outside the system directories, or a repository address of a supported protocol.
 
+### Artifacts
+
+The 产物 page indexes every delivered file. Each row names its file, the Project and Source it belongs to, the Ticket it was delivered for, its size and when it was collected, and downloads it; a file that has left its landing keeps its record and is marked as no longer readable. The Project dropdown starts with the workspace, the Source dropdown lists each instance, and the search matches a file's name or hash; all three stay in the route, so a filtered page survives a remount. A Project's artifact count links to the index already filtered to that Project.
+
+An artifact's page shows its size, hash and collection time, the Project and Source behind it, the Ticket it was delivered for, and where it landed. Its delivery record says whether the file is still readable and names the result reply's message id; when the file is gone, the record stays and the download is disabled. The reverse chain runs **Artifact → Ticket → Assignment → worker Session**: it shows the Ticket's stage, state and reporter, the Assignment's state and latest report, and **Open Session** on the worker Session named after the Ticket, which opens it in DeepSeek Harness through the same Session check as every other Session link. **Download**, **Copy path**, **Open Ticket** and **Open Project** sit on the page.
+
 A human follow-up still owned by an Executor is marked **Delivered to Ticket**, without an Eval. The Thread also shows hand-back reasons and context-only Subscriptions. **Evaluate again** can send that follow-up to Eval, or retry a Trigger with no effective judgement: one filtered by its Source, an unavailable Eval, or a delivered message with neither a non-stop Decision nor an Executor acknowledgement.
 
-Ticket details show the originating Trigger, Decision and reason, scope and Policy version. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
+Ticket details show the originating Trigger, Decision and reason, scope and Policy version. A Ticket that delivered files lists them under **Artifacts**, each opening its artifact page and offering its download. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
 
 ## Settings groups
 

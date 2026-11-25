@@ -59,6 +59,16 @@ async function api(method: string, path: string, json?: unknown): Promise<{ stat
   await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
   return { status, body: JSON.parse(text) }
 }
+/** A GET whose response is a file's bytes, as the artifact download route answers. */
+async function apiFile(path: string): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; bytes: Buffer }> {
+  let status = 0, headers: Record<string, string | string[] | undefined> = {}
+  const chunks: Buffer[] = []
+  const req = { method: 'GET', url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' },
+    async *[Symbol.asyncIterator]() {} }
+  await http(req, { writeHead: (code: number, values: Record<string, string | string[] | undefined> = {}) => { status = code; headers = values },
+    end: (data?: string | Buffer) => { if (data !== undefined) chunks.push(Buffer.from(data)) } })
+  return { status, headers, bytes: Buffer.concat(chunks) }
+}
 let agents: Map<string, { id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }; cancel: ReturnType<typeof vi.fn>; inject: ReturnType<typeof vi.fn> }>
 const runTool = async (sessionId: string, name: string, args: unknown) => {
   const tool = tools.get(sessionId)?.get(name)
@@ -399,6 +409,58 @@ it('ends a ticket on ready when no PR is bound', async () => {
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'done locally' })
   expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ ended: expect.objectContaining({ outcome: 'completed' }) })
   await expect(runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'late' })).rejects.toThrow('Ticket ended')
+})
+
+it('indexes a ready ticket\'s deliverables, serves them through the artifact API, and downloads the same bytes', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  const directory = ticket.execution!.directory
+  mkdirSync(join(directory, 'deliver', 'nested'), { recursive: true })
+  writeFileSync(join(directory, 'deliver', 'report.md'), 'done once')
+  writeFileSync(join(directory, 'deliver', 'nested', 'data.csv'), 'a,b\n1,2')
+  await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'done with files' })
+  // The ready report queues the artifacts effect, which promotes, indexes and replies once the turn is over.
+  await vi.waitFor(() => expect(runtime.store.artifacts.list()).toHaveLength(2))
+  const rows = runtime.store.artifacts.list()
+  const output = runtime.store.projects.get('prj_workspace')!.value.outputDir
+  expect(rows.map(row => row.name).sort()).toEqual(['nested/data.csv', 'report.md'])
+  expect(rows.map(row => [row.project, row.source, row.value.targetRoot]))
+    .toEqual([['prj_workspace', 'feishu', output], ['prj_workspace', 'feishu', output]])
+  expect(rows.every(row => row.value.messageId)).toBe(true)
+  expect(readFileSync(join(output, 'report.md'), 'utf8')).toBe('done once')
+  // The index lists the ticket's files, and the overview's recent artifacts carry them too.
+  const listed = await api('GET', `artifacts?ticket=${ticket.id}`)
+  expect(listed.status).toBe(200)
+  const items = (listed.body as { total: number; items: { name: string; ticket: string; ticketTitle: string; project: string
+    projectName: string; source: string; deliverable: boolean }[] }).items
+  expect((listed.body as { total: number }).total).toBe(2)
+  expect(items.map(item => item.name).sort()).toEqual(['nested/data.csv', 'report.md'])
+  expect(items.find(item => item.name === 'report.md')).toMatchObject({ ticket: ticket.id, ticketTitle: '修复回归',
+    project: 'prj_workspace', projectName: 'workspace', source: 'feishu', deliverable: true })
+  expect(((await api('GET', 'overview')).body as { artifacts: { id: string; name: string }[] }).artifacts)
+    .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'report.md' })]))
+  // One artifact's page follows the chain back to the Ticket, its Assignment and the worker Session, and carries the reply id.
+  const report = rows.find(row => row.name === 'report.md')!
+  const detail = await api('GET', `artifacts/${report.id}`)
+  expect(detail.status).toBe(200)
+  expect(detail.body).toMatchObject({ artifact: { id: report.id, name: 'report.md', project: 'prj_workspace', source: 'feishu' },
+    project: { id: 'prj_workspace', name: 'workspace' }, source: { id: 'feishu' },
+    ticket: { id: ticket.id, title: '修复回归', stage: 'ended', state: 'ended' },
+    workerSessionId: `worker-${ticket.id}`,
+    delivery: { path: join(output, 'report.md'), exists: true, messageId: report.value.messageId },
+    links: { ticket: ticket.id, thread: threadKey(runtime.store.triggers.get(ticket.origin.triggerId)!.threads[0]!) } })
+  expect((detail.body as { assignment?: { id: string } }).assignment?.id).toBe(ticket.assignments.at(-1)!.id)
+  // The download answers the promoted file itself, with its length and name.
+  const file = await apiFile(`artifacts/${report.id}/file`)
+  expect(file.status).toBe(200)
+  expect(file.headers).toMatchObject({ 'content-type': 'application/octet-stream', 'content-length': '9' })
+  expect(file.headers['content-disposition']).toContain('filename="report.md"')
+  expect(file.bytes.toString()).toBe('done once')
+  // A missing artifact, and one whose file is not there any more, are 404s.
+  expect(await api('GET', 'artifacts/unknown')).toMatchObject({ status: 404, body: { error: 'Artifact not found' } })
+  expect((await apiFile('artifacts/unknown/file')).status).toBe(404)
+  rmSync(join(output, 'report.md'))
+  expect(await api('GET', `artifacts/${report.id}`)).toMatchObject({ body: { delivery: { exists: false } } })
+  expect((await apiFile(`artifacts/${report.id}/file`)).status).toBe(404)
 })
 
 it('stops a ticket on a person\'s instruction for good, and resumes an ended one on any person\'s message on its thread', async () => {

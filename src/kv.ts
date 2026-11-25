@@ -69,7 +69,10 @@ export const KV = {
    */
   folder: { pending: family<Record<string, { size: number; mtime: number }>, [row: string]>('folder-pending:'),
     seen: family<Record<string, string>, [row: string]>('folder-seen:') },
-  /** Artifacts: the deliverables collected from a ticket's `deliver/` directory on its ready report, oldest collection last. */
+  /**
+   * Artifacts: the deliverables collected from a ticket's `deliver/` directory on its ready report, oldest collection last.
+   * Kept as a write-only compatibility copy since P5, which reads the artifact table instead; it is removed in P6.
+   */
   artifacts: family<Artifact[], [ticket: string]>('artifacts:'),
   /**
    * Project ownership: the Project a Thread answered its `needsProject` question with, so its next Eval resolves it (and later

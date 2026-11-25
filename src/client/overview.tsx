@@ -6,7 +6,7 @@ import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
-import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage } from './widgets.tsx'
+import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage, When } from './widgets.tsx'
 
 function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () => Promise<void> }) {
   const { t, call, navigate } = usePanel()
@@ -77,6 +77,15 @@ export function OverviewPage() {
         onChanged={reload} />)}</ul>
         : <Hint>{t('needsYouNone')}</Hint>}
     </Section>
+    {data.artifacts.length > 0 && <Section title={t('recentArtifacts')} count={data.artifacts.length}
+      action={more({ page: 'artifacts' })}>
+      <ul className="dt-list">{data.artifacts.map(artifact => <li key={artifact.id} className="dt-row dt-link">
+        <div className="dt-row-main">
+          <div className="dt-row-title"><button type="button" className="dt-open"
+            onClick={() => navigate({ page: 'artifacts', id: artifact.id })}>{artifact.name}</button></div>
+          <div className="dt-row-meta"><span>{artifact.projectName}</span><When at={artifact.at} /></div>
+        </div></li>)}</ul>
+    </Section>}
     {data.problems.length > 0 && <Section title={t('problems')} count={data.problems.length}>
       <ul className="dt-list dt-cards">{data.problems.map((problem, index) => <ProblemLine key={index} problem={problem}
         onChanged={reload} />)}</ul>
