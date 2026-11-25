@@ -10,7 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { openKnownSession, SessionNavigationError } from '../navigation.ts'
+import { openKnownSession, openOrCreateSession, projectSessionId, SessionNavigationError, type ProjectSession } from '../navigation.ts'
 import { App } from './app.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { en, zh } from './locales.ts'
@@ -27,6 +27,9 @@ function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
   </svg>
 }
 
+/** The panel's wording for a Session that cannot be opened yet, or the original failure as it happened. */
+const navigationFailure = (t: T, error: unknown): unknown => error instanceof SessionNavigationError
+  ? new Error(t(error.code === 'not-ready' ? 'sessionListNotReady' : 'sessionNotListed')) : error
 /** Mounted panel wrapper; cancels any pending Session navigation when a new one starts or the panel unmounts. */
 function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
   const pending = useRef<AbortController>(undefined)
@@ -36,13 +39,19 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
     const request = new AbortController(); pending.current = request
     try {
       await openKnownSession(ctx.sessions, id as SessionId, target => { ctx.uiWorkspace.openSession(target) }, request.signal)
-    } catch (error) {
-      if (error instanceof SessionNavigationError) throw new Error(t(error.code === 'not-ready' ? 'sessionListNotReady' : 'sessionNotListed'))
-      throw error
-    }
+    } catch (error) { throw navigationFailure(t, error) }
+  }, [ctx, t])
+  // A Project's Session is created on its first click and opened as it is afterwards; its directory is the Project's working copies.
+  const openProjectSession = useCallback(async (project: ProjectSession) => {
+    pending.current?.abort()
+    const request = new AbortController(); pending.current = request
+    try {
+      await openOrCreateSession(ctx.sessions, { sessionId: projectSessionId(project.id), cwd: project.scratchDir },
+        target => { ctx.uiWorkspace.openSession(target) }, request.signal)
+    } catch (error) { throw navigationFailure(t, error) }
   }, [ctx, t])
   const form = usePageForm(ctx.get('configForms')?.get<Record<string, unknown>>(ENTRY))
-  return <App t={t} openSession={openSession} deploymentForm={form} />
+  return <App t={t} openSession={openSession} openProjectSession={openProjectSession} deploymentForm={form} />
 }
 
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']

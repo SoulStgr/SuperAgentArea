@@ -2,10 +2,12 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { expect, vi } from 'vitest'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { App } from '../../src/client/app.tsx'
 import { usePageForm } from '../../src/client/deployment.tsx'
 import { zh } from '../../src/client/locales.ts'
 import type { T } from '../../src/client/text.ts'
+import { openOrCreateSession, projectSessionId } from '../../src/navigation.ts'
 import { server, usePanelServer } from './panel-server.ts'
 
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -15,8 +17,28 @@ export const translator = (dictionary: Record<string, string>): T => ((key: stri
   const template = dictionary[key] ?? key
   return params ? template.replace(/\{(\w+)\}/g, (match, name: string) => name in params ? String(params[name]) : match) : template
 }) as T
+/** The fake Client sessions service: creating adds the Session to the host and its catalog, and an id the host holds is refused. */
+function projectSessions(): Pick<ISessions, 'create' | 'list' | 'refresh'> {
+  return {
+    list: { getSnapshot: () => ({ phase: 'ready' as const, byId: Object.fromEntries([...server.sessions].map(id => [id, {}])) }) },
+    refresh: async () => { server.sessions = new Set(server.hostSessions) },
+    create: async (options: { sessionId?: string; cwd?: string } = {}) => {
+      const sessionId = options.sessionId!
+      server.created.push({ sessionId, cwd: options.cwd ?? '' })
+      if (server.hostSessions.has(sessionId)) throw new Error(`session create failed: session/conflict: ${sessionId}`)
+      server.hostSessions.add(sessionId)
+      server.sessions.add(sessionId)
+      return sessionId
+    },
+  } as unknown as Pick<ISessions, 'create' | 'list' | 'refresh'>
+}
 function Panel({ t }: { t: T }) {
-  return <App t={t} openSession={async id => { server.opened.push(id) }} deploymentForm={usePageForm(server.form)} />
+  const sessions = projectSessions()
+  return <App t={t} openSession={async id => { server.opened.push(id) }}
+    openProjectSession={async project => {
+      await openOrCreateSession(sessions, { sessionId: projectSessionId(project.id), cwd: project.scratchDir },
+        target => { server.opened.push(target) }, new AbortController().signal)
+    }} deploymentForm={usePageForm(server.form)} />
 }
 let root: Root | undefined
 let container: HTMLElement | undefined

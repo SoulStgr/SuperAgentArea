@@ -11,6 +11,7 @@ import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './loca
 import { OverviewPage } from './overview.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { ProjectPage } from './project.tsx'
+import type { ProjectSession } from '../navigation.ts'
 import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
@@ -23,6 +24,7 @@ import { When } from './widgets.tsx'
 
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
+  openProjectSession: (project: ProjectSession) => Promise<void>
   deploymentForm: DeploymentForm
 }
 
@@ -175,7 +177,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, deploymentForm }: AppProps) {
+export function App({ t, openSession, openProjectSession, deploymentForm }: AppProps) {
   const [location, setLocation] = useState(initialLocation)
   useEffect(() => { remember(location) }, [location])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
@@ -187,7 +189,8 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
-  return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
+  return <PanelProvider t={t} openSession={openSession} openProjectSession={openProjectSession} navigate={navigate} back={back}
+    backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
     <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
   </PanelProvider>
 }

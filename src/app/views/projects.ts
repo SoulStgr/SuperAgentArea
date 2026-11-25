@@ -10,6 +10,7 @@ import type { Localized } from '../../sources/kind.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
 import type { Store } from '../store.ts'
 import type { ThreadFilter, TicketFilter } from '../api.ts'
+import { artifactProject } from './artifacts.ts'
 import { decisionView, newestFirst, page, snapshot, ticketInstance, type ActorView, type Snapshot, type ViewHost } from './records.ts'
 import { sourceTitle, sourcesStatus, type HealthMap, type SetupState, type SourceState } from './sources.ts'
 import { preview } from './text.ts'
@@ -168,3 +169,44 @@ export function projectDetail(host: ViewHost, id: string, health: HealthMap, set
     recentTriggers: projectRecentTriggers(host.store, view, keys, PROJECT_PAGE) }
 }
 export type ProjectDetailView = NonNullable<ReturnType<typeof projectDetail>>
+/** How many rows of each list a Project's history carries by default; the agent section shows them without paging. */
+export const PROJECT_HISTORY = 50
+/**
+ * One Project's agent history, newest first: its Tickets, the artifacts delivered for it, and its Assignment reports. A
+ * Ticket or artifact saved before Projects existed belongs to the built-in workspace, so it never appears in another
+ * station's history. Every list stops at `limit`.
+ */
+export function projectHistory(host: ViewHost, projectId: string, limit = PROJECT_HISTORY) {
+  const project = host.store.projects.get(projectId)
+  if (!project) return undefined
+  const view = snapshot(host)
+  const tickets = host.store.tickets.list().filter(ticket => ticketProject(ticket) === projectId)
+    .sort((one, two) => two.updatedAt.localeCompare(one.updatedAt) || one.id.localeCompare(two.id))
+  const artifacts = host.store.artifacts.list().filter(artifact => artifactProject(artifact) === projectId)
+    .sort((one, two) => two.at.localeCompare(one.at) || one.id.localeCompare(two.id))
+  const delivered = new Map<string, number>()
+  for (const artifact of artifacts) delivered.set(artifact.ticket, (delivered.get(artifact.ticket) ?? 0) + 1)
+  const titles = new Map(tickets.map(ticket => [ticket.id, ticket.title]))
+  const reports = tickets.flatMap(ticket => ticket.assignments.flatMap(assignment => assignment.report
+    ? [{ ticketId: ticket.id, ticketTitle: ticket.title, assignmentId: assignment.id, state: assignment.report.state,
+      summary: assignment.report.summary, at: assignment.report.at }]
+    : [])).sort((one, two) => two.at.localeCompare(one.at) || one.ticketId.localeCompare(two.ticketId)
+    || one.assignmentId.localeCompare(two.assignmentId))
+  return {
+    project: { id: project.id, name: project.value.name, key: project.key },
+    // The stage and its action are what the panel words a Ticket's mark by; the ended outcome says how it ended.
+    tickets: tickets.slice(0, limit).map(ticket => {
+      const stage = ticketStage(ticket)
+      return { id: ticket.id, title: ticket.title, stage: stage.stage, action: 'action' in stage ? stage.action : undefined,
+        state: liveTicket(ticket) ? 'open' as const : 'ended' as const,
+        ...ticket.ended ? { ended: { at: ticket.ended.at, outcome: ticket.ended.outcome } } : {},
+        ...ticket.reporter ? { reporter: view.actor(ticket.reporter) } : {},
+        assignments: ticket.assignments.length, artifacts: delivered.get(ticket.id) ?? 0, updatedAt: ticket.updatedAt }
+    }),
+    artifacts: artifacts.slice(0, limit).map(artifact => ({ id: artifact.id, name: artifact.name, ticket: artifact.ticket,
+      ticketTitle: titles.get(artifact.ticket) ?? artifact.ticket, at: artifact.at, size: artifact.value.size,
+      hash: artifact.value.hash })),
+    reports: reports.slice(0, limit),
+  }
+}
+export type ProjectHistoryView = NonNullable<ReturnType<typeof projectHistory>>

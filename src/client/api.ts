@@ -159,6 +159,7 @@ export type SourceKindRow = ApiResponse<'GET source-kinds'>[number]
 export type PendingProject = SourceStatusRow['pendingProjects'][number]
 export type ProjectRow = ApiResponse<'GET projects'>[number]
 export type ProjectDetailView = ApiResponse<'GET projects/:id'>
+export type ProjectHistoryView = ApiResponse<'GET projects/:id/history'>
 export type ProjectSourceRow = ProjectDetailView['sources'][number]
 export type ProjectRecord = ProjectDetailView['project']
 export type TicketRow = ApiResponse<'GET tickets'>['items'][number]

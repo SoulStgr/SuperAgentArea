@@ -6,7 +6,7 @@ import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { ArtifactDetailView, ArtifactListView } from './views/artifacts.ts'
 import type { OverviewView } from './views/overview.ts'
-import type { ProjectDetailView, ProjectListView, ProjectTicketListView } from './views/projects.ts'
+import type { ProjectDetailView, ProjectHistoryView, ProjectListView, ProjectTicketListView } from './views/projects.ts'
 import type { SettingsView } from './views/settings.ts'
 import type { SourceDetailView, SourceKindView, SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
@@ -50,6 +50,7 @@ export interface Api {
   'GET projects/:id/tickets': { query?: Paged & { state?: TicketFilter }; response: ProjectTicketListView }
   'GET projects/:id/threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }
   'GET projects/:id/decisions': { query?: Paged; response: DecisionListView }
+  'GET projects/:id/history': { query?: { limit?: number }; response: ProjectHistoryView }
   'POST projects': { body: NewProject; response: { project: ProjectRecord } }
   'PATCH projects/:id': { body: ProjectPatch; response: { project: ProjectRecord } }
   'GET artifacts': { query?: Paged & { q?: string; project?: string; source?: string; ticket?: string }; response: ArtifactListView }

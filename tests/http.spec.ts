@@ -187,7 +187,8 @@ it('serves the workstation cards, and routes creating and changing one to the Pr
     .toMatchObject({ status: 400, body: { code: 'projectFixed' } })
   // An unknown Project is a missing record on every route that names one.
   for (const [method, path] of [['GET', 'projects/prj_gone'], ['GET', 'projects/prj_gone/tickets'],
-    ['GET', 'projects/prj_gone/threads'], ['GET', 'projects/prj_gone/decisions'], ['PATCH', 'projects/prj_gone']] as const) {
+    ['GET', 'projects/prj_gone/threads'], ['GET', 'projects/prj_gone/decisions'], ['GET', 'projects/prj_gone/history'],
+    ['PATCH', 'projects/prj_gone']] as const) {
     expect(await call(method, path, method === 'PATCH' ? { archived: true } : undefined), path)
       .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
   }

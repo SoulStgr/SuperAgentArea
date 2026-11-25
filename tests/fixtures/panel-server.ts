@@ -8,7 +8,7 @@ import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
-import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView, ProjectRow, PromptsView, SetupView,
+import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView, ProjectHistoryView, ProjectRow, PromptsView, SetupView,
   SourceDetailView, SourceStatusRow, SourceView, StateView,
   ThreadPageView,
   ThreadRow, TicketPageView,
@@ -107,7 +107,8 @@ export interface ProjectFixture {
   createdAt: string; updatedAt: string; archivedAt?: string
   /** The per-section rows of its page; the workspace defaults to the fake server's open and person Tickets and its Threads. */
   tickets?: string[]; threads?: string[]; decisions?: DecisionRow[]
-  artifacts?: ProjectDetailView['artifacts']; reporter?: Actor
+  /** The artifacts its page lists; the history also states each file's hash, which the page's rows do not carry. */
+  artifacts?: (ProjectDetailView['artifacts'][number] & { hash?: string })[]; reporter?: Actor
 }
 /** The key a Project's name gives it, as the host's `projectKey` does. */
 const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
@@ -152,6 +153,11 @@ export interface PanelServer {
   pending: number
   form?: ConfigForm<Record<string, unknown>> | undefined
   opened: string[]
+  /** Session ids the fake host holds, which creating again refuses, and the ids its client catalog lists. */
+  hostSessions: Set<string>
+  sessions: Set<string>
+  /** The Project Sessions the panel asked to create, in order. */
+  created: { sessionId: string; cwd: string }[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
   /** The delivered artifacts the 产物 pages list, the page served for one of them, and the file each download answers with. */
@@ -319,6 +325,33 @@ function projectDetailOf(id: string): ProjectDetailView | undefined {
     sources: projectSourceRows(project, tickets), tickets: page(tickets), threads: page(threads),
     decisions: { items: decisions, next_offset: null }, artifacts, recentTriggers: [] }
 }
+/** One Project's agent history: its Tickets newest first, the artifacts delivered for it, and its Assignment reports. */
+function projectHistoryOf(id: string): ProjectHistoryView | undefined {
+  const project = server.projects.find(item => item.id === id)
+  if (!project) return undefined
+  const tickets = projectTicketsOf(project)
+  const ordered = tickets.slice().sort((one, two) => two.updatedAt.localeCompare(one.updatedAt) || one.id.localeCompare(two.id))
+  const artifacts = (project.artifacts ?? []).slice().sort((one, two) => two.at.localeCompare(one.at) || one.id.localeCompare(two.id))
+  const titles = new Map(tickets.map(ticket => [ticket.id, ticket.title]))
+  const counts = new Map<string, number>()
+  for (const artifact of artifacts) counts.set(artifact.ticket, (counts.get(artifact.ticket) ?? 0) + 1)
+  const reports = ordered.flatMap(ticket => (server.ticketDetails[ticket.id]?.assignments ?? []).flatMap(assignment => assignment.report
+    ? [{ ticketId: ticket.id, ticketTitle: ticket.title, assignmentId: assignment.id, state: assignment.report.state,
+      summary: assignment.report.summary, at: assignment.report.at }]
+    : [])).sort((one, two) => two.at.localeCompare(one.at) || one.ticketId.localeCompare(two.ticketId)
+    || one.assignmentId.localeCompare(two.assignmentId))
+  return {
+    project: { id: project.id, name: project.name, key: project.key },
+    tickets: ordered.map(ticket => ({ id: ticket.id, title: ticket.title, stage: ticket.stage,
+      action: ticket.stage === 'person' || ticket.stage === 'working' ? ticket.action : undefined, state: ticket.state,
+      ...ticket.ended ? { ended: { at: ticket.ended.at, outcome: ticket.ended.outcome } } : {},
+      ...server.ticketDetails[ticket.id]?.mandate.actor ? { reporter: server.ticketDetails[ticket.id]!.mandate.actor } : {},
+      assignments: ticket.assignments, artifacts: counts.get(ticket.id) ?? 0, updatedAt: ticket.updatedAt })),
+    artifacts: artifacts.map(artifact => ({ id: artifact.id, name: artifact.name, ticket: artifact.ticket,
+      ticketTitle: titles.get(artifact.ticket) ?? artifact.ticket, at: artifact.at, size: artifact.size, hash: artifact.hash ?? '' })),
+    reports,
+  }
+}
 const stateView = (): StateView => ({
   setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
   masterId: 'master', paused: server.settings.paused,
@@ -411,7 +444,8 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
+    health: {}, down: false, pending: 0, opened: [], hostSessions: new Set(), sessions: new Set(), created: [],
+    requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
     projects: [
       { id: 'prj_workspace', key: 'workspace', name: 'workspace', kind: 'workspace', location: { type: 'managed' },
         status: 'active', sourceIds: [], aliases: [], outputDir: '/srv/dsh-superagent/area/workspace',
@@ -422,7 +456,7 @@ function initial(): PanelServer {
         rulesDir: '/srv/dsh-superagent/area/aps.work/rules', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z',
         tickets: ['t1'], threads: ['feishu:oc_1:om_root'], decisions: [acceptDecision()],
         artifacts: [{ id: 'a1', name: 'report.md', size: 120, at: '2026-09-23T00:00:00Z', ticket: 't1', source: 'feishu',
-          targetRoot: '/srv/aps' }], reporter: actor('feishu', MEMBER) },
+          targetRoot: '/srv/aps', hash: 'abcdef0123456789' }], reporter: actor('feishu', MEMBER) },
       { id: 'prj_legacy', key: 'legacy', name: 'legacy', kind: 'station',
         location: { type: 'repo', url: 'https://github.com/acme/legacy' }, status: 'archived', sourceIds: [], aliases: [],
         outputDir: '/srv/dsh-superagent/area/legacy', scratchDir: '/srv/dsh-superagent/area/legacy.work',
@@ -535,6 +569,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return project ? { items: project.decisions ?? [], next_offset: null }
       : refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
   } },
+  'GET projects/:id/history': { query: ['limit'], answer: ({ params }) => projectHistoryOf(params.id)
+    ?? refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } }) },
   'POST projects': { body: true, answer: ({ body }) => {
     const request = body as { name: string; location: { type: string; path?: string; url?: string; branch?: string } }
     const name = request.name.trim()

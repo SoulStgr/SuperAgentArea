@@ -14,7 +14,7 @@ import { page, snapshot, type ActorView, type ViewHost } from './records.ts'
 import { sourceTitle } from './sources.ts'
 
 /** The Project an artifact belongs to: the one its row records, or the built-in workspace for rows saved before Projects existed. */
-const artifactProject = (artifact: Pick<ArtifactRecord, 'project'>): string => artifact.project ?? WORKSPACE_PROJECT_ID
+export const artifactProject = (artifact: Pick<ArtifactRecord, 'project'>): string => artifact.project ?? WORKSPACE_PROJECT_ID
 /** A file that exists at `path`, with its size; undefined when the path is taken by a directory or nothing. */
 function fileAt(path: string): { path: string; size: number } | undefined {
   try {

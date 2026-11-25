@@ -12,7 +12,7 @@ import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/
 import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourceDetail, sourcesStatus } from '../src/app/views/sources.ts'
-import { projectDecisionList, projectDetail, projectList, projectThreadList, projectTicketList } from '../src/app/views/projects.ts'
+import { projectDecisionList, projectDetail, projectHistory, projectList, projectThreadList, projectTicketList } from '../src/app/views/projects.ts'
 import { artifactDetail, artifactFile, artifactList, recentArtifacts } from '../src/app/views/artifacts.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { markdown, plain } from '../src/app/views/text.ts'
@@ -485,6 +485,41 @@ it('opens a Project page with its counts, its Sources and the first page of each
   expect(projectThreadList(host, 'prj_aps', 'all', 1, 1).items.map(thread => thread.key)).toEqual(['feishu:oc_1:om_root'])
   expect(projectDecisionList(host, 'prj_aps', 0, 10).items.map(decision => decision.id)).toEqual(['d1'])
   expect(projectDetail(host, 'prj_gone', {}, {})).toBeUndefined()
+})
+
+it('reads a Project\'s history newest first, keeping records saved before Projects existed in the workspace', () => {
+  const host = projectFixture()
+  // A second station Ticket and two reported Assignments on the first, so order and counts have something to tell apart.
+  const first = host.store.tickets.get('t1')!
+  host.store.tickets.save({ ...first, updatedAt: '2026-09-24T00:00:00Z', assignments: [
+    { id: 'a1', state: 'ended', createdAt: '2026-09-23T00:00:00Z', endedAt: '2026-09-23T01:00:00Z',
+      report: { state: 'ready', summary: 'done', at: '2026-09-23T01:00:00Z' } },
+    { id: 'a2', state: 'running', createdAt: '2026-09-23T02:00:00Z',
+      report: { state: 'progress', summary: 'working', at: '2026-09-23T02:30:00Z' } }] })
+  host.store.tickets.save({ ...first, id: 't2', title: 't2', updatedAt: '2026-09-22T00:00:00Z', assignments: [] })
+  const history = projectHistory(host, 'prj_aps', 50)!
+  expect(history.project).toEqual({ id: 'prj_aps', name: 'aps', key: 'aps' })
+  expect(history.tickets.map(ticket => [ticket.id, ticket.updatedAt, ticket.state, ticket.assignments, ticket.artifacts]))
+    .toEqual([['t1', '2026-09-24T00:00:00Z', 'open', 2, 1], ['t2', '2026-09-22T00:00:00Z', 'open', 0, 0]])
+  expect(history.tickets[0]).toMatchObject({ title: 't1', stage: 'working', action: undefined,
+    reporter: { source: 'feishu', id: 'ou_alice', name: { zh: 'Alice', en: 'Alice' } } })
+  expect(history.artifacts).toMatchObject([{ id: artifactRecordId('t1', 'report.md'), name: 'report.md', ticket: 't1',
+    ticketTitle: 't1', size: 12, hash: 'h1', at: '2026-09-23T06:00:00Z' }])
+  // Reports come from every Ticket's Assignments of the station, newest first, each naming its Ticket and Assignment.
+  expect(history.reports.map(report => [report.ticketId, report.assignmentId, report.state, report.at])).toEqual([
+    ['t1', 'a2', 'progress', '2026-09-23T02:30:00Z'], ['t1', 'a1', 'ready', '2026-09-23T01:00:00Z']])
+  // A Ticket saved before Projects existed is the workspace's alone; an artifact without a Project follows its Ticket.
+  host.store.artifacts.add({ id: 'a-old', ticket: 't-old', source: 'github', name: 'old.csv',
+    value: { hash: 'h-old', size: 1, at: '2026-09-20T00:00:00Z', targetRoot: '/tmp/outbox' }, at: '2026-09-20T00:00:00Z' })
+  expect(projectHistory(host, 'prj_workspace', 50)!.tickets.map(ticket => ticket.id)).toEqual(['t-old'])
+  expect(projectHistory(host, 'prj_workspace', 50)!.artifacts.map(artifact => artifact.id)).toEqual(['a-old'])
+  expect(projectHistory(host, 'prj_aps', 50)!.tickets.map(ticket => ticket.id)).toEqual(['t1', 't2'])
+  expect(projectHistory(host, 'prj_aps', 50)!.artifacts.map(artifact => artifact.id)).toEqual([artifactRecordId('t1', 'report.md')])
+  // An empty station has empty lists, an unknown one has no history, and the limit stops every list.
+  expect(projectHistory(host, 'prj_old', 50)).toMatchObject({ tickets: [], artifacts: [], reports: [] })
+  expect(projectHistory(host, 'prj_gone', 50)).toBeUndefined()
+  expect(projectHistory(host, 'prj_aps', 1)!.tickets.map(ticket => ticket.id)).toEqual(['t1'])
+  expect(projectHistory(host, 'prj_aps', 1)!.reports.map(report => report.assignmentId)).toEqual(['a2'])
 })
 
 /** The artifacts the artifact views read: a station file that is there, an old outbox copy, and rows whose files are not. */

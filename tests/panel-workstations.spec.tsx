@@ -3,7 +3,7 @@
 import { expect, it } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, click, type, text, field } from './fixtures/panel.tsx'
-import { server } from './fixtures/panel-server.ts'
+import { artifactDetail, server } from './fixtures/panel-server.ts'
 
 usePanel()
 
@@ -15,6 +15,9 @@ const dialog = () => document.querySelector('[role="dialog"]')!
 const segment = (name: string) => find(name, '.dt-main [role="tablist"] [role="tab"]')
 /** The row of one configured Source on a workstation's Sources section. */
 const sourceRow = (name: string) => all('.dt-section .dt-row').find(row => row.textContent?.includes(name))!
+/** The section of a workstation's page whose title it names, such as one of the agent history lists. */
+const section = (name: string) => all('.dt-main .dt-section').find(item =>
+  item.querySelector('.dt-section-name')?.textContent === name)!
 
 it('shows one card per workstation with its address, counts and latest reporter, the workspace first and fixed', async () => {
   await mount()
@@ -112,10 +115,17 @@ it('opens a workstation page with its six sections: Sources, Threads, Decisions,
   expect(field<HTMLInputElement>(zh.projectName).value).toBe('aps')
   expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagent/area/aps.work',
     '/srv/dsh-superagent/area/aps.work/rules'])
-  // agent: only its disabled entry, saying the project Session arrives in P6.
+  // agent: its project Session, and the history of its Tickets, artifacts and Assignment reports.
   await click(segment(zh['projectSegment.agent']))
-  expect(text()).toContain(zh.projectAgentPending)
-  expect(find(zh.projectAgentOpen, '.dt-section button').matches(':disabled')).toBe(true)
+  expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentTitle,
+    `${zh.projectAgentTickets}1`, `${zh.projectAgentChanges}1`, `${zh.projectAgentReports}1`])
+  expect(text()).toContain(zh.projectAgentIntro)
+  expect(find(zh.projectAgentOpen, '.dt-section button').matches(':disabled')).toBe(false)
+  expect(section(zh.projectAgentTickets).textContent).toContain('修复回归')
+  expect(section(zh.projectAgentTickets).textContent).toContain(zh['stage.working'])
+  expect(section(zh.projectAgentTickets).textContent).toContain(zh.projectReporter)
+  expect(section(zh.projectAgentChanges).textContent).toContain('abcdef0123456789')
+  expect(section(zh.projectAgentReports).textContent).toContain('working')
 })
 
 it('opens the Thread and the Ticket a workstation\'s sections list', async () => {
@@ -177,11 +187,46 @@ it('opens the Source page a workstation\'s Source names', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('飞书')
 })
 
-it('shows the agent section disabled, saying that the project Session arrives in P6', async () => {
+it('opens a workstation\'s project Session, creating it first and opening a Session that already exists', async () => {
   await openProject('aps', zh['projectSegment.agent'])
-  expect(text()).toContain(zh.projectAgentPending)
-  const open = find(zh.projectAgentOpen, '.dt-section button')
-  expect(open.matches(':disabled')).toBe(true)
+  await click(find(zh.projectAgentOpen, '.dt-section button'))
+  expect(server.created).toEqual([{ sessionId: 'project-prj_aps', cwd: '/srv/dsh-superagent/area/aps.work' }])
+  expect(server.opened).toEqual(['project-prj_aps'])
+  // A Session the catalog lists opens directly, without creating it again.
+  await click(find(zh.projectAgentOpen, '.dt-section button'))
+  expect(server.created).toHaveLength(1)
+  expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps'])
+  // A Session the host holds but the catalog has not listed yet is refused by create and still opens after the refresh.
+  server.sessions.delete('project-prj_aps')
+  await click(find(zh.projectAgentOpen, '.dt-section button'))
+  expect(server.created).toHaveLength(2)
+  expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps', 'project-prj_aps'])
+  expect(server.sessions.has('project-prj_aps')).toBe(true)
+})
+
+it('opens the Ticket a workstation\'s agent history names', async () => {
+  await openProject('aps', zh['projectSegment.agent'])
+  await click(section(zh.projectAgentTickets).querySelector('.dt-open')!)
+  expect(server.requests.some(request => request.path === 'tickets/t1')).toBe(true)
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
+})
+
+it('opens the artifact a workstation\'s change history names', async () => {
+  server.artifactDetails = { a1: artifactDetail() }
+  await openProject('aps', zh['projectSegment.agent'])
+  await click(section(zh.projectAgentChanges).querySelector('button')!)
+  expect(server.requests.some(request => request.path === 'artifacts/a1')).toBe(true)
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('report.md')
+})
+
+it('says the agent history is empty for a workstation without work', async () => {
+  const aps = server.projects.find(project => project.id === 'prj_aps')!
+  aps.tickets = []; aps.artifacts = []; aps.threads = []
+  await openProject('aps', zh['projectSegment.agent'])
+  expect(text()).toContain(zh.projectTicketsNone)
+  expect(text()).toContain(zh.projectArtifactsNone)
+  expect(text()).toContain(zh.projectAgentNoReports)
+  expect(find(zh.projectAgentOpen, '.dt-section button').matches(':disabled')).toBe(false)
 })
 
 it('keeps a workstation page and its section after the panel is remounted', async () => {

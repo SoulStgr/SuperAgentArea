@@ -6,17 +6,26 @@ import type { DotState, IconName, TagTone } from './controls.tsx'
 
 export interface Mark { label: string; tone: TagTone; dot: DotState; icon: IconName }
 
+/** The actions a Ticket's stage names: the five a person stage waits on, and a working Ticket's queue. */
+type StageAction = 'delivery' | 'answer' | 'review' | 'blocked' | 'failed' | 'queued'
 export function ticketMark(t: T, ticket: TicketStage & Pick<TicketSummary, 'ended'>): Mark {
-  switch (ticket.stage) {
-    case 'ended': return { label: valueLabel(t, 'outcome', ticket.ended?.outcome), tone: 'neutral', dot: 'idle', icon: 'stop' }
+  return ticketStageMark(t, { stage: ticket.stage, action: 'action' in ticket ? ticket.action : undefined,
+    outcome: ticket.ended?.outcome })
+}
+/** The mark of a Ticket's stage from its stage, action and how it ended, as a Project's history row carries them. */
+export function ticketStageMark(t: T, { stage, action, outcome }: {
+  stage: TicketStage['stage']; action?: StageAction | undefined; outcome?: string | undefined
+}): Mark {
+  switch (stage) {
+    case 'ended': return { label: valueLabel(t, 'outcome', outcome), tone: 'neutral', dot: 'idle', icon: 'stop' }
     case 'person': {
-      const action = ticket.action
-      const icon: IconName = action === 'review' ? 'review' : action === 'failed' ? 'alert' : action === 'blocked' ? 'blocked'
-        : action === 'delivery' ? 'inbox' : 'ask'
-      return { label: t(`stage.${action}`), tone: action === 'failed' ? 'danger' : 'warning', dot: action === 'failed' ? 'error'
+      const given = action ?? 'answer'
+      const icon: IconName = given === 'review' ? 'review' : given === 'failed' ? 'alert' : given === 'blocked' ? 'blocked'
+        : given === 'delivery' ? 'inbox' : 'ask'
+      return { label: t(`stage.${given}`), tone: given === 'failed' ? 'danger' : 'warning', dot: given === 'failed' ? 'error'
         : 'warning', icon }
     }
-    case 'working': return ticket.action === 'queued' ? { label: t('stage.queued'), tone: 'neutral', dot: 'idle', icon: 'queue' }
+    case 'working': return action === 'queued' ? { label: t('stage.queued'), tone: 'neutral', dot: 'idle', icon: 'queue' }
       : { label: t('stage.working'), tone: 'info', dot: 'ongoing', icon: 'running' }
     default: return { label: t('stage.idle'), tone: 'neutral', dot: 'idle', icon: 'clock' }
   }

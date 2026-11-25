@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { openKnownSession } from '../src/navigation.ts'
+import { openKnownSession, openOrCreateSession, projectSessionId } from '../src/navigation.ts'
 import { initialLocation, parseRoute, remember, setupPage } from '../src/client/route.ts'
 const id = 'orchestrator-test' as SessionId
 function fixture(ready = false) {
@@ -38,6 +38,63 @@ it('does not navigate after the panel unmounts or a newer request supersedes it'
   const navigation = openKnownSession(sessions, id, open, controller.signal)
   controller.abort(); state.phase = 'ready'; state.byId[id] = {}; pending.resolve()
   await expect(navigation).resolves.toBe(false); expect(open).not.toHaveBeenCalled()
+})
+/** A sessions service whose create fills the host and catalog, refusing an id it already holds, as the host resumes one. */
+function projectFixture() {
+  const catalog: { phase: string; byId: Record<string, object> } = { phase: 'ready', byId: {} }
+  const host = new Set<string>()
+  const sessions = {
+    list: { getSnapshot: () => catalog },
+    refresh: vi.fn(async () => { for (const sessionId of host) catalog.byId[sessionId] = {} }),
+    create: vi.fn(async (options: { sessionId?: SessionId; cwd?: string }) => {
+      if (host.has(options.sessionId!)) throw new Error(`session create failed: session/conflict: ${options.sessionId}`)
+      host.add(options.sessionId!); catalog.byId[options.sessionId!] = {}
+      return options.sessionId
+    }),
+  } as unknown as Pick<ISessions, 'create' | 'list' | 'refresh'>
+  return { sessions, catalog, host }
+}
+it('creates a Project Session on its first click and opens it, and opens a listed one without creating it again', async () => {
+  const { sessions } = projectFixture()
+  const open = vi.fn()
+  const target = { sessionId: projectSessionId('prj_aps'), cwd: '/tmp/aps.work' }
+  await expect(openOrCreateSession(sessions, target, open, new AbortController().signal)).resolves.toBe(true)
+  expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: target.sessionId, cwd: '/tmp/aps.work' })
+  expect(open).toHaveBeenCalledExactlyOnceWith(target.sessionId)
+  await expect(openOrCreateSession(sessions, target, open, new AbortController().signal)).resolves.toBe(true)
+  expect(sessions.create).toHaveBeenCalledOnce()
+  expect(open).toHaveBeenCalledTimes(2)
+  expect(sessions.refresh).not.toHaveBeenCalled()
+})
+it('opens a Project Session whose catalog row had not arrived when creating it was refused, and reports an unexplained failure', async () => {
+  const { sessions, catalog, host } = projectFixture()
+  const open = vi.fn()
+  const target = { sessionId: projectSessionId('prj_aps'), cwd: '/tmp/aps.work' }
+  host.add(target.sessionId)
+  await expect(openOrCreateSession(sessions, target, open, new AbortController().signal)).resolves.toBe(true)
+  expect(sessions.create).toHaveBeenCalledOnce()
+  expect(sessions.refresh).toHaveBeenCalledOnce()
+  expect(open).toHaveBeenCalledExactlyOnceWith(target.sessionId)
+  // The catalog now lists it, so a further click opens it directly.
+  expect(catalog.byId[target.sessionId]).toEqual({})
+  await openOrCreateSession(sessions, target, open, new AbortController().signal)
+  expect(sessions.create).toHaveBeenCalledOnce()
+  // A creation failure the refreshed catalog does not explain is the failure the click reports.
+  const failure = new Error('cwd unusable')
+  const refused = projectFixture()
+  vi.spyOn(refused.sessions, 'create').mockRejectedValueOnce(failure)
+  await expect(openOrCreateSession(refused.sessions, { sessionId: projectSessionId('prj_new'), cwd: '/tmp/new.work' }, open,
+    new AbortController().signal)).rejects.toBe(failure)
+  expect(refused.sessions.refresh).toHaveBeenCalledOnce()
+})
+it('does nothing for a Project Session click that was superseded before it started', async () => {
+  const { sessions } = projectFixture()
+  const controller = new AbortController(); controller.abort()
+  const open = vi.fn()
+  await expect(openOrCreateSession(sessions, { sessionId: projectSessionId('prj_aps'), cwd: '/tmp/aps.work' }, open,
+    controller.signal)).resolves.toBe(false)
+  expect(sessions.create).not.toHaveBeenCalled()
+  expect(open).not.toHaveBeenCalled()
 })
 it('reopens the page this tab showed last, and the overview for a route that no longer exists', () => {
   remember({ route: { page: 'eval', query: { filter: 'stop' } }, stack: [{ page: 'overview' }] })

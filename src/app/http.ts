@@ -26,7 +26,8 @@ import type { Variable } from './execution-environment.ts'
 import { policyHistory } from './settings-history.ts'
 import { artifactDetail, artifactFile, artifactList, type ArtifactFile } from './views/artifacts.ts'
 import { overview } from './views/overview.ts'
-import { projectDecisionList, projectDetail, projectList, projectThreadList, projectTicketList } from './views/projects.ts'
+import { PROJECT_HISTORY, projectDecisionList, projectDetail, projectHistory, projectList, projectThreadList,
+  projectTicketList } from './views/projects.ts'
 import { settingsView } from './views/settings.ts'
 import { sourceDetail, sourceKinds, sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
@@ -171,6 +172,8 @@ const SourcesQuery = z.object({ offset, limit: limit(20, 500) })
 const ProjectsQuery = z.object({ status: z.enum(['active', 'archived']).catch('active') })
 const ProjectTicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).optional().catch(undefined), offset, limit: limit(20, 500) })
 const ProjectThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('all'), offset, limit: limit(20, 500) })
+/** A Project's history lists stop at its limit; the agent section reads the default page without paging. */
+const ProjectHistoryQuery = z.object({ limit: limit(PROJECT_HISTORY, 200) })
 /** The artifact index's filters, its page, and the Assignment one artifact's chain shows when a person names one. */
 const ArtifactsQuery = z.object({ q: z.string().trim().optional(), project: z.string().trim().optional(),
   source: z.string().trim().optional(), ticket: z.string().trim().optional(), offset, limit: limit(20, 200) })
@@ -304,6 +307,13 @@ function routes(runtime: HttpHost): Routes {
     'GET projects/:id/decisions': ({ params, query }) => {
       const { offset, limit } = SourcesQuery.parse(query)
       return projectDecisionList(views(runtime), project(params.id), offset, limit)
+    },
+    // A Project's agent history: its Tickets, delivered artifacts and Assignment reports, each newest first.
+    'GET projects/:id/history': ({ params, query }) => {
+      const { limit } = ProjectHistoryQuery.parse(query)
+      const detail = projectHistory(views(runtime), project(params.id), limit)
+      if (!detail) throw new UserError('projectUnknown', { project: params.id })
+      return detail
     },
     'POST projects': async ({ body }) => {
       const request = NewProjectRequest.parse(await body())

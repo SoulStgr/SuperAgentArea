@@ -2057,7 +2057,18 @@ it('serves the workstations: a station the panel creates takes its Source\'s wor
   expect((await api('GET', `projects/${project.id}/tickets?state=ended`)).body).toMatchObject({ items: [], total: 0 })
   expect((await api('GET', `projects/${project.id}/threads?filter=all`)).body).toMatchObject({ total: 1 })
   expect((await api('GET', `projects/${project.id}/decisions`)).body).toMatchObject({ items: [{ kind: 'accept' }] })
-  expect(await api('GET', 'projects/prj_gone')).toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
+  // Its agent history lists its Ticket, the artifacts delivered for it and its Assignment reports.
+  const history = await api('GET', `projects/${project.id}/history`)
+  expect(history).toMatchObject({ status: 200, body: { project: { id: project.id, name: 'aps work', key: 'aps-work' },
+    tickets: [{ id: ticket.id, title: '填一下表', state: 'open' }], artifacts: [], reports: [] } })
+  runtime.store.tickets.save({ ...ticket, assignments: [{ id: 'as1', state: 'running', createdAt: '2026-09-22T00:00:00Z',
+    report: { state: 'progress', summary: 'working\nstill working', at: '2026-09-22T00:01:00Z' } }] })
+  expect((await api('GET', `projects/${project.id}/history?limit=1`)).body).toMatchObject({
+    tickets: [{ id: ticket.id, assignments: 1 }],
+    reports: [{ ticketId: ticket.id, ticketTitle: '填一下表', assignmentId: 'as1', state: 'progress',
+      summary: 'working\nstill working', at: '2026-09-22T00:01:00Z' }] })
+  expect(await api('GET', 'projects/prj_gone'))
+    .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
   // Archiving hides the station from the list while its page stays; restoring brings it back.
   expect(await api('PATCH', `projects/${project.id}`, { archived: true })).toMatchObject({ status: 200 })
   expect(((await api('GET', 'projects')).body as { id: string }[]).some(card => card.id === project.id)).toBe(false)
