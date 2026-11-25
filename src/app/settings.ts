@@ -46,7 +46,9 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
   },
   source: {
     parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
-    merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources, [id]: value as SettingsValue['sources'][string] } }),
+    // A save keeps the instance's kind and its optional label and default Project; the panel edits only its switch and configuration.
+    merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources,
+      [id]: { ...settings.sources[id], ...value as SettingsValue['sources'][string] } } }),
     // Only the management panel may switch source accounts.
     guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
   },

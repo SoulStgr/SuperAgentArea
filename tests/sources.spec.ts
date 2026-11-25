@@ -8,9 +8,10 @@ import { runFeishu } from '../src/sources/feishu-loops.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
-import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
+import { apply as applyGithub, githubKind, pollFailure, pollRound, type GithubConfig } from '../src/sources/github.ts'
 import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
+import { folderKind, pollFolder } from '../src/sources/folder.ts'
 import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands, commandError } from '../src/infra/commands.ts'
@@ -19,14 +20,14 @@ import { testDeployment } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SetupError, type SetupProblem } from '../src/setup.ts'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const MEMBER = 'ou_alice'
 function host(overrides: Partial<SourceContextDeps> = {}) {
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
-  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
+  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { kind: 'feishu', enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
   store.saveSettings(settings)
   const board = new HealthBoard()
   const sources = new SourceRegistry(() => store.settings(), board)
@@ -763,7 +764,7 @@ describe('github source', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const start = async (overrides: Partial<SourceContextDeps>,
-        github: { enabled: boolean; config: Record<string, unknown> } = { enabled: true, config: {} }) => {
+        github: { kind: string; enabled: boolean; config: Record<string, unknown> } = { kind: 'github', enabled: true, config: {} }) => {
         const board = new HealthBoard()
         const settings = SettingsSchema.parse({ sources: { github } })
         const sources = new SourceRegistry(() => settings, board)
@@ -781,7 +782,7 @@ describe('github source', () => {
       await vi.waitFor(() => expect(folderOnly.value.health.github).toEqual({ state: 'paused', detail: 'No repository configured',
         code: 'githubUnset' }))
       await folderOnly.stop()
-      const off = await start({}, { enabled: false, config: {} })
+      const off = await start({}, { kind: 'github', enabled: false, config: {} })
       await vi.waitFor(() => expect(off.value.health.github).toMatchObject({ state: 'paused', code: 'sourceOff' }))
       await off.stop()
       // Rounds fail, succeed, fail, fail: only the last two in a row make the error. A round reads through a Commands of its own.
@@ -791,7 +792,7 @@ describe('github source', () => {
         if (!outcomes[round++]) throw refused(502, 'Bad Gateway')
         return 'HTTP/2.0 200 OK\r\n\r\n[]'
       })
-      const flaky = await start({}, { enabled: true, config: { failuresBeforeError: 2 } })
+      const flaky = await start({}, { kind: 'github', enabled: true, config: { failuresBeforeError: 2 } })
       // Each round reads its notifications once, then waits a minute for the next.
       const until = async (count: number) => {
         while (round < count) {
@@ -936,7 +937,7 @@ describe('github source', () => {
       updated_at: '2026-09-09T00:00:00Z' }
     const { routes } = notify(h, [issue(12, { created_at: '2026-08-01T00:00:00Z' })], { 12: [comment] })
     routes['issues/12/comments'] = () => {
-      h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: false, config: {} } } })
+      h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { kind: 'github', enabled: false, config: {} } } })
       return [comment]
     }
     await pollRound(h)
@@ -1010,7 +1011,7 @@ describe('source context', () => {
   it('reads the configuration of an instance that is on, removes a record set to undefined, and merges ticket meta', () => {
     const h = host()
     expect(h.config('feishu')).toMatchObject({ directMessages: true })
-    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, feishu: { enabled: false, config: {} } } })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, feishu: { kind: 'feishu', enabled: false, config: {} } } })
     expect(h.config('feishu')).toBeUndefined()
     h.state.set('github-retry', { 1: {} })
     h.state.set('github-retry', undefined)
@@ -1070,7 +1071,7 @@ describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
   /** The Feishu Source's context, on a fresh Store whose Feishu Source is on, with `cli` as the bot CLI. */
   function consumerSource(path: string, config: Record<string, unknown> = { chats: [] }) {
     const store = new Store(join(dir, 'db.sqlite'))
-    store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: true, config } } }))
+    store.saveSettings(SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config } } }))
     const board = new HealthBoard()
     const sources = new SourceRegistry(() => store.settings(), board)
     sources.register(feishuKind)
@@ -1084,7 +1085,7 @@ describe.skipIf(process.platform === 'win32')('feishu event consumer', () => {
     const commands = new Commands(() => deployment, {}, controller.signal)
     const deps: SourceContextDeps = { store, engine, outbox: { send: () => {} }, commands, sources, deployment, ready: Promise.resolve(), configured: () => true,
       receive: (trigger: Trigger) => engine.receive(trigger) }
-    const turnOff = () => store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: false, config: { chats: [] } } } }))
+    const turnOff = () => store.saveSettings(SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: false, config: { chats: [] } } } }))
     return { ctx: sourceContextOf(deps, feishuKind), health, store, turnOff }
   }
 
@@ -1198,7 +1199,7 @@ describe('observing the GitHub repository', () => {
     body: 'details', state: 'open', created_at: at(0), updated_at: at(0),
     html_url: `https://github.com/acme/widgets/issues/${number}`, user: { login: 'carol', type: 'User' }, ...fields })
   const observe = (h: ReturnType<typeof host>, config: Record<string, boolean>) =>
-    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: true, config } } })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { kind: 'github', enabled: true, config } } })
   /** GitHub as the repository's lists and its default branch answer; a request with the ETag of an unchanged list answers 304. */
   function repository(h: ReturnType<typeof host>, answers: { issues?: unknown[]; comments?: unknown[]; reviewComments?: unknown[];
     branch?: { sha: string; checks: unknown[] } }) {
@@ -1409,5 +1410,85 @@ describe('observing the GitHub repository', () => {
       meta: { ci: true, branch: 'main', sha: 'bbb2222' }, url: 'https://github.com/acme/widgets/commit/bbb2222' })
     expect(h.receive.mock.calls[0]![0].text).toContain('Read github/commits/bbb2222/checks for every check.')
     h.store.close()
+  })
+})
+describe('multiple Source instances', () => {
+  it('polls each folder instance from its own inbox and keeps its cursors apart', async () => {
+    const h = host()
+    h.sources.register(folderKind)
+    const root = mkdtempSync(join(tmpdir(), 'folder-instances-'))
+    const opsIn = join(root, 'ops-in'), opsOut = join(root, 'ops-out'), devIn = join(root, 'dev-in'), devOut = join(root, 'dev-out')
+    for (const path of [opsIn, opsOut, devIn, devOut]) mkdirSync(path)
+    const settings = h.store.settings()
+    h.store.saveSettings({ ...settings, sources: { ...settings.sources,
+      'folder:ops': { kind: 'folder', enabled: true, config: { inbox: opsIn, outbox: opsOut, operator: 'alice', pollSeconds: 2 } },
+      'folder:dev': { kind: 'folder', enabled: true, config: { inbox: devIn, outbox: devOut, operator: 'bob', pollSeconds: 2 } } } })
+    writeFileSync(join(opsIn, 'a.txt'), 'alpha')
+    writeFileSync(join(devIn, 'b.txt'), 'beta')
+    const ctx = h.context(folderKind)
+    const instances = [{ id: 'folder:ops', inbox: opsIn, outbox: opsOut }, { id: 'folder:dev', inbox: devIn, outbox: devOut }]
+    const round = (instance: typeof instances[number]) => pollFolder(ctx, instance, 'alice', new AbortController().signal)
+    // The first round records each drop's fingerprint; the second takes it.
+    for (const instance of instances) await round(instance)
+    for (const instance of instances) await round(instance)
+    expect(h.receive.mock.calls.map(([trigger]) => [trigger.source, trigger.meta.rel])).toEqual([['folder:ops', 'a.txt'], ['folder:dev', 'b.txt']])
+    expect(h.receive.mock.calls.map(([trigger]) => trigger.threads)).toEqual([
+      [{ source: 'folder:ops', id: 'a.txt' }], [{ source: 'folder:dev', id: 'b.txt' }]])
+    expect(Object.keys(h.store.get(KV.folder.seen('folder:ops'))!)).toEqual(['a.txt'])
+    expect(Object.keys(h.store.get(KV.folder.seen('folder:dev'))!)).toEqual(['b.txt'])
+    // A third round takes nothing again: each instance's cursor is its own.
+    for (const instance of instances) await round(instance)
+    expect(h.receive).toHaveBeenCalledTimes(2)
+    rmSync(root, { recursive: true, force: true })
+    h.store.close()
+  })
+  it('polls each GitHub instance from its own repository and CLI, sharding its cursors', async () => {
+    const h = host()
+    const settings = h.store.settings()
+    h.store.saveSettings({ ...settings, sources: { ...settings.sources,
+      'github:acme-a': { kind: 'github', enabled: true, config: { repository: 'acme/a', cli: 'gh-a' } },
+      'github:acme-b': { kind: 'github', enabled: true, config: { repository: 'acme/b', cli: 'gh-b' } } } })
+    const reads: [string, string][] = []
+    const run = vi.spyOn(Commands.prototype, 'run').mockImplementation(async (program, args) => {
+      reads.push([program, String(args[1] ?? '')])
+      if (String(args[1] ?? '').includes('notifications')) return 'HTTP/2.0 200 OK\r\nX-Poll-Interval: 90\r\n\r\n[]'
+      return JSON.stringify([])
+    })
+    const a = h.sources.instanceFor<GithubConfig>('github:acme-a')!, b = h.sources.instanceFor<GithubConfig>('github:acme-b')!
+    await pollRound(h, undefined, a)
+    await pollRound(h, undefined, b)
+    expect(reads.map(([program, path]) => [program, path.replace(/^repos\/[^/]+\/[^/]+\//, '').split('?')[0]])).toEqual([
+      ['gh-a', 'notifications'], ['gh-b', 'notifications']])
+    // Each instance keeps its own notification cursor; the default instance's unsharded keys stay unused.
+    expect(Date.parse(h.store.get<string>('github-since:github:acme-a')!)).toBeGreaterThan(0)
+    expect(Date.parse(h.store.get('github-since:github:acme-b')!)).toBeGreaterThan(0)
+    expect(h.store.get('github-since')).toBeUndefined()
+    // The repository of each instance names its Threads and the Trigger's Channel.
+    const trigger = commentTrigger({ id: 5, body: '@agent-bot fix', user: { login: 'alice', type: 'User' }, html_url: 'https://github.com/acme/a/pull/7#discussion_r5' },
+      { number: 7, isPr: true }, 'inline', 'agent-bot', 'github:acme-a')
+    expect(trigger.threads).toEqual([{ source: 'github:acme-a', id: '7' }])
+    expect(trigger.channel).toMatchObject({ source: 'github:acme-a', thread: 'github:acme-a:7' })
+    run.mockRestore()
+    h.store.close()
+  })
+  it('summarizes several GitHub instances on the shared kind health', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const board = new HealthBoard()
+      const settings = SettingsSchema.parse({ sources: {
+        'github:acme-a': { kind: 'github', enabled: true, config: { repository: 'acme/a', cli: 'gh-a' } },
+        'github:acme-b': { kind: 'github', enabled: true, config: { repository: 'acme/b', cli: 'gh-b' } },
+      } })
+      const sources = new SourceRegistry(() => settings, board)
+      healthOf.set(sources, board)
+      const value = host({ sources })
+      const disposers: (() => unknown)[] = []
+      const run = vi.spyOn(Commands.prototype, 'run').mockResolvedValue('HTTP/2.0 200 OK\r\nX-Poll-Interval: 90\r\n\r\n[]')
+      applyGithub({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
+      await vi.waitFor(() => expect(value.health.github).toMatchObject({ state: 'ready', detail: '2 repositories; next poll ≥ 90s' }))
+      for (const dispose of disposers) await dispose()
+      run.mockRestore()
+      value.store.close()
+    } finally { vi.useRealTimers() }
   })
 })

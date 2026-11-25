@@ -17,7 +17,8 @@ export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, 
     const entry = health[name]
     return { name, ...(!entry || (instance.enabled && entry.code === 'sourceOff') ? starting : entry) }
   })
-  return { id: instance.id, title: kind?.title ?? { zh: instance.id, en: instance.id }, health: parts }
+  const title = instance.label ? { zh: instance.label, en: instance.label } : kind?.title ?? { zh: instance.id, en: instance.id }
+  return { id: instance.id, title, health: parts }
 }
 export interface SetupState {
   /** Resolved deployment facts; undefined while waiting for initial setup. */
@@ -49,7 +50,7 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
   const dropped = droppedReplies(host)
   return sources.instances().map(instance => {
     const { health: parts, ...named } = sourceHealth(sources, instance, health)
-    const problem = problemOf(instance.id, setup)
+    const problem = problemOf(instance.id, setup) ?? problemOf(instance.kind, setup)
     return { ...named, installed: instance.installed, enabled: instance.enabled, state: sourceState(instance, parts, setup), health: parts,
       ...problem ? { problem } : {}, stats: stats[instance.id] ?? { received: 0, filtered: 0, lastAt: '' }, filtered: filtered(instance.id),
       dropped: dropped.filter(item => item.channel.source === instance.id) }

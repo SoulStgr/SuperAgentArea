@@ -19,8 +19,9 @@ import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { TextCache } from '../src/app/cache.ts'
 import { KV } from '../src/kv.ts'
 import { SettingsSchema, policyVersion, type SettingsOrigin } from '../src/policy.ts'
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { feishuKind } from '../src/sources/feishu.ts'
+import { folderKind, folderTrigger } from '../src/sources/folder.ts'
 import { githubKind, pollRound } from '../src/sources/github.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Trigger } from '../src/core/index.ts'
@@ -100,7 +101,7 @@ function seed(store: Store, accounts: Accounts = {}): void {
   const settings = store.settings()
   const { feishu: _feishu, ...others } = settings.sources
   const feishu = accounts.feishu === null ? undefined : { ...settings.sources.feishu?.config, cli: BOT(), ...accounts.feishu }
-  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
+  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { kind: 'feishu', enabled: true, config: feishu } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
 async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}): Promise<Runtime> {
@@ -212,7 +213,7 @@ beforeEach(async () => {
   await runtime.ready
   // Source kinds are normally registered by plugins that are not loaded in unit tests.
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
-  runtime.store.saveSettings({ ...runtime.store.settings(), policy: { ...runtime.store.settings().policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } }, eval: { ...runtime.store.settings().eval, mode: 'auto' }, sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT() } }, feishu: { enabled: true, config: { cli: BOT(), chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
+  runtime.store.saveSettings({ ...runtime.store.settings(), policy: { ...runtime.store.settings().policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } }, eval: { ...runtime.store.settings().eval, mode: 'auto' }, sources: { github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: AGENT() } }, feishu: { kind: 'feishu', enabled: true, config: { cli: BOT(), chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
 })
 afterEach(async () => { expect(controller.prompt).not.toHaveBeenCalled(); await runtime?.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
@@ -1335,7 +1336,7 @@ it('refuses a settings save with an unknown model or a Source kind that is not i
   expect(await request('PUT', 'settings/eval', { value: evalBlock, revision: runtime.store.blockRevision('eval') }))
     .toMatchObject({ status: 400, body: { code: 'modelUnavailable', values: { block: 'eval', error: 'unknown provider nowhere' } } })
   const stored = runtime.store.settings()
-  runtime.store.saveSettings({ ...stored, sources: { ...stored.sources, slack: { enabled: false, config: {} } } })
+  runtime.store.saveSettings({ ...stored, sources: { ...stored.sources, slack: { kind: 'slack', enabled: false, config: {} } } })
   expect(await request('PUT', 'settings/source:slack', { value: { enabled: true, config: {} }, revision: 0 }))
     .toMatchObject({ status: 400, body: { code: 'sourceNotInstalled', values: { source: 'slack' } } })
   const huge = { ...runtime.prompts.current().config, delivery: 'x'.repeat(runtime.machine.promptMaxChars.get()) }
@@ -1671,7 +1672,7 @@ it('shows the settings history when one revision holds values its Source kind no
   const revision = runtime.store.get(KV.settings.revision)!
   const stored = runtime.store.get(KV.settings.version(revision - 1))!
   runtime.store.set(KV.settings.version(revision - 1), { ...stored, settings: { ...stored.settings,
-    sources: { ...stored.settings.sources, feishu: { enabled: true, config: { readPageSize: 'many' } } } } })
+    sources: { ...stored.settings.sources, feishu: { kind: 'feishu', enabled: true, config: { readPageSize: 'many' } } } } })
   const history = policyHistory(runtime.store, runtime.sources, policyVersion(runtime.store.settings()))
   expect(history.items.slice(0, 2)).toEqual([expect.objectContaining({ revision, changes: null }), expect.objectContaining({ revision: revision - 1, changes: null })])
   expect(history.items[2]).toMatchObject({ revision: revision - 2 })
@@ -1817,4 +1818,44 @@ it('keeps the Policy the main Session judges by in its prompt, after admission a
   await runtime.settings.save('policy', { ...saved.policy, rules: rules.map(rule => ({ ...rule, enabled: false })) }, runtime.store.blockRevision('policy'), 'panel')
   expect(policy()).toContain('No rule is enabled: a proactive candidate can only be ignored.')
   expect(policy()).toContain('The accept mode and the rules decide proactive candidates only')
+})
+it('keeps two folder instances apart: their Threads, Tickets, environments and replies belong to the instance that received them', async () => {
+  const inbox = (name: string) => join(directory, name)
+  for (const name of ['in-ops', 'out-ops', 'in-dev', 'out-dev']) mkdirSync(inbox(name))
+  runtime.sources.register(folderKind)
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox: inbox('in-ops'), outbox: inbox('out-ops'), operator: 'alice', pollSeconds: 10 } },
+    'folder:dev': { kind: 'folder', enabled: true, config: { inbox: inbox('in-dev'), outbox: inbox('out-dev'), operator: 'bob', pollSeconds: 10 } } },
+  policy: { ...settings.policy, sources: { ...settings.policy.sources,
+    'folder:ops': { allowed: [{ id: 'alice' }] }, 'folder:dev': { allowed: [{ id: 'bob' }] } } } })
+  const drop = (hash: string, rel: string) => ({ rel, kind: 'file' as const, hash, at: new Date().toISOString(), text: `Do ${rel}.`, files: [rel] })
+  const ops = folderTrigger(drop('h-ops', 'ops.txt'), { id: 'folder:ops', inbox: inbox('in-ops'), outbox: inbox('out-ops') }, 'alice')
+  const dev = folderTrigger(drop('h-dev', 'dev.txt'), { id: 'folder:dev', inbox: inbox('in-dev'), outbox: inbox('out-dev') }, 'bob')
+  await receive(ops); await receive(dev)
+  // The Threads are keyed by instance, the string an old row-based key produced for the same drop.
+  expect([ops.threads[0], threadKey(ops.threads[0]!)]).toEqual([{ source: 'folder:ops', id: 'ops.txt' }, 'folder:ops:ops.txt'])
+  expect(runtime.store.threads.get('folder:ops:ops.txt')).toBeDefined()
+  expect(runtime.store.threads.get('folder:dev:dev.txt')).toBeDefined()
+  const accept = async (trigger: Trigger, title: string) => {
+    const result = await route({ kind: 'accept', trigger_id: trigger.id, title, worktree_name: worktreeName, acknowledgement: `ack ${title}` })
+    return runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
+  }
+  const [opsTicket, devTicket] = [await accept(ops, 'ops work'), await accept(dev, 'dev work')]
+  expect([opsTicket.sourceId, devTicket.sourceId]).toEqual(['folder:ops', 'folder:dev'])
+  expect([opsTicket.projectId, devTicket.projectId]).toEqual(['prj_workspace', 'prj_workspace'])
+  // Each Ticket's execution environment reads its own instance's inbox, outbox and drop.
+  const env = (ticket: typeof opsTicket) => Object.fromEntries(runtime.ticketEnvironment(ticket).map(variable => [variable.key, variable.value]))
+  expect(env(opsTicket)).toMatchObject({ DSH_SUPERAGENT_FOLDER_INBOX: inbox('in-ops'), DSH_SUPERAGENT_FOLDER_OUTBOX: inbox('out-ops'),
+    DSH_SUPERAGENT_FOLDER_TASK: join(inbox('in-ops'), 'ops.txt') })
+  expect(env(devTicket)).toMatchObject({ DSH_SUPERAGENT_FOLDER_INBOX: inbox('in-dev'), DSH_SUPERAGENT_FOLDER_OUTBOX: inbox('out-dev'),
+    DSH_SUPERAGENT_FOLDER_TASK: join(inbox('in-dev'), 'dev.txt') })
+  // The acknowledgements are written to the outbox of the instance each Ticket came from, and nowhere else.
+  await runtime.sendReplies()
+  expect(readdirSync(join(inbox('out-ops'), opsTicket.id))).toHaveLength(1)
+  expect(readdirSync(join(inbox('out-dev'), devTicket.id))).toHaveLength(1)
+  expect(existsSync(join(inbox('out-ops'), devTicket.id))).toBe(false)
+  expect(existsSync(join(inbox('out-dev'), opsTicket.id))).toBe(false)
+  expect(runtime.store.replyStatus(key('ack', ops.id))).toBe('sent')
+  expect(runtime.store.replyStatus(key('ack', dev.id))).toBe('sent')
 })

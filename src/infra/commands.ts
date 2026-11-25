@@ -71,6 +71,19 @@ export class Commands {
     return github
   }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
+  /**
+   * A Commands scoped to one GitHub Source instance's repository and CLI, so parallel instances read and write their own
+   * repository. An empty repository or CLI keeps the deployment's; an installation without a GitHub account keeps none.
+   */
+  forGithub(config: { repository?: string; cli?: string }): Commands {
+    const { repository, cli } = config
+    if (!repository && !cli) return this
+    return new Commands(() => {
+      const deployment = this.resolved()
+      const account = cli && deployment.github ? { ...deployment.github, cli } : deployment.github
+      return { ...deployment, repository: repository || deployment.repository, ...account ? { github: account } : {} }
+    }, this.environment, this.signal)
+  }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,

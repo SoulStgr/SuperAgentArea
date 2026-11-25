@@ -5,6 +5,7 @@ import type { Deployment } from '../deployment.ts'
 import type { SourceRegistry } from './registry.ts'
 import type { SetupProblem } from '../setup.ts'
 import type { Family, Key } from '../kv.ts'
+import type { SourceInstance } from './kind.ts'
 import { fill } from '../infra/text.ts'
 
 /** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
@@ -23,8 +24,11 @@ export function health(state: Health['state'], code: HealthCode, values: Record<
 }
 export interface SourceHost {
   readonly sources: SourceRegistry
-  /** Returns the context for one Source kind; its `report` writes only the health entries declared by the kind. */
-  context(kind: { kind: string; health: readonly string[] }): SourceContext
+  /**
+   * Returns the context for one Source kind or instance; its health entries are the kind's, shared by its instances, and
+   * `report` writes only those entries.
+   */
+  context(source: { kind: string; health: readonly string[] } | SourceInstance): SourceContext
 }
 /** Display label, URL, and facts (`null` removes a fact) that a Source publishes on a Thread. */
 export interface ThreadDescription { label?: string; url?: string; facts?: Record<string, ThreadFact | null> }
@@ -37,8 +41,10 @@ export interface SourceContext {
   configured(): boolean
   /** Setup problem keeping this Source's account from running; only the Feishu bot check reports one. */
   readonly problem?: SetupProblem | undefined
-  /** Returns a Source's configuration while enabled, or undefined while disabled or uninstalled. */
-  config<C extends Record<string, unknown>>(kind: string): C | undefined
+  /** Returns a Source instance's configuration while enabled, or undefined while disabled or uninstalled; `instanceId` names the instance, not its kind. */
+  config<C extends Record<string, unknown>>(instanceId: string): C | undefined
+  /** Every configured instance of one kind (its kind's default instance when none is stored), each with its resolved configuration. */
+  instances<C extends Record<string, unknown>>(kind: string): SourceInstance<C>[]
   /** Ingests a trigger into the Engine and schedules the next evaluation pass; callers should await completion before advancing read cursors. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   atomic<T>(work: () => T): T

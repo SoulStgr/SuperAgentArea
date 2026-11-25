@@ -20,6 +20,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const commands = {
     repository: 'acme/widgets', deployment: testDeployment(),
     withSignal() { return commands },
+    forGithub() { return commands },
     gh: vi.fn(async (args: string[]) => {
       await gate.issue
       const number = Number(/issues\/(\d+)/.exec(args[1]!)?.[1])

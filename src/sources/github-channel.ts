@@ -45,10 +45,12 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
     throw error
   }
 }
-export function githubLink(address: Record<string, string>, links: ChannelLinks): ChannelLink {
+export function githubLink(address: Record<string, string>, links: ChannelLinks, config?: { repository?: string }): ChannelLink {
   const number = address.number ?? ''
-  const review = !!links.repository && !!githubAddress(address.url ?? '', links.repository)?.discussion
-  return { url: address.url ?? (links.repository ? githubPage(links.repository, Number(number)) : ''),
+  // A Source instance may watch another repository; its links point there rather than at the deployment's.
+  const repository = config?.repository || links.repository
+  const review = !!repository && !!githubAddress(address.url ?? '', repository)?.discussion
+  return { url: address.url ?? (repository ? githubPage(repository, Number(number)) : ''),
     label: review ? { zh: `GitHub #${number} 的 review 讨论`, en: `Review discussion on GitHub #${number}` }
       : { zh: `GitHub #${number}`, en: `GitHub #${number}` } }
 }

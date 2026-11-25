@@ -28,7 +28,7 @@ it('retains pagination limits and exact loaded counts rather than claiming compl
   const lark = vi.spyOn(commands, 'lark').mockResolvedValueOnce({ items: [{ message_id: 'om_9', chat_id: 'oc_chat', thread_id: 'omt_thread' }] })
     .mockResolvedValueOnce({ thread_id: 'omt_thread', messages: [listed(0), listed(1)], has_more: true, page_token: 'next' })
   const trigger: Trigger = { id: 'event', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_chat:om_9' }], actor: { source: 'feishu', id: 'ou_user' }, human: true, text: 'Trigger', at: '', meta: { chatId: 'oc_chat', messageId: 'om_9', direct: false, mentioned: false } }
-  const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: { enabled: true, config: { readPageSize: 2 } } } }))
+  const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config: { readPageSize: 2 } } } }))
   sources.register(feishuKind)
   const result = await admissionContext(sources.threadContext(trigger)!, commands, 1)
   expect(result).toMatchObject({ complete: false, next: 'next', window: { loaded_messages: 2, source_found: false } })

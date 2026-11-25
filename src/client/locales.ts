@@ -72,6 +72,7 @@ const TEXT = {
   'historySource.member-sync': ['成员同步', 'Member sync'],
   'historySource.orchestrator-tool': ['主 Session 工具', 'Main Session tool'],
   'historySource.internal': ['内部', 'Internal'],
+  'historySource.migration': ['升级迁移', 'Upgrade migration'],
   'historySource.policy-sync': ['从群同步', 'Sync'],
   'historySource.sections-migration': ['升级迁移', 'Upgrade migration'],
   'historySource.vocabulary-migration': ['升级迁移', 'Upgrade migration'],

@@ -35,7 +35,7 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
   /** Fallback display labels for unlisted human or bot senders when raw sender IDs are not human-readable. */
   unnamed?: { person: Localized; bot: Localized }
   /** Receiving scopes of the Policy's admission table under `config` (matching `scope().row`); kinds without `rows` use the table's defaults. */
-  rows?(config: Record<string, unknown>): AdmissionRowView[]
+  rows?(config: Record<string, unknown>, instance: string): AdmissionRowView[]
   /** Optional external roster sync (such as chat members); `ready` reports whether `part` names a target to refresh from. */
   sync?: { label: Localized; ready(part: P): boolean; run(host: SourceHost, part: P, signal: AbortSignal): Promise<P> }
 }
@@ -52,7 +52,7 @@ export interface SourceChannel<C> {
    */
   send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
   /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
-  link(address: Record<string, string>, links: ChannelLinks): ChannelLink
+  link(address: Record<string, string>, links: ChannelLinks, config?: C): ChannelLink
 }
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message can never authorize work on its own (at most an inferred candidate). */
 export interface ContextMessage {
@@ -95,9 +95,14 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   /** Health entry names owned by this kind under `health[...]`; no other kind or core loop may report them. */
   health: string[]
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */
-  scope?(input: { meta: Record<string, unknown> }, config: C): ScopeResult
+  scope?(input: { meta: Record<string, unknown>; instance: string }, config: C): ScopeResult
   /** Outbound reply adapter; kinds without `channel` produce no replies or channel checks. */
   channel?: SourceChannel<C>
+  /**
+   * Adapts the shared `Commands` to this instance's configuration, such as another GitHub repository and CLI; the registry
+   * uses it for outbound replies and thread context reads. Without it, commands stay as the deployment resolved them.
+   */
+  commands?(config: C, commands: Commands): Commands
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
   /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
@@ -112,4 +117,6 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   environment?: { variables: readonly VariableSpec[]; values(input: EnvironmentInput<C>): Record<string, string> }
 }
 
-export interface SourceInstance<C extends Record<string, unknown> = Record<string, unknown>> { id: string; kind: string; enabled: boolean; config: C }
+export interface SourceInstance<C extends Record<string, unknown> = Record<string, unknown>> {
+  id: string; kind: string; enabled: boolean; config: C; label?: string; defaultProjectId?: string
+}

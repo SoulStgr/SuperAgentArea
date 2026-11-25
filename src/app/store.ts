@@ -7,7 +7,7 @@ import { key, threadKey, WORKSPACE_PROJECT_ID, type ArtifactRecord, type Artifac
   type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { KV, type Family, type Key } from '../kv.ts'
 import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave } from '../policy.ts'
-import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, migrateTo12, tooOld } from './migration.ts'
+import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateSettingsToInstances, migrateTo11, migrateTo12, tooOld } from './migration.ts'
 import { workspaceProject } from './projects.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
@@ -111,6 +111,9 @@ export class Store implements Repositories {
         const reason = error instanceof Error ? error.message : String(error)
         throw new Error(`The orchestrator database is unchanged at schema ${version}: its migration to schema ${SCHEMA_VERSION} failed: ${reason}`, { cause: error })
       }
+      // A database saved before Source instances (including one already at schema 12) gets the one-time settings upgrade;
+      // it records a `migration` settings revision, so the panel keeps showing what the upgrade changed.
+      migrateSettingsToInstances(this)
     } catch (error) {
       this.db.close()
       throw error

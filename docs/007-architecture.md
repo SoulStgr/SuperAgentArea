@@ -183,11 +183,11 @@ Each kind has a health entry under its name. It reports an error once one of its
 
 ### Sources
 
-Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. A kind declares its identity, title, description, configuration `schema` and `fields`, derived `facts`, and `health` entries. Optional behavior includes `scope`, a `channel` (`allowed`, `send`, `link`), `threadContext`, `find`, `policy`, `environment` and `refreshLabels`.
+Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. A kind declares its identity, title, description, configuration `schema` and `fields` (one instance's configuration), derived `facts`, and `health` entries. Optional behavior includes `scope` (which receives the instance id), a `channel` (`allowed`, `send`, `link`), `commands` (the shared CLI commands adapted to the instance's own repository and CLI), `threadContext`, `find`, `policy`, `environment` and `refreshLabels`.
 
-`SourceRegistry` (`registry.ts`) owns registered kinds and stored instances, and implements the Engine's `SourceScope`. Registration claims health entries on `HealthBoard`; duplicate claims and reserved `sync:` names are refused. A SourceContext writes only through its registration's claimed entries, so reports after unregistration do nothing.
+`SourceRegistry` (`registry.ts`) owns registered kinds and the configured instances of each, and implements the Engine's `SourceScope`. An instance id is the bare kind for a database that predates instances, and `<kind>:<key>` for a named one (a folder's `folder:<row id>`, a GitHub repository's `github:<repository>`); `kindOf(source)` resolves a Trigger's, Thread's or Channel's `source` back to its kind, and `instanceFor(source, row)` finds the instance an old bare-kind record belonged to. Registration claims health entries on `HealthBoard`; duplicate claims and reserved `sync:` names are refused. A SourceContext writes only through its registration's claimed entries, so reports after unregistration do nothing; health stays kind-level for now, shared by a kind's instances.
 
-Registry configuration methods include `kind`, `instances`, `instance`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. `find` asks each kind that supports search.
+Registry configuration methods include `kind`, `kindOf`, `instances`, `instancesOf`, `instance`, `instanceFor`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. A kind without stored settings resolves to a default instance (`id` = kind, schema defaults, on). `find` asks each kind that supports search and names each instance's Thread key.
 
 Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
 
@@ -297,7 +297,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
-| `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take |
+| `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take; the GitHub read positions take an instance id and shard a named instance's keys under it |
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
 | `src/core/model.ts` | The domain types, among them the typed Ticket and `MandateBasis`, with `threadKey`, `ticketOutcome`, `reached`, `followupOwners`, `settled`, `waitsForPerson`, `liveTicket`, `runningAssignment`, `latestAssignment` and `latestReport` |
 | `src/core/project.ts` | The Project, artifact and person shapes (`ProjectValue`, `ProjectRecord`, `ArtifactValue`, `ArtifactRecord`, `PersonRef`), the built-in workspace's id and key, `isWorkspaceProject`, and `artifactRecordId`, a delivered file's row id |
@@ -322,7 +322,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, the Project registry and artifact index beside the domain aggregates, and `Receipt`, a message of the outbox |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-| `src/app/migration.ts` | The schema 12 migration: `migrateTo11` writes a schema 10 database in schema 11's shapes, and `migrateTo12` creates the Project registry and artifact index, gives every old ticket its Project, Source and reporter, and indexes the artifacts earlier versions collected |
+| `src/app/migration.ts` | The schema 12 migration: `migrateTo11` writes a schema 10 database in schema 11's shapes, and `migrateTo12` creates the Project registry and artifact index, gives every old ticket its Project, Source and reporter, and indexes the artifacts earlier versions collected. `migrateSettingsToInstances` upgrades a database saved before Source instances once: one `{kind, enabled, config}` entry per Source, one `folder:<row id>` instance per folder row, Policy parts and admission rows keyed by instance, and a `migration` settings revision |
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
@@ -362,17 +362,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
-| `src/sources/kind.ts` | The `SourceKind` protocol |
-| `src/sources/registry.ts` | `SourceRegistry` |
+| `src/sources/kind.ts` | The `SourceKind` protocol, one instance's configuration and its optional `commands` adaptation, and `SourceInstance` |
+| `src/sources/registry.ts` | `SourceRegistry`: registered kinds and their instances, `kindOf` resolution for old bare-kind records, validation, Channels, links, environment values and Thread context per instance |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
-| `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads; without a repository it reports that and polls nothing |
+| `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads, run per enabled instance with its own repository, CLI, Thread keys and KV shard; without a repository it reports that and polls nothing |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
-| `src/sources/folder.ts` | The local folder kind and plugin entry, exported as `./folder-watch`: inbox drops as explicit Triggers, write-completeness and content-hash cursors, outbox reply files |
+| `src/sources/folder.ts` | The local folder kind and plugin entry, exported as `./folder-watch`: one instance per inbox, drops as explicit Triggers, write-completeness and content-hash cursors sharded by instance, outbox reply files |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
 | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
@@ -411,9 +411,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
-| `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
-| `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
-| `tests/folder.spec.ts` | The folder Source on a `SourceContext`: drop translation, write-completeness, cursors and duplicates, outbox reply files, the plugin entry |
+| `tests/registry.spec.ts` | `SourceRegistry`: instances of one kind, `kindOf` and old bare-kind resolution, default instances, validation, Policy parts, Channels and Thread context |
+| `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, several instances of one kind with their own repositories, inboxes and KV shards, the pull request rules, health |
+| `tests/folder.spec.ts` | The folder Source on a `SourceContext`: drop translation, write-completeness, per-instance cursors and duplicates, outbox reply files, the plugin entry |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
@@ -438,7 +438,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
-| `tests/migration.spec.ts` | The schema 10 and 11 migrations: every stored record in its current shape, the schema 12 Project registry, ticket owners and artifact rows, and the refusal of older schemas |
+| `tests/migration.spec.ts` | The schema 10 and 11 migrations: every stored record in its current shape, the schema 12 Project registry, ticket owners and artifact rows, the settings upgrade to Source instances, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts`, a Ticket's Source and Project columns, and the migration, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
@@ -494,7 +494,7 @@ Read caches use bounded in-memory `TextCache` instances and are lost on restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
-`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; `src/app/migration.ts` upgrades a database of the pre-release schema 10 in two steps at start (`migrateTo11` then `migrateTo12`), a schema 11 one in one (`migrateTo12`), and refuses an older one.
+`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; `src/app/migration.ts` upgrades a database of the pre-release schema 10 in two steps at start (`migrateTo11` then `migrateTo12`), a schema 11 one in one (`migrateTo12`), and refuses an older one. A schema 12 database saved before Source instances gets `migrateSettingsToInstances` once at open, which records a `migration` settings revision.
 
 ## Model-facing interfaces
 

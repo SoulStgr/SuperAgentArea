@@ -76,9 +76,11 @@ export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnad
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
 export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
+/** A Source instance's id: a kind id, or `<kind>:<key>` for a named instance (old data keeps the bare kind). */
+export const SourceInstanceIdSchema = z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)
 export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
-  sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default({}),
+  sources: z.record(SourceInstanceIdSchema, SourcePolicySchema).default({}),
 }).strict()
 export const EvalConfigSchema = z.object({
   mode: z.enum(['off', 'observe', 'auto']).default('observe'),
@@ -95,10 +97,23 @@ export const ExecutorConfigSchema = z.object({
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()
-export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+/**
+ * A configured Source instance: `kind` names the installed kind whose schema validates `config`, the single instance's
+ * configuration. Older databases stored only `{enabled, config}` under the kind id; the migration adds `kind`.
+ */
+export const SourceInstanceSchema = z.object({
+  kind: z.string().regex(/^[a-z][a-z0-9-]*$/),
+  enabled: z.boolean().default(true),
+  config: z.record(z.string(), z.unknown()).default({}),
+  /** Human-readable name for the panel; instances without one show their kind's title and key. */
+  label: z.string().trim().max(100).optional(),
+  /** The Project that owns work from this instance (P2), kept as stored here. */
+  defaultProjectId: z.string().trim().optional(),
+}).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
-  sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourceInstanceSchema).default({}),
+  /** Every configured Source instance by instance id (`<kind>` for an old single instance, else `<kind>:<key>`). */
+  sources: z.record(SourceInstanceIdSchema, SourceInstanceSchema).default({}),
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
@@ -106,7 +121,7 @@ export const SettingsSchema = z.object({
 export type Settings = z.infer<typeof SettingsSchema>
 export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
-export type SettingsOrigin = 'panel' | 'tool' | 'sync'
+export type SettingsOrigin = 'panel' | 'tool' | 'sync' | 'migration'
 
 export const POLICY_REVISION = 'mandate-v3'
 /**

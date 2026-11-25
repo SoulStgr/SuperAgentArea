@@ -1,7 +1,8 @@
 /**
- * Local folder Source: a file or task folder dropped into an inbox becomes a Trigger; replies and artifacts are
- * written to the row's outbox. A task folder carries its instruction in `TASK.md`; a lone file is named by the
- * Trigger and read by the worker through `DSH_SUPERAGENT_FOLDER_TASK`. Drops are explicit requests of the operator.
+ * Local folder Source: one instance watches one inbox; a file or task folder dropped there becomes a Trigger, and
+ * replies and artifacts are written to the instance's outbox. A task folder carries its instruction in `TASK.md`; a
+ * lone file is named by the Trigger and read by the worker through `DSH_SUPERAGENT_FOLDER_TASK`. Drops are explicit
+ * requests of the operator.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
@@ -16,16 +17,15 @@ import { health, sourceContext, type SourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
 
 const ConfigSchema = z.object({
-  folders: z.array(z.object({
-    id: z.string().regex(/^[a-z0-9-]+$/),
-    inbox: z.string().min(1),
-    outbox: z.string().min(1),
-  }).strict()).default([]),
+  inbox: z.string().default(''),
+  outbox: z.string().default(''),
   /** Actor id of the local operator; empty resolves to the OS user name. The Policy's allowed list names it. */
   operator: z.string().trim().default(''),
   pollSeconds: z.number().int().min(2).max(3600).default(10),
 }).strict()
 export type FolderConfig = z.infer<typeof ConfigSchema>
+/** One configured instance's folders, as the polling loop and its Trigger builder read them. */
+export interface FolderInstance { id: string; inbox: string; outbox: string }
 
 /** One mature drop: a lone file, or a task folder whose instruction is `TASK.md`. */
 export interface FolderDrop {
@@ -40,20 +40,24 @@ export interface FolderDrop {
   files: string[]
 }
 
-/** The Trigger of one drop; the operator's drop is an explicit, human, direct request. */
-export function folderTrigger(drop: FolderDrop, row: { id: string; inbox: string; outbox: string }, operator: string): Trigger {
-  const thread = `${row.id}:${drop.rel}`
+/**
+ * The Trigger of one drop on `instance`: its source and Thread carry the instance id, so `folder:ops` and
+ * `folder:dev` keep separate Threads and the thread key is the same string the old row-based key had.
+ * The operator's drop is an explicit, human, direct request.
+ */
+export function folderTrigger(drop: FolderDrop, instance: FolderInstance, operator: string): Trigger {
+  const thread = `${instance.id}:${drop.rel}`
   return {
-    id: key('folder', row.id, drop.rel, drop.hash),
-    source: 'folder',
-    threads: [{ source: 'folder', id: thread }],
-    actor: { source: 'folder', id: operator },
+    id: key('folder', instance.id, drop.rel, drop.hash),
+    source: instance.id,
+    threads: [{ source: instance.id, id: drop.rel }],
+    actor: { source: instance.id, id: operator },
     human: true,
     addressed: 'direct',
     at: drop.at,
     text: drop.text,
-    channel: { source: 'folder', thread: `folder:${thread}`, address: { row: row.id, outbox: row.outbox, rel: drop.rel } },
-    meta: { row: row.id, rel: drop.rel, kind: drop.kind, files: drop.files, inbox: row.inbox, outbox: row.outbox },
+    channel: { source: instance.id, thread, address: { row: instance.id, outbox: instance.outbox, rel: drop.rel } },
+    meta: { row: instance.id, rel: drop.rel, kind: drop.kind, files: drop.files, inbox: instance.inbox, outbox: instance.outbox },
   }
 }
 
@@ -110,26 +114,25 @@ export async function sendFolder(message: OutboundMessage): Promise<'sent' | 'go
 
 export const folderKind: SourceKind<FolderConfig> = {
   kind: 'folder',
-  title: { zh: '本地文件夹', en: 'Local folders' },
-  description: { zh: '监听下列收件目录的投件；回复与产物写入对应的交付目录。', en: 'Watches these inboxes for drops; replies and artifacts land in each outbox.' },
+  title: { zh: '本地文件夹', en: 'Local folder' },
+  description: { zh: '监听收件目录的投件；回复与产物写入交付目录。', en: 'Watches an inbox for drops; replies and artifacts land in its outbox.' },
   schema: ConfigSchema,
   fields: [
-    { key: 'folders', type: 'rows', label: { zh: '收件目录', en: 'Inboxes' }, columns: [
-      { key: 'id', type: 'text', label: { zh: '标识', en: 'Id' }, pattern: '[a-z0-9-]+' },
-      { key: 'inbox', type: 'text', label: { zh: '收件目录', en: 'Inbox' } },
-      { key: 'outbox', type: 'text', label: { zh: '交付目录', en: 'Outbox' } },
-    ] },
+    { key: 'inbox', type: 'text', label: { zh: '收件目录', en: 'Inbox' } },
+    { key: 'outbox', type: 'text', label: { zh: '交付目录', en: 'Outbox' } },
     { key: 'operator', type: 'text', label: { zh: '操作者', en: 'Operator' }, hint: { zh: '留空用本机用户名；须列入授权名单', en: 'Empty uses the OS user name; list it in the Policy' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 2, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
   ],
   health: ['folder'],
-  scope({ meta }, config) {
-    const row = config.folders.find(item => item.id === meta.row)
-    if (!row) return { listened: false, reason: 'folder_not_listed' }
-    return { listened: true, observed: false, row: row.id }
+  scope({ meta, instance }, config) {
+    // An old Trigger keeps its row id in `meta.row`; a new one carries the instance id.
+    if (!config.inbox) return { listened: false, reason: 'folder_not_listed' }
+    const row = typeof meta.row === 'string' && !meta.row.includes(':') ? meta.row : instance
+    return { listened: true, observed: false, row }
   },
   channel: {
-    allowed: (address, config) => config.folders.some(item => item.id === address.row && item.outbox === address.outbox),
+    // The instance a Channel resolves to already names the row; its outbox must be the one the drop came from.
+    allowed: (address, config) => !!config.outbox && config.outbox === address.outbox,
     send: (_host, message) => sendFolder(message),
     link: address => ({ url: '', label: { zh: `文件夹交付 ${address.row}`, en: `Folder outbox ${address.row}` } }),
   },
@@ -140,8 +143,9 @@ export const folderKind: SourceKind<FolderConfig> = {
       { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, optional: true },
     ] }],
     explicit: { zh: '操作者把文件或任务文件夹放进收件目录。', en: 'The operator drops a file or task folder into an inbox.' },
-    rows: stored => ConfigSchema.parse(stored).folders.map(row => ({ id: row.id, label: row.id, note: { zh: '投件', en: 'Drops' },
-      cells: { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false } })),
+    // One admission row per instance: the row id the Engine records is the instance id.
+    rows: (_stored, instance) => [{ id: instance, label: instance, note: { zh: '投件', en: 'Drops' },
+      cells: { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false } }],
   },
   environment: {
     variables: [
@@ -150,72 +154,109 @@ export const folderKind: SourceKind<FolderConfig> = {
       { key: 'DSH_SUPERAGENT_FOLDER_TASK', description: { zh: '投件文件或任务文件夹的绝对路径', en: 'Absolute path of the dropped file or task folder' } },
     ],
     values: ({ trigger, config }) => {
-      if (trigger?.source !== 'folder') return { DSH_SUPERAGENT_FOLDER_INBOX: '', DSH_SUPERAGENT_FOLDER_OUTBOX: '', DSH_SUPERAGENT_FOLDER_TASK: '' }
-      const row = config.folders.find(item => item.id === trigger.meta.row)
-      return { DSH_SUPERAGENT_FOLDER_INBOX: row?.inbox ?? '', DSH_SUPERAGENT_FOLDER_OUTBOX: row?.outbox ?? '',
-        DSH_SUPERAGENT_FOLDER_TASK: row ? join(row.inbox, String(trigger.meta.rel)) : '' }
+      // Only the instance that received the Trigger fills these; the registry narrows a Trigger to its own instance.
+      if (!trigger || !(trigger.source === 'folder' || trigger.source.startsWith('folder:'))) {
+        return { DSH_SUPERAGENT_FOLDER_INBOX: '', DSH_SUPERAGENT_FOLDER_OUTBOX: '', DSH_SUPERAGENT_FOLDER_TASK: '' }
+      }
+      return { DSH_SUPERAGENT_FOLDER_INBOX: config.inbox, DSH_SUPERAGENT_FOLDER_OUTBOX: config.outbox,
+        DSH_SUPERAGENT_FOLDER_TASK: config.inbox ? join(config.inbox, String(trigger.meta.rel)) : '' }
     },
   },
 }
 
-/** Scans one inbox round: mature drops are received once, cursors move only after every covered Trigger is stored. */
-export async function pollFolder(ctx: SourceContext, row: { id: string; inbox: string; outbox: string }, operator: string, signal: AbortSignal): Promise<{ read: number; received: number }> {
-  const entries = await readdir(row.inbox, { withFileTypes: true })
-  const pending = ctx.state.get(KV.folder.pending(row.id)) ?? {}
-  const seen = ctx.state.get(KV.folder.seen(row.id)) ?? {}
+/** Scans one instance's inbox round: mature drops are received once, cursors move only after every covered Trigger is stored. */
+export async function pollFolder(ctx: SourceContext, instance: FolderInstance, operator: string,
+  signal: AbortSignal): Promise<{ read: number; received: number }> {
+  const entries = await readdir(instance.inbox, { withFileTypes: true })
+  const pending = ctx.state.get(KV.folder.pending(instance.id)) ?? {}
+  const seen = ctx.state.get(KV.folder.seen(instance.id)) ?? {}
   const nextPending: Record<string, { size: number; mtime: number }> = {}
   let received = 0
   for (const entry of entries) {
     if (signal.aborted) throw new Error('The folder Source stopped during the read')
     if (!entry.isFile() && !entry.isDirectory()) continue
-    const path = join(row.inbox, entry.name)
+    const path = join(instance.inbox, entry.name)
     const info = await stat(path)
     const fingerprint = { size: info.size, mtime: info.mtimeMs }
     const earlier = pending[entry.name]
     nextPending[entry.name] = fingerprint
     // A drop still being written changes between rounds; take it only once two rounds agree.
     if (!earlier || earlier.size !== fingerprint.size || earlier.mtime !== fingerprint.mtime) continue
-    const drop = await readDrop(row.inbox, entry.name, entry.isDirectory() ? 'dir' : 'file').catch(() => undefined)
+    const drop = await readDrop(instance.inbox, entry.name, entry.isDirectory() ? 'dir' : 'file').catch(() => undefined)
     if (!drop) continue
     if (seen[drop.rel] === drop.hash) continue
-    const trigger = folderTrigger(drop, row, operator)
+    const trigger = folderTrigger(drop, instance, operator)
     await ctx.receive(trigger)
     received += 1
     seen[drop.rel] = drop.hash
     ctx.threads.describe(threadKey(trigger.threads[0]!), { label: drop.rel, facts: { kind: { label: { zh: '类型', en: 'Kind' }, value: drop.kind } } })
   }
   ctx.atomic(() => {
-    ctx.state.set(KV.folder.pending(row.id), nextPending)
-    ctx.state.set(KV.folder.seen(row.id), seen)
+    ctx.state.set(KV.folder.pending(instance.id), nextPending)
+    ctx.state.set(KV.folder.seen(instance.id), seen)
   })
   return { read: entries.length, received }
 }
 
-/** The polling loop: waits for setup, follows the switch, reports health, and stops at once on abort. */
+/** What one instance's loop has done since startup, for the kind's shared health detail. */
+interface FolderRound { failures: number; read: number; received: number; error?: string }
+/** Reports the kind-level entry: a poll error once any instance failed three rounds, else the totals of the running instances. */
+function reportFolder(ctx: SourceContext, rounds: Map<string, FolderRound>, active: readonly { id: string }[]): void {
+  const failed = active.flatMap(({ id }) => {
+    const round = rounds.get(id)
+    return round && round.failures >= 3 ? [{ id, round }] : []
+  })
+  if (failed.length) {
+    const count = failed.reduce((sum, item) => sum + item.round.failures, 0)
+    const error = failed.map(item => `${item.id}: ${item.round.error ?? 'failed'}`).join('; ')
+    ctx.report('folder', health('error', 'pollFailures', { count: String(count), error }))
+    return
+  }
+  const totals = active.reduce((sum, { id }) => {
+    const round = rounds.get(id)
+    return { read: sum.read + (round?.read ?? 0), received: sum.received + (round?.received ?? 0) }
+  }, { read: 0, received: 0 })
+  ctx.report('folder', { state: 'ready', detail: `${totals.read} entries, ${totals.received} new drops`, at: new Date().toISOString() })
+}
+
+/**
+ * The polling loop: waits for setup, follows the switch, polls each enabled instance on its own interval, reports the
+ * shared health, and stops at once on abort.
+ */
 export async function watchFolder(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   if (!ctx.configured()) { ctx.report('folder', health('paused', 'setupPending')); return }
-  let failures = 0
+  const rounds = new Map<string, FolderRound>()
+  const due = new Map<string, number>()
   while (!signal.aborted) {
-    const config = ctx.config<FolderConfig>('folder')
-    if (!config) ctx.report('folder', health('paused', 'sourceOff'))
-    else {
-      const at = new Date().toISOString()
-      try {
-        const operator = config.operator || userInfo().username
-        let read = 0, received = 0
-        for (const row of config.folders) {
-          const round = await pollFolder(ctx, row, operator, signal)
-          read += round.read; received += round.received
+    const instances = ctx.instances<FolderConfig>('folder')
+    const enabled = instances.filter(instance => instance.enabled)
+    const active = enabled.filter(instance => instance.config.inbox)
+    if (!enabled.length) ctx.report('folder', health('paused', 'sourceOff'))
+    else if (!active.length) {
+      // An instance with no inbox configured yet runs nothing; the Source is on, so it is not reported off.
+      ctx.report('folder', { state: 'ready', detail: '0 entries, 0 new drops', at: new Date().toISOString() })
+    } else {
+      const now = Date.now()
+      for (const instance of active) {
+        if ((due.get(instance.id) ?? 0) > now) continue
+        due.set(instance.id, now + instance.config.pollSeconds * 1000)
+        const round = rounds.get(instance.id) ?? { failures: 0, read: 0, received: 0 }
+        rounds.set(instance.id, round)
+        round.read = 0; round.received = 0
+        try {
+          const operator = instance.config.operator || userInfo().username
+          const polled = await pollFolder(ctx, { id: instance.id, inbox: instance.config.inbox, outbox: instance.config.outbox },
+            operator, signal)
+          round.failures = 0; round.error = undefined; round.read = polled.read; round.received = polled.received
+        } catch (error) {
+          round.failures += 1; round.error = String(error)
         }
-        failures = 0
-        ctx.report('folder', { state: 'ready', detail: `${read} entries, ${received} new drops`, at })
-      } catch (error) {
-        failures += 1
-        if (!signal.aborted && failures >= 3) ctx.report('folder', health('error', 'pollFailures', { count: String(failures), error: String(error) }))
       }
+      reportFolder(ctx, rounds, active)
     }
-    await delay((config?.pollSeconds ?? 10) * 1000, undefined, { signal }).catch(() => {})
+    const seconds = active.length ? Math.min(...active.map(instance => instance.config.pollSeconds)) : 10
+    await delay(seconds * 1000, undefined, { signal }).catch(() => {})
   }
 }
 

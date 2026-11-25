@@ -27,13 +27,15 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-const row = () => ({ id: 'ops', inbox, outbox })
-function host(overrides: Partial<SourceContextDeps> = {}) {
+const instance = () => ({ id: 'folder:ops', inbox, outbox })
+const config = () => ({ kind: 'folder', enabled: true, config: { inbox, outbox, operator: 'alice', pollSeconds: 2 } })
+function host(overrides: Partial<SourceContextDeps> = {}, sourceConfig: Record<string, unknown> = {}) {
   const store = new Store(join(dir, 'db.sqlite'))
   stores.push(store)
   store.saveSettings(SettingsSchema.parse({
-    sources: { folder: { enabled: true, config: { folders: [row()], operator: 'alice', pollSeconds: 2 } } },
-    policy: { sources: { folder: { allowed: [{ id: 'alice' }] } } },
+    sources: { 'folder:ops': { ...sourceConfig, kind: 'folder', enabled: true,
+      config: { inbox, outbox, operator: 'alice', pollSeconds: 2, ...sourceConfig.config as object } } },
+    policy: { sources: { 'folder:ops': { allowed: [{ id: 'alice' }] } } },
   }))
   const board = new HealthBoard()
   const sources = new SourceRegistry(() => store.settings(), board)
@@ -47,7 +49,7 @@ function host(overrides: Partial<SourceContextDeps> = {}) {
     deployment: testDeployment(), ready: Promise.resolve(), configured: () => true, receive, ...overrides }
   return { ...parts, store, engine, receive, health: board.all, ctx: sourceContextOf(parts, folderKind) }
 }
-const drop = (name: string, content: string) => writeFileSync(join(inbox, name), content)
+const drop = (name: string, content: string, where = inbox) => writeFileSync(join(where, name), content)
 
 describe('translation', () => {
   it('names a stable id, the task thread, the operator as a human direct request, and the outbox address', async () => {
@@ -56,13 +58,16 @@ describe('translation', () => {
     // A text file's instruction travels in the Trigger, so the assessment needs no shell read (Windows code pages mangle UTF-8).
     expect(item!.text).toContain('numbers')
     expect(item!.text).toContain('New file dropped: report.txt (7 bytes).')
-    const trigger = folderTrigger(item!, row(), 'alice')
-    expect(trigger.id).toBe(key('folder', 'ops', 'report.txt', item!.hash))
-    expect(trigger.threads).toEqual([{ source: 'folder', id: 'ops:report.txt' }])
-    expect(trigger.actor).toEqual({ source: 'folder', id: 'alice' })
-    expect(trigger).toMatchObject({ human: true, addressed: 'direct', source: 'folder' })
-    expect(trigger.channel!.address).toEqual({ row: 'ops', outbox, rel: 'report.txt' })
-    expect(trigger.meta).toMatchObject({ row: 'ops', rel: 'report.txt', kind: 'file', files: ['report.txt'] })
+    const trigger = folderTrigger(item!, instance(), 'alice')
+    expect(trigger.id).toBe(key('folder', 'folder:ops', 'report.txt', item!.hash))
+    // The new Thread carries the instance id; the resulting thread key is the old row-based string.
+    expect(trigger.source).toBe('folder:ops')
+    expect(trigger.threads).toEqual([{ source: 'folder:ops', id: 'report.txt' }])
+    expect(trigger.actor).toEqual({ source: 'folder:ops', id: 'alice' })
+    expect(trigger).toMatchObject({ human: true, addressed: 'direct' })
+    expect(trigger.channel).toMatchObject({ source: 'folder:ops', thread: 'folder:ops:report.txt' })
+    expect(trigger.channel!.address).toEqual({ row: 'folder:ops', outbox, rel: 'report.txt' })
+    expect(trigger.meta).toMatchObject({ row: 'folder:ops', rel: 'report.txt', kind: 'file', files: ['report.txt'] })
   })
   it('reads a task folder by its TASK.md and lists its files; an empty folder is no drop', async () => {
     mkdirSync(join(inbox, 'fix-bug'))
@@ -78,16 +83,16 @@ describe('poll rounds', () => {
   it('takes a drop only once two rounds agree it is complete, stores it once, and treats an edit as a new event', async () => {
     const h = host()
     drop('report.txt', 'one')
-    expect(await pollFolder(h.ctx, row(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 0 })
-    expect(await pollFolder(h.ctx, row(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 1 })
+    expect(await pollFolder(h.ctx, instance(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 0 })
+    expect(await pollFolder(h.ctx, instance(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 1 })
     expect(h.receive.mock.results[0]!.value).toBe('stored')
     // An unchanged reread is a duplicate: the seen hash skips it before receive.
-    expect(await pollFolder(h.ctx, row(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 0 })
+    expect(await pollFolder(h.ctx, instance(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 0 })
     expect(h.receive).toHaveBeenCalledTimes(1)
     // An edit changes the fingerprint, then the hash: a new Trigger on the same thread.
     drop('report.txt', 'two — longer')
-    await pollFolder(h.ctx, row(), 'alice', new AbortController().signal)
-    expect(await pollFolder(h.ctx, row(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 1 })
+    await pollFolder(h.ctx, instance(), 'alice', new AbortController().signal)
+    expect(await pollFolder(h.ctx, instance(), 'alice', new AbortController().signal)).toEqual({ read: 1, received: 1 })
     expect(h.receive).toHaveBeenCalledTimes(2)
     const ids = h.receive.mock.calls.map(call => call[0].id)
     expect(new Set(ids).size).toBe(2)
@@ -97,37 +102,42 @@ describe('poll rounds', () => {
     const h = host()
     drop('task.txt', 'work')
     const controller = new AbortController()
-    await pollFolder(h.ctx, row(), 'alice', controller.signal)
-    expect(h.store.get(KV.folder.seen('ops'))).toEqual({})
-    await pollFolder(h.ctx, row(), 'alice', controller.signal)
+    await pollFolder(h.ctx, instance(), 'alice', controller.signal)
+    expect(h.store.get(KV.folder.seen('folder:ops'))).toEqual({})
+    await pollFolder(h.ctx, instance(), 'alice', controller.signal)
     const trigger = h.receive.mock.calls[0]![0]
     const item = await readDrop(inbox, 'task.txt', 'file')
-    expect(h.store.get(KV.folder.seen('ops'))).toEqual({ 'task.txt': item!.hash })
+    expect(h.store.get(KV.folder.seen('folder:ops'))).toEqual({ 'task.txt': item!.hash })
     expect(h.engine.candidate(trigger.id)?.strength).toBe('explicit')
   })
-  it('filters a drop whose row the configuration no longer lists', async () => {
+  it('filters a drop whose instance is no longer configured, and keeps an old row-keyed Trigger of a configured row', async () => {
     const h = host()
     drop('x.txt', 'data')
-    const trigger = folderTrigger((await readDrop(inbox, 'x.txt', 'file'))!, { id: 'gone', inbox, outbox }, 'alice')
-    expect(h.engine.receive(trigger)).toBe('filtered')
+    const gone = folderTrigger((await readDrop(inbox, 'x.txt', 'file'))!, { id: 'folder:gone', inbox, outbox }, 'alice')
+    expect(h.engine.receive(gone)).toBe('filtered')
+    // A Trigger stored before the instance split keeps the bare kind and its row id; it resolves its old instance config.
+    const legacy = folderTrigger((await readDrop(inbox, 'x.txt', 'file'))!, { id: 'folder:ops', inbox, outbox }, 'alice')
+    expect(h.engine.receive({ ...legacy, id: 'legacy-1', source: 'folder', actor: { source: 'folder', id: 'alice' },
+      threads: [{ source: 'folder', id: 'ops:x.txt' }] })).toBe('stored')
+    expect(h.sources.scope({ source: 'folder', meta: { row: 'ops' } })).toEqual({ listened: true, observed: false, row: 'ops' })
   })
 })
 
 describe('outbox replies', () => {
-  const message = (id: string, text: string) => ({ id, channel: { source: 'folder', thread: 'folder:ops:x', address: { row: 'ops', outbox, rel: 'x' } }, text, kind: 'reply' as const, ticketId: 't1' })
+  const message = (id: string, text: string) => ({ id, channel: { source: 'folder:ops', thread: 'folder:ops:x', address: { row: 'folder:ops', outbox, rel: 'x' } }, text, kind: 'reply' as const, ticketId: 't1' })
   it('writes one file per message id and never duplicates a retry', async () => {
     expect(await sendFolder(message('m1', 'Done.'))).toBe('sent')
     expect(readFileSync(join(outbox, 't1', 'm1.md'), 'utf8')).toBe('Done.')
     expect(await sendFolder(message('m1', 'Different retry text'))).toBe('sent')
     expect(readFileSync(join(outbox, 't1', 'm1.md'), 'utf8')).toBe('Done.')
   })
-  it('answers gone when the outbox root no longer exists, and the channel allows only listed rows', async () => {
+  it('answers gone when the outbox root no longer exists, and the channel allows only its own outbox', async () => {
     rmSync(outbox, { recursive: true, force: true })
     expect(await sendFolder(message('m2', 'Lost'))).toBe('gone')
-    const config = { folders: [row()], operator: 'alice', pollSeconds: 2 }
-    expect(folderKind.channel!.allowed!({ row: 'ops', outbox }, config)).toBe(true)
-    expect(folderKind.channel!.allowed!({ row: 'ops', outbox: join(dir, 'elsewhere') }, config)).toBe(false)
-    expect(folderKind.channel!.allowed!({ row: 'other', outbox }, config)).toBe(false)
+    const parts = config().config
+    expect(folderKind.channel!.allowed!({ row: 'folder:ops', outbox }, parts)).toBe(true)
+    expect(folderKind.channel!.allowed!({ row: 'folder:ops', outbox: join(dir, 'elsewhere') }, parts)).toBe(false)
+    expect(folderKind.channel!.allowed!({ row: 'folder:ops', outbox: '' }, parts)).toBe(false)
   })
 })
 
@@ -152,5 +162,26 @@ describe('the plugin loop', () => {
     await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'error', code: 'pollFailures' }), { timeout: 12_000 })
     controller.abort()
     await running
+  }, 15_000)
+  it('polls every enabled instance from its own inbox, keeping cursors and failures per instance', async () => {
+    const dev = join(dir, 'inbox-dev'), devOut = join(dir, 'outbox-dev')
+    mkdirSync(dev); mkdirSync(devOut)
+    const h = host({}, {})
+    h.store.saveSettings(SettingsSchema.parse({ ...h.store.settings(), sources: {
+      'folder:ops': { kind: 'folder', enabled: true, config: { inbox, outbox, operator: 'alice', pollSeconds: 2 } },
+      'folder:dev': { kind: 'folder', enabled: true, config: { inbox: dev, outbox: devOut, operator: 'bob', pollSeconds: 2 } },
+    }, policy: { sources: { 'folder:ops': { allowed: [{ id: 'alice' }] }, 'folder:dev': { allowed: [{ id: 'bob' }] } } } }))
+    drop('one.txt', 'from ops')
+    drop('two.txt', 'from dev', dev)
+    const controller = new AbortController()
+    const running = watchFolder(h.ctx, controller.signal)
+    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'ready', detail: '2 entries, 2 new drops' }), { timeout: 12_000 })
+    controller.abort()
+    await running
+    expect(h.receive.mock.calls.map(([trigger]) => [trigger.source, trigger.meta.rel]).sort())
+      .toEqual([['folder:dev', 'two.txt'], ['folder:ops', 'one.txt']])
+    expect(Object.keys(h.store.get(KV.folder.seen('folder:ops'))!)).toEqual(['one.txt'])
+    expect(Object.keys(h.store.get(KV.folder.seen('folder:dev'))!)).toEqual(['two.txt'])
+    expect(existsSync(join(outbox, 'x'))).toBe(false)
   }, 15_000)
 })

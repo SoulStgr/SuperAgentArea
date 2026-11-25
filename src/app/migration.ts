@@ -173,11 +173,92 @@ function settingsAsVersions(store: Store): void {
   const newest = Math.max(versions.revision(), ...versions.list().map(version => version.revision))
   if (newest) store.set(KV.settings.revision, newest)
   if (JSON.stringify(versions.current()?.settings) !== JSON.stringify(current)) {
-    const settings = SettingsSchema.parse(current)
+    const settings = SettingsSchema.parse(settingsAsInstances(current))
     versions.save(revision => ({ revision, savedAt: new Date().toISOString(), source: 'internal', policyVersion: policyVersion(settings),
       policyChanged: false, notified: [], settings }))
   }
   store.delete('settings')
+}
+
+/**
+ * Rewrite settings whose Sources are stored one per kind as one entry per Source instance:
+ * `sources[<instanceId>] = {kind, enabled, config, label?, defaultProjectId?}`, with a folder kind's `folders[]` rows
+ * becoming one `folder:<row id>` instance each. Policy parts follow their instances (the folder part is copied to every
+ * row's instance, its admission rows keyed by instance id); the old bare-kind folder part stays, so Triggers and Mandates
+ * that keep the bare kind resolve the authorization they were recorded under. Already-current settings pass through.
+ */
+export function settingsAsInstances(value: unknown): unknown {
+  if (!isObject(value) || !isObject(value.sources)) return value
+  const stored = value.sources
+  const legacy = Object.entries(stored).filter(([, entry]) => isObject(entry) && !('kind' in entry))
+  if (!legacy.length) return value
+  const instances: Stored = { ...stored }
+  const policy = isObject(value.policy) ? value.policy : undefined
+  const policySources = policy && isObject(policy.sources) ? policy.sources : undefined
+  const parts: Stored = {}
+  for (const [id, entry] of legacy) {
+    const fields = entry as Stored
+    const config = isObject(fields.config) ? fields.config : {}
+    const enabled = fields.enabled !== false
+    const common = { ...typeof fields.label === 'string' ? { label: fields.label } : {},
+      ...typeof fields.defaultProjectId === 'string' ? { defaultProjectId: fields.defaultProjectId } : {} }
+    delete instances[id]
+    if (id === 'folder' && Array.isArray(config.folders)) {
+      const operator = typeof config.operator === 'string' ? config.operator : ''
+      const pollSeconds = typeof config.pollSeconds === 'number' ? config.pollSeconds : 10
+      const rows = config.folders.filter(isObject)
+      for (const [index, row] of rows.entries()) {
+        const rowId = text(row.id) ?? `row-${index + 1}`
+        let instanceId = `folder:${rowId}`
+        for (let suffix = 2; instances[instanceId]; suffix++) instanceId = `folder:${rowId}-${suffix}`
+        instances[instanceId] = { kind: 'folder', enabled, ...common, config: {
+          inbox: typeof row.inbox === 'string' ? row.inbox : '', outbox: typeof row.outbox === 'string' ? row.outbox : '',
+          operator, pollSeconds } }
+        const part = policySources?.folder
+        if (isObject(part)) {
+          const admission = isObject(part.admission) ? part.admission : {}
+          // An old admission row was keyed by the folder row id; the instance's row id is its instance id.
+          const remapped = Object.fromEntries(Object.entries(admission).map(([rowKey, cells]) => [rowKey === rowId ? instanceId : rowKey, cells]))
+          parts[instanceId] = { ...part, admission: remapped }
+        }
+      }
+      continue
+    }
+    instances[id] = { kind: id, enabled, ...common, config }
+  }
+  const sources = Object.fromEntries(Object.entries(instances).sort(([a], [b]) => a.localeCompare(b)))
+  const nextPolicy = policy && policySources ? { ...policy, sources: { ...policySources, ...parts } } : policy
+  return { ...value, sources, ...nextPolicy ? { policy: nextPolicy } : {} }
+}
+/**
+ * Upgrade the current settings snapshot to Source instances once, recorded as a `migration` revision so the panel shows
+ * what changed and no later save bypasses the version history. Folder cursors that were keyed by row id move to the
+ * instance id so a migrated Row continues from where it was instead of re-ingesting its inbox.
+ */
+export function migrateSettingsToInstances(store: Store): void {
+  const versions = new Versions<SettingsVersion>(store, KV.settings.revision, KV.settings.version)
+  const current = versions.current()?.settings as unknown
+  if (current === undefined) return
+  const upgraded = settingsAsInstances(current)
+  if (JSON.stringify(upgraded) === JSON.stringify(current)) return
+  const settings = SettingsSchema.parse(upgraded)
+  store.atomic(() => {
+    store.saveSettings(settings, { source: 'migration', policyVersion: policyVersion(settings), policyChanged: false, notified: [] })
+    for (const id of Object.keys(settings.sources).filter(id => settings.sources[id]!.kind === 'folder')) {
+      const row = id.startsWith('folder:') ? id.slice('folder:'.length) : undefined
+      if (!row) continue
+      const pending = store.get(KV.folder.pending(row))
+      if (pending !== undefined) {
+        if (store.get(KV.folder.pending(id)) === undefined) store.set(KV.folder.pending(id), pending)
+        store.delete(KV.folder.pending(row))
+      }
+      const seen = store.get(KV.folder.seen(row))
+      if (seen !== undefined) {
+        if (store.get(KV.folder.seen(id)) === undefined) store.set(KV.folder.seen(id), seen)
+        store.delete(KV.folder.seen(row))
+      }
+    }
+  })
 }
 
 /** Settings save origin names recorded by versions before schema 11, mapped to current `SettingsOrigin` values. */
@@ -208,7 +289,7 @@ interface Member { name?: string; feishuId?: string; github?: string }
  */
 export function migrateSettings(value: unknown): unknown {
   if (!isObject(value)) return value
-  if (!('members' in value || 'allowedChats' in value || 'admission' in value)) return withoutRemovedFields(value)
+  if (!('members' in value || 'allowedChats' in value || 'admission' in value)) return settingsAsInstances(withoutRemovedFields(value))
   const old = value as { models?: { orchestrator?: unknown; worker?: unknown }; paused?: boolean; allowedChats?: string[]; members?: unknown[];
     allowDirectMessages?: boolean; pollSeconds?: number; maxWorkers?: number; admission?: { mode?: string; chats?: string[]; timeoutSeconds?: number; rules?: unknown[] } }
   const chats = new Map<string, 'mentions' | 'all'>()
@@ -216,13 +297,13 @@ export function migrateSettings(value: unknown): unknown {
   // Observed chats were active only when admission was enabled.
   if (old.admission?.mode !== 'off') for (const chatId of old.admission?.chats ?? []) chats.set(chatId, 'all')
   const feishu = { chats: [...chats].map(([chatId, listen]) => ({ chatId, listen })), directMessages: old.allowDirectMessages ?? true }
-  return withoutRemovedFields({
+  return settingsAsInstances(withoutRemovedFields({
     sources: { feishu: { enabled: true, config: feishu }, github: { enabled: true, config: { pollSeconds: old.pollSeconds ?? 60 } } },
     policy: { ...(old.members ? { members: old.members } : {}), ...(old.admission?.rules ? { rules: old.admission.rules } : {}) },
     eval: { ...(old.admission?.mode ? { mode: old.admission.mode } : {}), ...(old.admission?.timeoutSeconds ? { timeoutSeconds: old.admission.timeoutSeconds } : {}),
       model: old.models?.orchestrator ?? null },
     executor: { model: old.models?.worker ?? null, ...(old.maxWorkers ? { maxWorkers: old.maxWorkers } : {}), paused: old.paused ?? false },
-  })
+  }))
 }
 function withoutRemovedFields(value: Stored): Stored {
   const { executor, policy, sources, ...rest } = value as { executor?: Stored; policy?: Stored; sources?: Record<string, Stored> }
@@ -579,13 +660,13 @@ function feishuThreadLinks(store: Store): void {
 function issueSourceRecords(store: Store): void {
   store.db.exec(`UPDATE trigger SET value = json_set(value, '$.source', 'github') WHERE value ->> '$.source' = 'github-issue'`)
   const pending = store.get('github-issue-pending' as Key<Record<string, { number: number; at: string }>>) ?? {}
-  const retries = { ...store.get(KV.github.retries) }
+  const retries = { ...store.get(KV.github.retries('github')) }
   for (const { number, at } of Object.values(pending)) {
     if (!(Date.now() - Date.parse(at) < POLL_HORIZON_MS)) continue
     const retry = retries[number]
     retries[number] = { ...retry, since: retry && retry.since < at ? retry.since : at, pr: retry?.pr ?? false }
   }
-  if (Object.keys(retries).length) store.set(KV.github.retries, retries)
+  if (Object.keys(retries).length) store.set(KV.github.retries('github'), retries)
   const kept = ['github-issue-pending', 'github-issues-since', 'github-issues-started-at', ...store.keys('github-issue-eligibility:')]
   for (const name of kept) store.delete(name)
 }
@@ -593,7 +674,7 @@ function issueSourceRecords(store: Store): void {
 function githubCursors(store: Store): void {
   for (const name of [...store.keys('github-thread:'), ...store.keys('thread-since:github:')]) {
     const at = store.get<string>(name as Key<string>)
-    const cursor = KV.github.cursor(Number(name.slice(name.lastIndexOf(':') + 1)))
+    const cursor = KV.github.cursor('github', Number(name.slice(name.lastIndexOf(':') + 1)))
     const current = store.get(cursor)
     if (at && !(current && current >= at)) store.set(cursor, at)
     store.delete(name)

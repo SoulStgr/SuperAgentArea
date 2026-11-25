@@ -40,6 +40,7 @@ import { Passes } from './passes.ts'
 import { Setup } from './setup.ts'
 import { feishuSettings } from '../sources/feishu.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
+import type { SourceInstance } from '../sources/kind.ts'
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
@@ -147,8 +148,10 @@ export class Runtime extends Service implements SourceHost {
           // Notify the ticket's conversations whenever it ends via a pull request.
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
-            const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
-            for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
+            const origin = store.triggers.get(ended.origin.triggerId)
+            // A GitHub instance may watch another repository than the deployment's; its PR links point there.
+            const repository = origin && sources.instance<{ repository?: string }>(origin.source)?.config.repository || setup.deployment.repository
+            for (const message of pullEndNotices(ended, origin?.text ?? '', repository)) outbox.send(message)
           }
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
@@ -173,7 +176,11 @@ export class Runtime extends Service implements SourceHost {
   get health(): Readonly<Record<string, Health>> { return this.board.all }
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
   get lifetime(): AbortSignal { return this.stopped.signal }
-  context(kind: { kind: string; health: readonly string[] }): SourceContext { return sourceContextOf(this.sourceDeps, kind) }
+  context(source: { kind: string; health: readonly string[] } | SourceInstance): SourceContext {
+    // An instance names only its kind; its context reports through the health entries that kind's plugin declared.
+    const entries = 'health' in source ? source.health : this.sources.kind(source.kind)?.health ?? []
+    return sourceContextOf(this.sourceDeps, { kind: source.kind, health: entries })
+  }
   /** Resolved deployment; throws while waiting for setup (`!configured()`). */
   get deployment(): Deployment { return this.setup.deployment }
   configured(): boolean { return this.setup.configured() }

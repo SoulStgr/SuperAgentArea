@@ -18,6 +18,8 @@ export const record = <V>(key: string) => key as Key<V>
 export function family<V, A extends unknown[] = [string]>(prefix: string, format = (...name: A) => name.join(':')): Family<V, A> {
   return Object.assign((...name: A) => `${prefix}${format(...name)}` as Key<V>, { prefix })
 }
+/** The suffix of a GitHub instance's sharded key: the default instance keeps the historical unsharded key. */
+const shard = (instance: string): string => instance === 'github' ? '' : `:${instance}`
 
 export const KV = {
   /** Store: current database schema version. */
@@ -42,13 +44,18 @@ export const KV = {
   /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision (`revision`
-   * counts reported CI changes so each produces a distinct Trigger ID).
+   * counts reported CI changes so each produces a distinct Trigger ID). Each record takes the instance id: the default
+   * instance `github` keeps the historical unsharded key, and a named instance gets its own shard.
    */
-  github: { since: record<string>('github-since'), retries: record<Record<string, Retry>>('github-retry'),
-    cursor: family<string, [number: number]>('github-cursor:'),
-    stream: family<{ since: string; started: Record<string, string>; etag?: string }, [stream: string]>('github-stream:'),
-    branchCi: record<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
-    ci: family<{ fingerprint: string; revision: number }, [number: number]>('github-ci:') },
+  github: { since: family<string, [instance: string]>('github-since', shard),
+    retries: family<Record<string, Retry>, [instance: string]>('github-retry', shard),
+    cursor: family<string, [instance: string, number: number]>('github-cursor:',
+      (instance, number) => shard(instance) ? `:${instance}:${number}` : `${number}`),
+    stream: family<{ since: string; started: Record<string, string>; etag?: string }, [instance: string, stream: string]>('github-stream:',
+      (instance, stream) => shard(instance) ? `:${instance}:${stream}` : stream),
+    branchCi: family<{ branch?: string; failures?: string[]; revision: number }, [instance: string]>('github-branch-ci', shard),
+    ci: family<{ fingerprint: string; revision: number }, [instance: string, number: number]>('github-ci:',
+      (instance, number) => shard(instance) ? `:${instance}:${number}` : `${number}`) },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.

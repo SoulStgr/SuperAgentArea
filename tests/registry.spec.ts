@@ -12,6 +12,7 @@ import { feishuChannel, feishuTrigger, feishuTriggerId } from '../src/sources/fe
 import { testDeployment } from './fixtures/deployment.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
+import { folderKind } from '../src/sources/folder.ts'
 
 const probe: SourceKind<{ interval: number }> = {
   kind: 'probe', title: { zh: '探针', en: 'Probe' }, description: { zh: '', en: '' }, health: [],
@@ -21,7 +22,7 @@ const probe: SourceKind<{ interval: number }> = {
 
 describe('Source registry', () => {
   it('lists every installed kind with defaults, in id order, followed by stored instances whose kind is not installed', () => {
-    const settings = SettingsSchema.parse({ sources: { probe: { enabled: false, config: { interval: 9 } }, retired: { enabled: true, config: { x: 1 } } } })
+    const settings = SettingsSchema.parse({ sources: { probe: { kind: 'probe', enabled: false, config: { interval: 9 } }, retired: { kind: 'retired', enabled: true, config: { x: 1 } } } })
     const sources = new SourceRegistry(() => settings)
     sources.register(probe); sources.register(githubKind)
     expect(sources.instances()).toEqual([
@@ -34,12 +35,12 @@ describe('Source registry', () => {
   it('validates submitted instances with the kind schema and refuses kinds that are not installed', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
     sources.register(probe)
-    expect(sources.validate('probe', { enabled: true, config: {} })).toEqual({ enabled: true, config: { interval: 5 } })
+    expect(sources.validate('probe', { enabled: true, config: {} })).toEqual({ kind: 'probe', enabled: true, config: { interval: 5 } })
     expect(() => sources.validate('probe', { enabled: true, config: { interval: 0 } })).toThrow()
     expect(() => sources.validate('missing', { enabled: true, config: {} })).toThrow('not installed')
   })
   it('sends, links and reads a kind\'s Threads through its own channel and context, and nothing for a kind without them', async () => {
-    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: { enabled: true, config: { interval: 7 } } } }))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: { kind: 'probe', enabled: true, config: { interval: 7 } } } }))
     const sent: OutboundMessage[] = []
     const read: unknown[] = []
     sources.register({ ...probe,
@@ -135,7 +136,7 @@ describe('Source registry', () => {
     expect(sources.policyPart('probe')).toBeUndefined()
   })
   it('allows a reply only on a Channel whose Source still listens to its chat', () => {
-    const settings = SettingsSchema.parse({ sources: { feishu: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }], directMessages: false } } } })
+    const settings = SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }], directMessages: false } } } })
     const sources = new SourceRegistry(() => settings)
     expect(sources.channelAllowed({ source: 'feishu', address: { chatId: 'oc_team' } })).toBe(false)
     sources.register(feishuKind); sources.register(githubKind)
@@ -158,5 +159,84 @@ describe('Source registry', () => {
     const reply: OutboundMessage = { id: 'reply-1', channel, text: 'Done', kind: 'reply' }
     expect(await sources.send(reply, commands)).toBe('sent')
     expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['+messages-reply', '--message-id', 'om_dm']))
+  })
+})
+describe('Source instances', () => {
+  it('lists each configured instance of a kind in id order, resolves it by id, and keeps a default instance for a kind with none', () => {
+    const settings = SettingsSchema.parse({ sources: {
+      'probe:b': { kind: 'probe', enabled: true, config: { interval: 2 } },
+      'probe:a': { kind: 'probe', enabled: false, config: { interval: 3 } },
+      'retired:x': { kind: 'retired', enabled: true, config: { x: 1 } },
+    } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register(probe); sources.register(githubKind)
+    expect(sources.instances().map(({ id, kind, enabled, installed }) => [id, kind, enabled, installed])).toEqual([
+      ['github', 'github', true, true],
+      ['probe:a', 'probe', false, true],
+      ['probe:b', 'probe', true, true],
+      ['retired:x', 'retired', true, false],
+    ])
+    expect(sources.instance('probe:b')).toMatchObject({ id: 'probe:b', kind: 'probe', enabled: true, config: { interval: 2 } })
+    expect(sources.instance('github')).toMatchObject({ id: 'github', kind: 'github', enabled: true })
+    expect(sources.instance('retired:x')).toBeUndefined()
+    // One instance whose stored configuration fails validation is disabled alone; its sibling keeps running.
+    const invalid = new SourceRegistry(() => SettingsSchema.parse({ sources: {
+      'probe:good': { kind: 'probe', enabled: true, config: { interval: 1 } },
+      'probe:bad': { kind: 'probe', enabled: true, config: { interval: 0 } },
+    } }))
+    invalid.register(probe)
+    expect(invalid.instances().map(instance => [instance.id, instance.enabled, instance.config])).toEqual([
+      ['probe:bad', false, { interval: 5 }], ['probe:good', true, { interval: 1 }]])
+  })
+  it('names the kind of a source string, accepting an instance id, an old bare kind, or nothing for an unknown instance', () => {
+    const settings = SettingsSchema.parse({ sources: { 'probe:a': { kind: 'probe', enabled: true, config: { interval: 1 } },
+      feishu: { kind: 'feishu', enabled: true, config: {} } } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register(probe); sources.register(feishuKind)
+    expect(sources.kindOf('probe:a')).toBe('probe')
+    expect(sources.kindOf('feishu')).toBe('feishu')
+    // A bare kind with no stored instance is old data for the kind itself.
+    expect(sources.kindOf('probe')).toBe('probe')
+    expect(sources.kindOf('retired')).toBeUndefined()
+    expect(sources.kindOf('probe:gone')).toBeUndefined()
+    expect(sources.kind('probe:a')).toBe(probe)
+    expect(sources.kind('probe:gone')).toBeUndefined()
+  })
+  it('resolves an old bare-kind Trigger to the instance its row became, and filters one whose instance is gone', () => {
+    const settings = SettingsSchema.parse({ sources: { 'folder:ops': { kind: 'folder', enabled: true,
+      config: { inbox: 'in', outbox: 'out', operator: '', pollSeconds: 5 } } },
+    policy: { sources: { 'folder:ops': { allowed: [{ id: 'alice' }] } } } })
+    const sources = new SourceRegistry(() => settings)
+    sources.register(folderKind)
+    // The old Trigger keeps the bare kind and its row id in `meta.row`; the new one names the instance itself.
+    expect(sources.scope({ source: 'folder', meta: { row: 'ops' } })).toEqual({ listened: true, observed: false, row: 'ops' })
+    expect(sources.scope({ source: 'folder:ops', meta: { row: 'folder:ops' } })).toEqual({ listened: true, observed: false, row: 'folder:ops' })
+    expect(sources.scope({ source: 'folder:gone', meta: { row: 'gone' } })).toEqual({ listened: false, reason: 'source_not_installed' })
+    expect(sources.instanceFor('folder', 'ops')?.id).toBe('folder:ops')
+    // Replies of old Channels resolve the same way, so their outbox is still checked against the row's configuration.
+    expect(sources.channelAllowed({ source: 'folder', address: { row: 'ops', outbox: 'out' } })).toBe(true)
+    expect(sources.channelAllowed({ source: 'folder', address: { row: 'ops', outbox: 'elsewhere' } })).toBe(false)
+    expect(sources.channelAllowed({ source: 'folder:gone', address: { row: 'folder:gone', outbox: 'out' } })).toBe(false)
+    // The instance's policy part and admission row are keyed by the instance id.
+    expect(sources.policyPart('folder:ops')).toEqual({ allowed: [{ id: 'alice' }], admission: {} })
+    expect(folderKind.policy!.rows!({}, 'folder:ops').map(row => row.id)).toEqual(['folder:ops'])
+  })
+  it('finds each instance\'s Thread key and reads a Trigger through the instance its Source string names', async () => {
+    const settings = SettingsSchema.parse({ sources: {
+      'probe:a': { kind: 'probe', enabled: true, config: { interval: 1 } },
+      'probe:b': { kind: 'probe', enabled: true, config: { interval: 2 } },
+    } })
+    const reads: unknown[] = []
+    const sources = new SourceRegistry(() => settings)
+    sources.register({ ...probe, find: () => ({ threads: ['probe:12'], terms: [] }),
+      threadContext: { messageId: trigger => String(trigger.meta.id), read: async (_commands, trigger, part, cursor, config) => {
+        reads.push([trigger.source, part, config.interval])
+        return { messages: [], body: {} }
+      } } })
+    expect(sources.find('#12')).toEqual({ threads: ['probe:a:12', 'probe:b:12'], terms: [] })
+    const trigger = { id: 't', source: 'probe:b', threads: [{ source: 'probe:b', id: '12' }], actor: { source: 'probe:b', id: 'u' },
+      human: true, at: '', text: 'x', meta: { id: 'm' } }
+    await sources.threadContext(trigger)!.read({} as Commands, 'thread')
+    expect(reads).toEqual([['probe:b', 'thread', 2]])
   })
 })

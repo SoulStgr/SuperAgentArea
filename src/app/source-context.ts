@@ -43,6 +43,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined
     },
+    instances: <C extends Record<string, unknown>>(kind: string) => deps.sources.instancesOf<C>(kind),
     receive: trigger => deps.receive(trigger),
     atomic: work => store.atomic(work),
     state: {

@@ -527,9 +527,9 @@ it('writes the Sources\' records in their current shape once, so no Source conve
   expect(store.threads.get('feishu:oc_team:om_9')!.meta.url).toBe('https://applink.feishu.cn/client/chat/open?openChatId=oc_team')
   expect(store.triggers.get('issue')!.source).toBe('github')
   // The waiting mention within the polling horizon is read again; the older one is no fresh request.
-  expect(store.get(KV.github.retries)).toEqual({ 12: { since: recent, pr: false } })
-  expect(store.get(KV.github.cursor(7))).toBe('2026-09-03T00:00:00.000Z')
-  expect(store.get(KV.github.cursor(8))).toBe('2026-09-04T00:00:00.000Z')
+  expect(store.get(KV.github.retries('github'))).toEqual({ 12: { since: recent, pr: false } })
+  expect(store.get(KV.github.cursor('github', 7))).toBe('2026-09-03T00:00:00.000Z')
+  expect(store.get(KV.github.cursor('github', 8))).toBe('2026-09-04T00:00:00.000Z')
   for (const name of ['github-issue-pending', 'github-issues-since', 'github-thread:7', 'thread-since:github:7', 'github-thread:8']) {
     expect(store.get(name)).toBeUndefined()
   }
@@ -654,4 +654,62 @@ it('delivers the candidate of an Eval in progress at the upgrade again, so its d
   const effects = store.db.prepare("SELECT key, value FROM effect WHERE kind = 'assessment'").all().map(row => [row.key, JSON.parse(String(row.value))])
   expect(effects).toEqual([['e9', { triggerId: 'issue-9' }]])
   store.close()
+})
+it('upgrades a schema 12 database saved before Source instances into one instance per Source and folder row', () => {
+  const path = join(directory, 'db.sqlite')
+  const store = new Store(path)
+  // A database this version already opened, holding settings as the earlier build stored them: one Source per kind,
+  // folder rows inside the folder configuration, and Policy parts keyed by kind.
+  const old = {
+    paused: false,
+    sources: {
+      folder: { enabled: true, config: { folders: [
+        { id: 'ops', inbox: '/in/ops', outbox: '/out/ops' },
+        { id: 'dev', inbox: '/in/dev', outbox: '/out/dev' },
+      ], operator: 'alice', pollSeconds: 30 } },
+      github: { enabled: false, config: { repository: 'acme/widgets', cli: 'gh-agent' } },
+      feishu: { enabled: true, config: { cli: 'lark-bot', chats: [], directMessages: true } },
+    },
+    policy: { rules: [], sources: {
+      folder: { allowed: [{ id: 'alice' }], admission: { ops: { listedUnaddressed: 'ignore' }, dev: { unlistedUnaddressed: 'inferred' } } },
+      github: { allowed: [{ id: 'alice' }] },
+    } },
+    eval: {}, executor: {},
+  }
+  store.set(KV.settings.version(1), { revision: 1, savedAt: '2026-09-01T00:00:00Z', source: 'panel', policyVersion: '', policyChanged: false,
+    notified: [], settings: old } as never)
+  store.set(KV.settings.revision, 1)
+  // Cursors the folder rows had written under their row ids.
+  store.set(KV.folder.pending('ops'), { 'a.txt': { size: 1, mtime: 2 } })
+  store.set(KV.folder.seen('ops'), { 'a.txt': 'hash' })
+  store.close()
+
+  const upgraded = new Store(path)
+  const settings = upgraded.settings()
+  expect(Object.keys(settings.sources).sort()).toEqual(['feishu', 'folder:dev', 'folder:ops', 'github'])
+  expect(settings.sources['folder:ops']).toEqual({ kind: 'folder', enabled: true,
+    config: { inbox: '/in/ops', outbox: '/out/ops', operator: 'alice', pollSeconds: 30 } })
+  expect(settings.sources['folder:dev']).toMatchObject({ kind: 'folder', enabled: true, config: { inbox: '/in/dev', outbox: '/out/dev' } })
+  expect(settings.sources.github).toMatchObject({ kind: 'github', enabled: false, config: { repository: 'acme/widgets', cli: 'gh-agent' } })
+  expect(settings.sources.feishu).toMatchObject({ kind: 'feishu', enabled: true })
+  // Policy parts follow their instances, each admission row keyed by its instance id; the earlier kind-keyed folder part
+  // stays so Triggers and Mandates that keep the bare kind still find the authorization they were recorded under.
+  expect(settings.policy.sources['folder:ops']).toMatchObject({ allowed: [{ id: 'alice' }],
+    admission: { 'folder:ops': { listedUnaddressed: 'ignore' } } })
+  expect(settings.policy.sources['folder:dev']).toMatchObject({ admission: { 'folder:dev': { unlistedUnaddressed: 'inferred' } } })
+  expect(settings.policy.sources.folder).toMatchObject({ allowed: [{ id: 'alice' }], admission: { ops: { listedUnaddressed: 'ignore' } } })
+  expect(settings.policy.sources.github).toMatchObject({ allowed: [{ id: 'alice' }] })
+  // The row-keyed cursors move to the instance ids, and the upgrade records a settings revision of its own.
+  expect(upgraded.get(KV.folder.seen('folder:ops'))).toEqual({ 'a.txt': 'hash' })
+  expect(upgraded.get(KV.folder.pending('folder:ops'))).toEqual({ 'a.txt': { size: 1, mtime: 2 } })
+  expect(upgraded.get(KV.folder.seen('ops'))).toBeUndefined()
+  expect(upgraded.get(KV.settings.revision)).toBe(2)
+  expect(upgraded.settingsHistory(1)[0]).toMatchObject({ revision: 2, source: 'migration',
+    settings: { sources: expect.objectContaining({ 'folder:ops': expect.objectContaining({ kind: 'folder' }) }) } })
+  upgraded.close()
+  // Opening it again changes nothing: the upgrade runs once.
+  const again = new Store(path)
+  expect(again.get(KV.settings.revision)).toBe(2)
+  expect(Object.keys(again.settings().sources).sort()).toEqual(['feishu', 'folder:dev', 'folder:ops', 'github'])
+  again.close()
 })
