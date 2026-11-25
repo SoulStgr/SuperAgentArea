@@ -4,7 +4,7 @@
   "license": "MIT",
   "version": "0.1.3",
   "private": true,
-  "description": "A proactive agent for one GitHub repository, as a DSH (DeepSeek Harness) bundle: it listens to GitHub and optionally Feishu, evaluates requests under a Policy, turns authorized ones into Tickets, and executes each in its own DSH Session.",
+  "description": "SuperAgentArea (saa): a proactive multi-source agent as a DSH (DeepSeek Harness) bundle. It listens to GitHub, Feishu and local folders, evaluates requests under a Policy, turns authorized ones into Tickets, and executes each in its own DSH Session with file artifacts delivered back to the origin conversation.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
