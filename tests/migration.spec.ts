@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
+import { WORKSPACE_PROJECT_ID, artifactRecordId } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { basisOf, reasonsOf, withoutCopies } from '../src/app/migration.ts'
 import { Prompts, composePrompt, defaultPrompts } from '../src/app/prompts.ts'
@@ -21,7 +22,7 @@ function schema10(path: string, records: Record<string, unknown>, rows: { ticket
   const set = (name: string, value: unknown) => db.prepare('INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(name, JSON.stringify(value))
   set('schema', 10)
   for (const [name, value] of Object.entries(records)) set(name, value)
-  for (const ticket of rows.ticket ?? []) db.prepare('INSERT INTO ticket VALUES (?,?)').run((ticket as { id: string }).id, JSON.stringify(ticket))
+  for (const ticket of rows.ticket ?? []) db.prepare('INSERT INTO ticket (id, value) VALUES (?,?)').run((ticket as { id: string }).id, JSON.stringify(ticket))
   for (const decision of rows.decision ?? []) {
     const { id, threadKey } = decision as { id: string; threadKey: string }
     db.prepare('INSERT INTO decision VALUES (?,?,?)').run(id, threadKey, JSON.stringify(decision))
@@ -32,6 +33,31 @@ function schema10(path: string, records: Record<string, unknown>, rows: { ticket
     db.prepare('INSERT INTO trigger VALUES (?,?,?)').run(id, JSON.stringify(trigger), at)
   }
   db.exec('CREATE TABLE inbox (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.close()
+}
+/**
+ * Seed a SQLite database in the schema 11 layout: the current tables without schema 12's Project registry, artifact index,
+ * and the Ticket columns that index a Source instance and a Project.
+ */
+function schema11(path: string, records: Record<string, unknown>, rows: { ticket?: object[]; decision?: object[]; trigger?: object[] } = {}): void {
+  // A Store of this version creates schema 12's tables and columns; drop them so the database reads as an earlier version's.
+  new Store(path).close()
+  const db = new DatabaseSync(path)
+  db.exec(`DROP TABLE project; DROP TABLE artifact;
+    DROP INDEX IF EXISTS ticket_source; DROP INDEX IF EXISTS ticket_project;
+    ALTER TABLE ticket DROP COLUMN source_id; ALTER TABLE ticket DROP COLUMN project_id`)
+  const set = (name: string, value: unknown) => db.prepare('INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(name, JSON.stringify(value))
+  set('schema', 11)
+  for (const [name, value] of Object.entries(records)) set(name, value)
+  for (const ticket of rows.ticket ?? []) db.prepare('INSERT INTO ticket (id, value) VALUES (?,?)').run((ticket as { id: string }).id, JSON.stringify(ticket))
+  for (const decision of rows.decision ?? []) {
+    const { id, threadKey } = decision as { id: string; threadKey: string }
+    db.prepare('INSERT INTO decision VALUES (?,?,?)').run(id, threadKey, JSON.stringify(decision))
+  }
+  for (const trigger of rows.trigger ?? []) {
+    const { id, at } = trigger as { id: string; at: string }
+    db.prepare('INSERT INTO trigger VALUES (?,?,?)').run(id, JSON.stringify(trigger), at)
+  }
   db.close()
 }
 const actor = { source: 'feishu', id: 'ou_alice' }
@@ -173,6 +199,98 @@ it('writes a schema 10 database in its current shape once, so nothing reads an o
   again.close()
 })
 
+/** A ticket in schema 11's shape: no Project, Source instance, reporter or mentions. */
+const v11Ticket = (id: string, fields: Record<string, unknown> = {}) => ({ id, title: 'Fix', decisionId: 'd1', mandate: mandate({ via: 'listed' }),
+  channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '1', updatedAt: '2', origin: { triggerId: 'trig-1', triggerIds: ['trig-1'] },
+  ...fields })
+
+it('migrates a schema 11 database to schema 12: the workspace Project, each ticket\'s owners, and the artifacts it collected', () => {
+  const path = join(directory, 'db.sqlite')
+  const trigger = { id: 'trig-1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_team:om_1' }], actor, human: true,
+    at: '2026-10-01T00:00:00.000Z', text: 'fix', meta: { outbox: '/srv/outbox' } }
+  const artifact = (name: string, at: string) => ({ name, hash: '0123456789abcdef', size: 4, at })
+  const accepted = (id: string, threadKey: string) => ({ id, threadKey, triggerIds: ['trig-1'], kind: 'accept', reason: '', at: '1', policyVersion: 'v1' })
+  schema11(path, {
+    'artifacts:t1': [artifact('report.md', '2026-11-24T00:00:00.000Z'), artifact('nested/data.csv', '2026-11-24T01:00:00.000Z')],
+    'artifacts:t3': [artifact('notes.txt', '2026-11-24T02:00:00.000Z')],
+  }, {
+    trigger: [trigger],
+    decision: [{ ...accepted('d1', 'feishu:oc_team:om_1'), ticketId: 't1', mandate: mandate({ via: 'listed' }) },
+      // t2's origin Trigger is gone, so its Decision's actor reports it; t3 has neither Trigger nor Decision.
+      { ...accepted('d2', 'github:7'), triggerIds: ['gone'], ticketId: 't2', mandate: { ...mandate({ via: 'listed' }), actor: { source: 'github', id: 'bob' } } }],
+    ticket: [v11Ticket('t1'), v11Ticket('t2', { decisionId: 'd2', origin: { triggerId: 'gone', triggerIds: ['gone'] },
+      channels: [{ source: 'github', thread: 'github:7', address: { number: '7' } }] }),
+    v11Ticket('t3', { decisionId: 'd3', origin: { triggerId: 'gone', triggerIds: [] }, channels: [] })],
+  })
+  const store = new Store(path)
+  expect(store.get(KV.store.schema)).toBe(SCHEMA_VERSION)
+  // The registry and the index are there, with the indexes the views and tools read them by.
+  const names = (type: string) => store.db.prepare(`SELECT name FROM sqlite_master WHERE type=? AND name IN
+    ('project','artifact','project_status','artifact_ticket','artifact_project_at','artifact_source_at','artifact_at','ticket_source','ticket_project')`)
+    .all(type).map(row => String(row.name)).sort()
+  expect(names('table')).toEqual(['artifact', 'project'])
+  expect(names('index')).toEqual(['artifact_at', 'artifact_project_at', 'artifact_source_at', 'artifact_ticket', 'project_status', 'ticket_project',
+    'ticket_source'])
+  // The built-in workspace takes the tickets no station owns, with the area layout under the state directory.
+  const workspace = store.projects.get(WORKSPACE_PROJECT_ID)!
+  expect(workspace).toMatchObject({ key: 'workspace', status: 'active', value: { name: 'workspace', kind: 'workspace', location: { type: 'managed' },
+    outputDir: join(directory, 'area', 'workspace'), scratchDir: join(directory, 'area', 'workspace', '.work'),
+    rulesDir: join(directory, 'area', 'workspace', '.work', 'rules'), sourceIds: [], aliases: [] } })
+  expect(workspace.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  expect(store.projects.ensureWorkspace(directory)).toEqual(workspace)
+  // Every old ticket names its Project, the Source of the Trigger that started it, that Trigger's actor, and no mention.
+  const t1 = store.tickets.get('t1')!
+  expect(t1).toMatchObject({ projectId: WORKSPACE_PROJECT_ID, sourceId: 'feishu', reporter: { source: 'feishu', id: 'ou_alice' }, mentions: [] })
+  // A ticket whose Trigger is gone takes its first Channel's Source and its Decision's actor.
+  const t2 = store.tickets.get('t2')!
+  expect(t2).toMatchObject({ projectId: WORKSPACE_PROJECT_ID, sourceId: 'github', reporter: { source: 'github', id: 'bob' }, mentions: [] })
+  // With neither, only the Project is known.
+  const t3 = store.tickets.get('t3')!
+  expect(t3).toMatchObject({ projectId: WORKSPACE_PROJECT_ID, mentions: [] })
+  expect(t3).not.toHaveProperty('sourceId')
+  expect(t3).not.toHaveProperty('reporter')
+  // The ticket columns beside the JSON carry the same owners, so a Source or workstation reads its tickets by index.
+  const owners = (id: string) => store.db.prepare('SELECT source_id, project_id FROM ticket WHERE id=?').get(id)
+  expect([owners('t1'), owners('t2'), owners('t3')]).toEqual([{ source_id: 'feishu', project_id: WORKSPACE_PROJECT_ID },
+    { source_id: 'github', project_id: WORKSPACE_PROJECT_ID }, { source_id: null, project_id: WORKSPACE_PROJECT_ID }])
+  // The deliverables earlier versions kept under KV.artifacts become rows of the workspace Project, whose folder copy is
+  // recorded as deliveredTo; they promoted nothing, so no target root is claimed.
+  const rows = store.artifacts.listByTicket('t1')
+  expect(rows.map(row => row.name)).toEqual(['report.md', 'nested/data.csv'])
+  expect(rows.map(row => row.id)).toEqual([artifactRecordId('t1', 'report.md'), artifactRecordId('t1', 'nested/data.csv')])
+  expect(rows[0]).toEqual({ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: WORKSPACE_PROJECT_ID, source: 'feishu', name: 'report.md',
+    value: { hash: '0123456789abcdef', size: 4, at: '2026-11-24T00:00:00.000Z', targetRoot: '', deliveredTo: join('/srv/outbox', 't1', 'artifacts') },
+    at: '2026-11-24T00:00:00.000Z' })
+  // A ticket with no origin Trigger and no Channel names no Source either.
+  expect(store.artifacts.listByTicket('t3')[0]).toMatchObject({ project: WORKSPACE_PROJECT_ID, source: '', value: { targetRoot: '' } })
+  expect(store.artifacts.listByTicket('t3')[0]!.value).not.toHaveProperty('deliveredTo')
+  // The records earlier versions wrote stay for the stages that still read them.
+  expect(store.get(KV.artifacts('t1'))).toHaveLength(2)
+  store.close()
+  // Migrating the result again changes nothing.
+  const db = new DatabaseSync(path)
+  db.prepare("UPDATE kv SET value='11' WHERE key='schema'").run()
+  db.close()
+  const again = new Store(path)
+  expect([again.get(KV.store.schema), again.projects.get(WORKSPACE_PROJECT_ID), again.tickets.get('t1'), again.tickets.get('t2'),
+    again.tickets.get('t3')]).toEqual([SCHEMA_VERSION, workspace, t1, t2, t3])
+  expect(again.artifacts.listByTicket('t1')).toEqual(rows)
+  again.close()
+})
+
+it('leaves a schema 11 database as it was when the schema 12 migration fails', () => {
+  const path = join(directory, 'db.sqlite')
+  // An artifacts record no earlier version wrote fails its indexing after the tables, workspace and ticket owners were written.
+  schema11(path, { 'artifacts:t9': 'not a list' }, { ticket: [v11Ticket('t9')] })
+  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 11: its migration to schema 12 failed: the artifact index: the artifacts of ticket t9: /)
+  const db = new DatabaseSync(path)
+  expect(db.prepare("SELECT value FROM kv WHERE key='schema'").get()).toEqual({ value: '11' })
+  expect(JSON.parse(String(db.prepare("SELECT value FROM ticket WHERE id='t9'").get()!.value))).not.toHaveProperty('projectId')
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project'").get()).toBeUndefined()
+  expect(db.prepare("SELECT name FROM pragma_table_xinfo('ticket') WHERE name='project_id'").get()).toBeUndefined()
+  db.close()
+})
+
 it('keeps each message as a receipt of what became of it, with why one was dropped by the code the panel words it by', () => {
   const path = join(directory, 'db.sqlite')
   schema10(path, {})
@@ -202,7 +320,7 @@ it('changes nothing when one step fails: the database stays at schema 10 as it w
     updatedAt: '2', mandate: mandate({ via: 'listed' }), meta: { sourceTriggerId: 'trig-1', workspace: '/w/fix-1' } }
   // The current settings must validate; an invalid value aborts the migration transaction.
   schema10(path, { settings: { executor: { maxWorkers: 'many' } } }, { ticket: [ticket] })
-  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 11 failed: the settings: /)
+  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 12 failed: the settings: /)
   const db = new DatabaseSync(path)
   expect(db.prepare("SELECT value FROM kv WHERE key='schema'").get()).toEqual({ value: '10' })
   expect(JSON.parse(String(db.prepare("SELECT value FROM ticket WHERE id='t1'").get()!.value))).toMatchObject({ meta: { workspace: '/w/fix-1' } })
@@ -475,7 +593,7 @@ it('names the ticket it stopped at when a ticket does not read, and leaves the d
   const path = join(directory, 'db.sqlite')
   const { inputs: _inputs, ...broken } = ticket10('t9')
   schema10(path, {}, { ticket: [broken] })
-  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 11 failed: ticket t9: /)
+  expect(() => new Store(path)).toThrow(/^The orchestrator database is unchanged at schema 10: its migration to schema 12 failed: ticket t9: /)
   const db = new DatabaseSync(path)
   expect(db.prepare("SELECT value FROM kv WHERE key='schema'").get()).toEqual({ value: '10' })
   expect(JSON.parse(String(db.prepare("SELECT value FROM ticket WHERE id='t9'").get()!.value))).toEqual(broken)

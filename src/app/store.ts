@@ -2,11 +2,13 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, type ReplyStatus, type Repositories, type Thread, type ThreadFact,
-  type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
+import { key, threadKey, WORKSPACE_PROJECT_ID, type ArtifactRecord, type ArtifactValue, type ChannelRef, type Decision, type OutboundMessage,
+  type ProjectRecord, type ProjectStatus, type ProjectValue, type ReplyStatus, type Repositories, type Thread, type ThreadFact, type ThreadFacts,
+  type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { KV, type Family, type Key } from '../kv.ts'
 import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave } from '../policy.ts'
-import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, tooOld } from './migration.ts'
+import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, migrateTo12, tooOld } from './migration.ts'
+import { workspaceProject } from './projects.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
 
@@ -43,21 +45,34 @@ const SETS: Record<string, Record<string, string>> = {
     AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
 }
 export { SCHEMA_VERSION }
+/** A `project` row as its aggregate. */
+const projectOf = (row: Record<string, SQLInputValue>): ProjectRecord => ({ id: String(row.id), key: String(row.key),
+  value: JSON.parse(String(row.value)) as ProjectValue, status: String(row.status) as ProjectStatus, createdAt: String(row.created_at),
+  updatedAt: String(row.updated_at) })
+/** An `artifact` row as its aggregate; `project` is absent on rows of tickets stored before Projects existed. */
+const artifactOf = (row: Record<string, SQLInputValue>): ArtifactRecord => ({ id: String(row.id), ticket: String(row.ticket),
+  ...row.project == null ? {} : { project: String(row.project) }, source: String(row.source), name: String(row.name),
+  value: JSON.parse(String(row.value)) as ArtifactValue, at: String(row.at) })
 /**
- * SQLite backing store implementing domain `Repositories`, view read queries, versioned settings, outbox receipts, and key-value state.
+ * SQLite backing store implementing domain `Repositories`, view read queries, versioned settings, outbox receipts, key-value state,
+ * and the Project registry and artifact index of schema 12.
  * The Runtime opens it after locking the state directory and automatically migrates supported older schemas on startup.
  * The Engine mutates domain aggregates inside `atomic` transactions while Sources, views, and the Outbox read state or update their own records.
  */
 export class Store implements Repositories {
   readonly db: DatabaseSync
+  /** The state directory the database lives in, from which the built-in workspace Project's area layout is derived. */
+  readonly stateDir: string
   /**
-   * Opens or creates the SQLite database at `path`, migrating schema 10 to schema 11 in a single transaction.
+   * Opens or creates the SQLite database at `path`, migrating a schema 10 database to schema 11 and then any database older
+   * than schema 12 to schema 12 in a single transaction.
    * @param report - Receives errors thrown by `afterCommit` callbacks without failing the committed transaction.
-   * @throws When the database schema is older than `OLDEST_SCHEMA` (10), newer than `SCHEMA_VERSION` (11), or when migration fails; in every case the database file is left unchanged and the SQLite handle is closed so a later attempt in the same process can open it.
+   * @throws When the database schema is older than `OLDEST_SCHEMA` (10), newer than `SCHEMA_VERSION` (12), or when migration fails; in every case the database file is left unchanged and the SQLite handle is closed so a later attempt in the same process can open it.
    */
   constructor(path: string, private readonly report: (error: unknown) => void = () => {}) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(path)
+    this.stateDir = dirname(path)
     this.read = storeReads(this.db)
     try {
       chmodSync(path, 0o600)
@@ -86,7 +101,9 @@ export class Store implements Repositories {
             CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
           `)
           this.addColumns()
-          if (migrating) migrateTo11(this)
+          if (version !== undefined && version < 11) migrateTo11(this)
+          // A new database gets schema 12's tables and built-in workspace too, so they never have to be created lazily.
+          if (version === undefined || version < 12) migrateTo12(this)
           if (version !== SCHEMA_VERSION) this.set(KV.store.schema, SCHEMA_VERSION)
         })
       } catch (error) {
@@ -117,6 +134,13 @@ export class Store implements Repositories {
       }
     }
     if (!columns('effect').has('generation')) this.db.exec('ALTER TABLE effect ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
+    // Schema 12 keeps a Ticket's Source instance and Project beside its JSON so a Source or workstation reads its tickets by
+    // index; the ticket repository writes both on every save, and the migration fills them for tickets saved before.
+    const ticket = columns('ticket')
+    for (const [column, index] of [['source_id', 'ticket_source'], ['project_id', 'ticket_project']] as const) {
+      if (!ticket.has(column)) this.db.exec(`ALTER TABLE ticket ADD COLUMN ${column} TEXT`)
+      this.db.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ticket(${column})`)
+    }
   }
   /** Closes the underlying SQLite database connection. */
   close(): void { this.db.close() }
@@ -232,13 +256,79 @@ export class Store implements Repositories {
   }
   readonly tickets = {
     get: (id: string): Ticket | undefined => { const row = this.db.prepare('SELECT value FROM ticket WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Ticket : undefined },
-    save: (ticket: Ticket): void => { this.db.prepare('INSERT INTO ticket VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(ticket.id, JSON.stringify(ticket)) },
+    /** Saves a Ticket and the Source instance and Project columns its reads are indexed by. */
+    save: (ticket: Ticket): void => {
+      this.db.prepare(`INSERT INTO ticket (id, value, source_id, project_id) VALUES (?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET value=excluded.value, source_id=excluded.source_id, project_id=excluded.project_id`)
+        .run(ticket.id, JSON.stringify(ticket), ticket.sourceId ?? null, ticket.projectId ?? null)
+    },
     /** Newest first. */
     list: (): Ticket[] => this.values('SELECT value FROM ticket ORDER BY rowid DESC'),
     /** Newest first. */
     open: (): Ticket[] => this.values('SELECT value FROM ticket WHERE open = 1 ORDER BY rowid DESC'),
     /** Newest first. */
     active: (): Ticket[] => this.values('SELECT value FROM ticket WHERE active = 1 ORDER BY rowid DESC'),
+  }
+  /** The Project registry: the built-in workspace first created by the schema 12 migration, and the stations later stages add. */
+  readonly projects = {
+    get: (id: string): ProjectRecord | undefined => {
+      const row = this.db.prepare('SELECT * FROM project WHERE id=?').get(id)
+      return row === undefined ? undefined : projectOf(row)
+    },
+    /** Looks a Project up by the slug a Source or a person names it by. */
+    byKey: (keyValue: string): ProjectRecord | undefined => {
+      const row = this.db.prepare('SELECT * FROM project WHERE key=?').get(keyValue)
+      return row === undefined ? undefined : projectOf(row)
+    },
+    /** Most recently changed first, optionally only the Projects of one status. */
+    list: (status?: ProjectStatus): ProjectRecord[] => (status === undefined
+      ? this.db.prepare('SELECT * FROM project ORDER BY updated_at DESC, rowid').all()
+      : this.db.prepare('SELECT * FROM project WHERE status=? ORDER BY updated_at DESC, rowid').all(status)).map(projectOf),
+    /** Saves a Project's attributes and status, keeping the row's place in the database. */
+    save: (project: ProjectRecord): void => {
+      this.db.prepare(`INSERT INTO project (id, key, value, status, created_at, updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET key=excluded.key, value=excluded.value, status=excluded.status, updated_at=excluded.updated_at`)
+        .run(project.id, project.key, JSON.stringify(project.value), project.status, project.createdAt, project.updatedAt)
+    },
+    /**
+     * Returns the built-in workspace Project, creating it with `stateDir`'s area layout when absent; the schema 12 migration
+     * calls this so every database has one.
+     */
+    ensureWorkspace: (stateDir: string): ProjectRecord => {
+      const existing = this.projects.get(WORKSPACE_PROJECT_ID)
+      if (existing) return existing
+      const project = workspaceProject(stateDir, new Date().toISOString())
+      this.projects.save(project)
+      return project
+    },
+  }
+  /** The artifact index: one row per delivered file, by the Ticket, Project and Source it belongs to. */
+  readonly artifacts = {
+    get: (id: string): ArtifactRecord | undefined => {
+      const row = this.db.prepare('SELECT * FROM artifact WHERE id=?').get(id)
+      return row === undefined ? undefined : artifactOf(row)
+    },
+    /** Records a delivered file, replacing an earlier row for the same Ticket and name so a changed re-delivery replaces it. */
+    add: (artifact: ArtifactRecord): void => {
+      this.db.prepare(`INSERT INTO artifact (id, ticket, project, source, name, value, at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET ticket=excluded.ticket, project=excluded.project, source=excluded.source, name=excluded.name,
+          value=excluded.value, at=excluded.at`)
+        .run(artifact.id, artifact.ticket, artifact.project ?? null, artifact.source, artifact.name, JSON.stringify(artifact.value), artifact.at)
+    },
+    /** A Ticket's artifacts, oldest collection first, then in the order they were collected. */
+    listByTicket: (ticket: string): ArtifactRecord[] =>
+      this.db.prepare('SELECT * FROM artifact WHERE ticket=? ORDER BY at, rowid').all(ticket).map(artifactOf),
+    /** The index newest first, filtered by Project, Source, or Ticket, at most `limit` rows from `offset`. */
+    list: (filter: { project?: string; source?: string; ticket?: string; offset?: number; limit?: number } = {}): ArtifactRecord[] => {
+      const where: string[] = [], parameters: SQLInputValue[] = []
+      const narrow = (column: 'project' | 'source' | 'ticket', value: string | undefined): void => {
+        if (value === undefined) return
+        where.push(`${column}=?`); parameters.push(value)
+      }
+      narrow('project', filter.project); narrow('source', filter.source); narrow('ticket', filter.ticket)
+      return this.db.prepare(`SELECT * FROM artifact ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY at DESC, rowid DESC LIMIT ? OFFSET ?`).all(...parameters, filter.limit ?? -1, filter.offset ?? 0).map(artifactOf)
+    },
   }
   readonly decisions = {
     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },

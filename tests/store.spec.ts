@@ -72,6 +72,18 @@ it('reads the working sets alone, in SQLite as in memory, and follows each save'
   expect(ids(store.read.subscribedThreads('github'))).toEqual(['github:2'])
   store.close()
 })
+it('writes a Ticket\'s Source instance and Project beside its JSON, so a Source or a workstation reads its tickets by index', () => {
+  const store = new Store(join(directory, 'orchestrator.sqlite'))
+  const owners = () => store.db.prepare("SELECT source_id, project_id FROM ticket WHERE id='t'").get()
+  store.tickets.save({ ...ticket('t', 'open', [{ state: 'running' }]), sourceId: 'folder:ops', projectId: 'prj_aps' })
+  expect(owners()).toEqual({ source_id: 'folder:ops', project_id: 'prj_aps' })
+  // A Ticket stored without them leaves the columns empty beside its JSON.
+  store.tickets.save({ ...store.tickets.get('t')!, sourceId: undefined, projectId: undefined })
+  expect(owners()).toEqual({ source_id: null, project_id: null })
+  expect(store.tickets.get('t')).not.toHaveProperty('sourceId')
+  expect(store.tickets.get('t')).not.toHaveProperty('projectId')
+  store.close()
+})
 it('adds the working sets to a database that predates them, from the rows it holds', () => {
   const path = join(directory, 'orchestrator.sqlite')
   const db = new DatabaseSync(path)

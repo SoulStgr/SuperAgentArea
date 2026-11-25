@@ -1,4 +1,5 @@
 /** Domain model of a proactive agent: the concepts and their invariants, independent of any source, policy, or executor. */
+import type { PersonRef } from './project.ts'
 import type { Reason } from './reasons.ts'
 
 /** Actor identity in the source's own vocabulary; Policy decides which actors may originate work on that Source. */
@@ -278,6 +279,17 @@ export interface Ticket {
   id: string
   title: string
   decisionId: string
+  /**
+   * The Project it belongs to, by id, which decides where its deliverables are promoted; created with the built-in workspace's
+   * id, and absent on tickets stored before Projects existed.
+   */
+  projectId?: string
+  /** The Source instance it came from, by id (the Source kind while each kind has one instance); the origin Trigger's Source. */
+  sourceId?: string
+  /** Who reported it: the actor of its origin Trigger unless an acceptance names another; `name` when that Source knows one. */
+  reporter?: PersonRef
+  /** The people it mentions, as the Sources they were named on; a new ticket mentions nobody. */
+  mentions?: PersonRef[]
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]

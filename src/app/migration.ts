@@ -1,11 +1,15 @@
 /**
- * Migrates a schema 10 database to schema 11 in a single transaction so runtime readers never convert legacy shapes.
+ * Migrates a schema 10 or 11 database to schema 12 in a single transaction so runtime readers never convert legacy shapes:
+ * `migrateTo11` rewrites a schema 10 database in schema 11's shapes, and `migrateTo12` adds the Project registry and the
+ * artifact index, gives each old ticket its Project, Source and reporter, and indexes the artifacts `KV.artifacts` recorded.
  * Databases older than schema 10 are rejected: this version cannot migrate them.
  */
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
 import { z } from 'zod'
-import { isoTime, said, type AcceptMode, type AdmissionCell, type ChannelRef, type Decision, type Execution, type Follow, type MandateBasis,
-  type Reason, type Thread, type Ticket, type TicketInput, type TriggerDisposition } from '../core/index.ts'
+import { artifactRecordId, isoTime, said, WORKSPACE_PROJECT_ID, type AcceptMode, type AdmissionCell, type ArtifactRecord, type ChannelRef,
+  type Decision, type Execution, type Follow, type MandateBasis, type PersonRef, type Reason, type Thread, type Ticket, type TicketInput,
+  type TriggerDisposition } from '../core/index.ts'
+import type { Artifact } from './artifacts.ts'
 import { feishuChatLink } from '../sources/feishu-channel.ts'
 import { POLL_HORIZON_MS } from '../sources/poll.ts'
 import { SettingsSchema, policyVersion, type SettingsOrigin } from '../policy.ts'
@@ -17,7 +21,7 @@ import type { SettingsVersion, Store } from './store.ts'
 import { Versions } from './versions.ts'
 import { KV, type Key } from '../kv.ts'
 
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 /** The oldest database schema version this build can open and migrate directly. */
 export const OLDEST_SCHEMA = 10
 /** Returns an error message explaining why `version` cannot be opened: older schemas need a new state directory. */
@@ -612,5 +616,77 @@ function assessmentTriggers(store: Store): void {
     if (!evaluation || evaluation.delivered || !evaluation.triggerIds[0]) continue
     store.db.prepare(`INSERT INTO effect (kind, key, value, seq, due, since) VALUES ('assessment', ?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO NOTHING`)
       .run(evaluation.id, JSON.stringify({ triggerId: evaluation.triggerIds[0] }), ++seq, Date.now(), new Date().toISOString())
+  }
+}
+
+/**
+ * The schema 12 tables and indexes: the Project registry, ordered by status and last change, and the artifact index, which
+ * answers the Ticket, Project, Source and time lists the views and tools ask for without scanning every delivery.
+ */
+const SCHEMA_12_TABLES = `
+  CREATE TABLE IF NOT EXISTS project (id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, value TEXT NOT NULL, status TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS project_status ON project(status, updated_at);
+  CREATE TABLE IF NOT EXISTS artifact (id TEXT PRIMARY KEY, ticket TEXT NOT NULL, project TEXT, source TEXT NOT NULL, name TEXT NOT NULL,
+    value TEXT NOT NULL, at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS artifact_ticket ON artifact(ticket);
+  CREATE INDEX IF NOT EXISTS artifact_project_at ON artifact(project, at);
+  CREATE INDEX IF NOT EXISTS artifact_source_at ON artifact(source, at);
+  CREATE INDEX IF NOT EXISTS artifact_at ON artifact(at);
+`
+/**
+ * Rewrite a schema 11 database as schema 12 in place, inside the Store's migration transaction: create the Project registry and
+ * the artifact index, give the built-in workspace Project the state directory's area layout, name on every old ticket its
+ * Project, Source and reporter, and index the artifacts earlier versions kept under `KV.artifacts`. A failed step rolls back
+ * the whole transaction, so the database stays at schema 11.
+ */
+export function migrateTo12(store: Store): void {
+  step('the schema 12 tables', () => { store.db.exec(SCHEMA_12_TABLES) })
+  // The workspace takes every ticket that no station owns; later stages add the stations a person or an agent proposes.
+  step('the workspace Project', () => { store.projects.ensureWorkspace(store.stateDir) })
+  for (const row of store.db.prepare('SELECT id, value FROM ticket').all()) {
+    step(`ticket ${String(row.id)}`, () => { store.tickets.save(ownedTicket(store, JSON.parse(String(row.value)) as Ticket)) })
+  }
+  step('the artifact index', () => { indexArtifacts(store) })
+}
+/**
+ * A ticket stored before schema 12, with the Project, Source instance, reporter and mentions it now records: the workspace
+ * Project, the Source of the Trigger that started it (else its first Channel's), and that Trigger's actor. A ticket whose
+ * Trigger is gone takes its Decision's actor. Whatever the ticket already records is kept, so a repeated migration changes nothing.
+ */
+function ownedTicket(store: Store, ticket: Ticket): Ticket {
+  const trigger = store.triggers.get(ticket.origin?.triggerId ?? '')
+  const decision = ticket.decisionId ? store.decisions.get(ticket.decisionId) : undefined
+  const sourceId = ticket.sourceId ?? trigger?.source ?? ticket.channels?.[0]?.source
+  const reporter = ticket.reporter ?? personOf(trigger?.actor ?? decision?.mandate?.actor)
+  return { ...ticket, projectId: ticket.projectId ?? WORKSPACE_PROJECT_ID, mentions: ticket.mentions ?? [],
+    ...sourceId ? { sourceId } : {}, ...reporter ? { reporter } : {} }
+}
+/** The person behind an actor, when it names one; a Source that knows no display name leaves only the id. */
+function personOf(actor: { source?: string; id?: string } | undefined): PersonRef | undefined {
+  return actor?.id ? { source: actor.source ?? '', id: actor.id } : undefined
+}
+/**
+ * Index the deliverables earlier versions collected under `KV.artifacts`, keyed by Ticket, as artifact rows of the workspace
+ * Project: their Source is the Ticket's origin, and the copies that went to a folder Source's outbox stay their `deliveredTo`.
+ * `targetRoot` is empty because those versions promoted nothing; the records themselves stay for the stages that read them.
+ */
+function indexArtifacts(store: Store): void {
+  for (const name of store.keys(KV.artifacts)) {
+    const ticketId = name.slice(KV.artifacts.prefix.length)
+    step(`the artifacts of ticket ${ticketId}`, () => {
+      const ticket = store.tickets.get(ticketId)
+      const trigger = ticket ? store.triggers.get(ticket.origin.triggerId) : undefined
+      const outbox = typeof trigger?.meta.outbox === 'string' && trigger.meta.outbox ? join(trigger.meta.outbox, ticketId, 'artifacts') : undefined
+      const source = trigger?.source ?? ticket?.sourceId ?? ''
+      const stored: Artifact[] = store.get(name) ?? []
+      for (const artifact of stored) {
+        const value = { hash: artifact.hash, size: artifact.size, at: artifact.at, targetRoot: '',
+          ...outbox ? { deliveredTo: outbox } : {} }
+        const record: ArtifactRecord = { id: artifactRecordId(ticketId, artifact.name), ticket: ticketId, project: WORKSPACE_PROJECT_ID,
+          source, name: artifact.name, value, at: artifact.at }
+        store.artifacts.add(record)
+      }
+    })
   }
 }
