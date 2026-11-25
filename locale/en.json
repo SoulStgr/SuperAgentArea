@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Superagent",
-    "description": "Watch one GitHub repository, turn authorized requests into Tickets, and execute each in its own DSH Session."
+    "title": "SuperAgentArea",
+    "description": "A proactive multi-source agent: it watches GitHub, Feishu and local folders, turns authorized requests into Tickets, executes each in its own DSH Session, and delivers file artifacts back to the origin conversation."
   }
 }
