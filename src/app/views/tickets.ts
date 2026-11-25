@@ -27,7 +27,7 @@ export function basisFacts(basis: MandateBasis, rule: Snapshot['rule']): { facts
   // Listed bot messages are inferred candidates regardless of where received, so only the accept mode is shown from `observation`.
   if (observation && basis.via !== 'bot') facts.push({ name: 'observation' })
   if (observation?.mode) facts.push({ name: 'mode', value: observation.mode })
-  if (basis.rules?.length) facts.push({ name: 'rules', value: basis.rules.map(rule) })
+  if (basis.rules?.length) facts.push({ name: 'rules', value: basis.rules.map(id => rule(id, basis.source)) })
   const authority = basis.via === 'followup' || basis.via === 'listed' ? basis.authority : undefined
   if (authority) facts.push({ name: 'legacyAuthority', value: authority })
   return { facts, legacy: authority !== undefined }

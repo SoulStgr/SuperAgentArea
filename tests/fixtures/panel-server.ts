@@ -5,9 +5,10 @@
 import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { z } from 'zod'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
-import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
+import type { Api, ApiResponse, RouteParams, SourcePromptsView } from '../../src/app/api.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
-  environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
+  environmentSection, policySection, promptParts, type PromptConfig } from '../../src/app/prompts.ts'
+import { bundledSkillNames, bundledSkills } from '../../src/app/skill-files.ts'
 import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView, ProjectHistoryView, ProjectRow, PromptsView, SetupView,
   SourceDetailView, SourceStatusRow, SourceView, StateView,
   ThreadPageView,
@@ -16,7 +17,8 @@ import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView
   TriggerRow,
   ArtifactDetailView, ArtifactRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
-import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
+import { AdmissionTableSchema, EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, RuleArraySchema, SettingsSchema }
+  from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
@@ -72,6 +74,13 @@ export function found(id: string, at: string, { threadTitle, filtered,
 }
 export const promptVersion = (revision: number, config: PromptsView['current']['config']): PromptsView['current'] =>
   ({ revision, previousRevision: revision ? revision - 1 : null, savedAt: '', source: 'panel', config })
+/** One Source instance's own prompt chain, once it saves one: the revision it is at, its version and page of history. */
+export interface PromptScope {
+  revision: number
+  current: PromptsView['current']
+  revisions: PromptsView['revisions']
+  next_offset: number | null
+}
 /** A delivered artifact as the 产物 list shows it; a test overrides the file, its work or whether it is still readable. */
 export function artifactRow(fields: Partial<ArtifactRow> = {}): ArtifactRow {
   return { id: 'a1', name: 'report.md', ticket: 't1', ticketTitle: '修复回归', project: 'prj_aps', projectName: 'aps',
@@ -124,6 +133,8 @@ export interface PanelServer {
   joinError?: string
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
+  /** Each Source instance's own prompt chain, by instance id; an instance with none inherits `prompts`. */
+  promptScopes: Record<string, PromptScope>
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
   threads: ThreadRow[]
   threadPages: (key: string, query: { before?: string; around?: string }) => ThreadPageView | undefined
@@ -201,11 +212,18 @@ function sourceSettings(): SourceView[] {
     const kind = KINDS.find(item => item.kind === instance.kind)!
     const config = kind.schema.parse(instance.config)
     const problem = problemOf_(instance.id) ?? problemOf_(kind.kind)
-    const { admission: _admission, ...part } = server.settings.policy.sources[instance.id] ?? { allowed: [], admission: {} }
-    const sync = kind.policy?.sync && { label: kind.policy.sync.label, ready: kind.policy.sync.ready(kind.policy.schema.parse(part)),
+    // What the instance saved of its own Policy, if anything: its kind's fields, its admission table and its own rules.
+    const stored = server.settings.policy.sources[instance.id] ?? { allowed: [], admission: {} }
+    const { admission: _admission, rules: _rules, ...storedFields } = stored
+    const parsed = kind.policy ? kind.policy.schema.safeParse(storedFields) : undefined
+    const part = { ...parsed?.success ? parsed.data : {}, admission: _admission ?? {},
+      ...stored.rules === undefined ? {} : { rules: stored.rules } }
+    const sync = kind.policy?.sync && { label: kind.policy.sync.label, ready: kind.policy.sync.ready(kind.policy.schema.parse(storedFields)),
       health: server.health[`sync:${instance.id}`] }
     const policy = kind.policy && { fields: kind.policy.fields, explicit: kind.policy.explicit, ...kind.policy.rows
-      ? { rows: kind.policy.rows(config, instance.id) } : {}, ...sync ? { sync } : {} }
+      ? { rows: kind.policy.rows(config, instance.id) } : {}, ...sync ? { sync } : {},
+      revision: server.revisions[`policy:${instance.id}`] ?? 0, rules: stored.rules ?? server.settings.policy.rules,
+      inherited: stored.rules === undefined, value: part }
     const title = instance.label ? { zh: instance.label, en: instance.label }
       : instance.id.startsWith(`${kind.kind}:`) ? { zh: `${kind.title.zh} · ${instance.id.slice(kind.kind.length + 1)}`,
         en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
@@ -214,7 +232,7 @@ function sourceSettings(): SourceView[] {
       value: { enabled: instance.enabled, config }, revision: server.revisions[`source:${instance.id}`] ?? 0,
       restarts: SETUP_FIELDS[kind.kind] ?? [], fields: kind.fields, facts: kind.facts?.(resolved()) ?? {},
       labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {}, ...problem ? { problem } : {},
-      ...policy ? { policy } : {} }
+      ...policy ? { policy: policy as unknown as NonNullable<SourceView['policy']> } : {} }
   })
 }
 function sourceStatuses(): SourceStatusRow[] {
@@ -260,9 +278,49 @@ function sourceDetailOf(id: string): SourceDetailView | undefined {
     labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {},
     facts: kind.facts?.(resolved()) ?? {}, tickets: page(tickets) }
 }
+/** The bundled skills a scope registers by default: its Source instance's kind, or every configured kind's for the installation. */
+function defaultSkillsOf(scope?: string): { name: string; description: string }[] {
+  const kinds = scope === undefined ? new Set(instancesOf().map(instance => instance.kind))
+    : new Set([instancesOf().find(instance => instance.id === scope)?.kind ?? scope.split(':')[0]!])
+  return [...kinds].flatMap(kind => {
+    const bundled = bundledSkills[kind]
+    return bundled ? [{ name: bundled.name, description: bundled.description }] : []
+  })
+}
+/** The view of one scope's prompts: the installation's, or a Source instance's own chain (inherited until it saves one). */
+function promptsViewOf(scope?: string): PromptsView {
+  const base = server.prompts
+  const own = scope === undefined ? undefined : server.promptScopes[scope]
+  const current = own ? own.current : scope === undefined ? base.current : { ...base.current, source: 'inherited' }
+  return { masterId: base.masterId, ...scope === undefined ? {} : { source: scope }, current, defaults: base.defaults, sections: base.sections,
+    skillName: base.skillName, skillPrefix: base.skillPrefix, builtin: [...bundledSkillNames], revision: current.revision,
+    parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
+    defaultChanged: base.defaultChanged, defaultSkills: defaultSkillsOf(scope),
+    revisions: own ? own.revisions : base.revisions, sessions: base.sessions, notificationPending: base.notificationPending,
+    next_offset: own ? own.next_offset : base.next_offset }
+}
+/** Validate a configuration as the host does, refusing an unknown part or a template that lost its placeholders. */
+function invalidPrompt(config: PromptConfig): Refusal | undefined {
+  for (const [part, override] of Object.entries(config.overrides ?? {})) {
+    const found = builtInPart(part)
+    if (!found) return refuse(400, 'refused', { code: 'unknownPromptPart', values: { part } })
+    const missing = (found.placeholders ?? []).filter(placeholder => !override.text.includes(placeholder))
+    if (missing.length) return refuse(400, 'refused', { code: 'promptPlaceholders', values: { part, placeholders: missing.join(', ') } })
+  }
+  return undefined
+}
+/** A preview as the host composes it for one scope: the fixed and team parts, the default skills and the team skills. */
+function promptPreviewOf(scope: string | undefined, body: PromptConfig) {
+  const names = [...defaultSkillsOf(scope).map(item => item.name), ...Object.keys(body.skills)]
+  const environment = environmentSection(body, []), policy = policySection(SettingsSchema.parse({ policy: { rules: [] } }), body)
+  return { ...scope === undefined ? {} : { source: scope },
+    parts: { orchestrator: promptParts(body, 'orchestrator', environment, policy), worker: promptParts(body, 'worker', environment) },
+    skills: Object.fromEntries(names.map(name => [name, composeSkill(body, name)])),
+    orchestrator: composePrompt(body, 'orchestrator', environment, policy), worker: composePrompt(body, 'worker', environment),
+    defaultSkills: defaultSkillsOf(scope), builtin: [...bundledSkillNames], scope: '' }
+}
 /** The Tickets a Project's page serves: the workspace's are every open and pending Ticket of the fake server. */
-function projectTicketsOf(project: ProjectFixture): TicketRow[] {
-  const ids = project.tickets ?? (project.kind === 'workspace' ? undefined : [])
+function projectTicketsOf(project: ProjectFixture): TicketRow[] {  const ids = project.tickets ?? (project.kind === 'workspace' ? undefined : [])
   const rows = ids ? ids.flatMap(id => {
     const ticket = [...server.tickets.open, ...server.person, ...server.tickets.ended].find(item => item.id === id)
     return ticket ? [ticket] : []
@@ -477,10 +535,11 @@ function initial(): PanelServer {
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
-    prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github'],
+    prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: [...bundledSkillNames],
       skillPrefix: SKILL_PREFIX, revision: 0, current: { ...defaults, config: defaultPrompts() },
       defaults: defaultPrompts(), parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
-      defaultChanged: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
+      defaultChanged: [], defaultSkills: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
+    promptScopes: {},
     tickets: { open: [ticketSummary()], ended: [ended] }, ticketDetails: { t1: ticketDetail() },
     threads: [threadSummary()], threadPages: threadPage,
     person: [ticketSummary({ attention: { id: 'q1', question: '需要确认按钮颜色' }, note: { text: '需要确认按钮颜色', error: false }, reply },
@@ -696,17 +755,25 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { paused: body.paused }
   } },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
-    const id = block.startsWith('source:') ? block.slice('source:'.length) : undefined
-    const instance = id ? server.settings.sources[id] : undefined
+    const instanceId = block.startsWith('source:') ? block.slice('source:'.length)
+      : block.startsWith('policy:') ? block.slice('policy:'.length) : undefined
+    const instance = instanceId ? server.settings.sources[instanceId] : undefined
     const kind = instance ? KINDS.find(item => item.kind === instance.kind) : undefined
-    if (!['policy', 'eval', 'executor'].includes(block) && !kind) return block.startsWith('source:') ? refuse(404, 'Source not found')
+    if (!['policy', 'eval', 'executor'].includes(block) && !instance) return instanceId ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
     let restarting = false
     if (block === 'policy') server.settings = { ...server.settings, policy: PolicyConfigSchema.parse(body.value) }
     else if (block === 'executor') server.settings = { ...server.settings, executor: ExecutorConfigSchema.parse(body.value) }
     else if (block === 'eval') server.settings = { ...server.settings, eval: EvalConfigSchema.parse(body.value) }
-    else if (kind && instance) {
+    else if (block.startsWith('policy:') && kind?.policy && instanceId) {
+      // One Source's Policy part: the kind validates its fields, the Policy validates its admission table and its own rules.
+      const { rules, admission, ...fields } = body.value as Record<string, unknown>
+      const part = { ...kind.policy.schema.parse(fields), admission: AdmissionTableSchema.parse(admission ?? {}),
+        ...rules === undefined ? {} : { rules: RuleArraySchema.parse(rules) } }
+      server.settings = { ...server.settings, policy: { ...server.settings.policy,
+        sources: { ...server.settings.policy.sources, [instanceId]: part as typeof server.settings.policy.sources[string] } } }
+    } else if (kind && instance) {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = kind.schema.parse(value)
       // As on the server, a changed CLI that fails its check refuses the save with the setup problem.
@@ -715,7 +782,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
         return refuse(400, refused.message, { setup: refused.problem })
       }
       restarting = (config.cli ?? '') !== (instance.config.cli ?? '')
-      server.settings = { ...server.settings, sources: { ...server.settings.sources, [id!]: { ...instance, enabled, config } } }
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [instanceId!]: { ...instance, enabled, config } } }
     }
     server.revisions[block] = (server.revisions[block] ?? 0) + 1
     return { restarting, revision: server.revisions[block] }
@@ -726,7 +793,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET models': { answer: () => ({ default: { provider: 'host', model: 'default' }, routableProviders: [], failures: [],
     groups: [{ id: 'worker-provider', name: 'Worker provider', models: [{ id: 'worker-model', name: 'Worker model',
       reasoning: { efforts: [{ id: 'high', name: 'High' }] } }] }] }) },
-  'GET prompts': { query: ['revision', 'offset'], answer: () => server.prompts },
+  'GET prompts': { query: ['revision', 'offset'], answer: () => promptsViewOf() },
   'PUT prompts': { body: true, answer: ({ body }) => {
     const { revision } = server.prompts
     if (body.baseRevision !== revision) return refuse(409,
@@ -742,15 +809,32 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.prompts.current = promptVersion(server.prompts.revision, Object.keys(overrides).length ? { ...config, overrides } : config)
     return { revision: server.prompts.revision, context_delivery: 'injected' }
   } },
-  'POST prompts/preview': { body: true, answer: ({ body }) => {
-    const skills = [...server.setup.accounts?.feishu ? ['feishu'] : [], 'github', ...Object.keys(body.skills)].map(name => [name,
-      composeSkill(body, name)])
-    // The generated parts from their templates, without variables or rules.
-    const environment = environmentSection(body, []), policy = policySection(SettingsSchema.parse({ policy: { rules: [] } }), body)
-    return { parts: { orchestrator: promptParts(body, 'orchestrator', environment, policy), worker: promptParts(body, 'worker', environment) },
-      skills: Object.fromEntries(skills),
-      orchestrator: composePrompt(body, 'orchestrator'), worker: composePrompt(body, 'worker'), scope: '' }
+  'POST prompts/preview': { body: true, answer: ({ body }) => promptPreviewOf(undefined, body) },
+  'GET sources/:id/prompts': { query: ['revision', 'offset'], answer: ({ params }) =>
+    instancesOf().some(instance => instance.id === params.id) ? { ...promptsViewOf(params.id), source: params.id } as SourcePromptsView
+      : refuse(404, 'Source not found') },
+  'PUT sources/:id/prompts': { body: true, answer: ({ params, body }) => {
+    const instance = instancesOf().find(item => item.id === params.id)
+    if (!instance) return refuse(404, 'Source not found')
+    const view = promptsViewOf(params.id)
+    if (body.baseRevision !== view.revision) return refuse(409,
+      `Prompt version changed to ${view.revision}; compare the latest version before saving`)
+    const config = body.config
+    const invalid = invalidPrompt(config)
+    if (invalid) return invalid
+    // As on the host: a Source that had none first keeps the configuration it inherited as revision 0, then saves its own.
+    const previous = server.promptScopes[params.id]
+    const revision = (previous?.revision ?? 0) + 1
+    const { overrides = {}, ...rest } = config
+    const stored = { ...rest, ...Object.keys(overrides).length ? { overrides } : {} } as PromptConfig
+    server.promptScopes[params.id] = { revision, current: promptVersion(revision, stored),
+      revisions: [{ ...promptVersion(revision, config), changed: [] }, ...previous?.revisions
+        ?? [{ ...promptVersion(0, view.current.config), source: view.current.source, changed: [] }]], next_offset: null }
+    return { revision, context_delivery: 'injected' }
   } },
+  'POST sources/:id/prompts/preview': { body: true, answer: ({ params, body }) =>
+    instancesOf().some(instance => instance.id === params.id) ? promptPreviewOf(params.id, body)
+      : refuse(404, 'Source not found') },
 }
 
 function match(method: string, segments: string[]) {

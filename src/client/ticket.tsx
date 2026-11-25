@@ -4,7 +4,7 @@ import { ApiError, usePoll, type TicketPageView } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
-import { policyRoute } from './route.ts'
+import { settingsRoute } from './route.ts'
 import { Earlier, ThreadLine, automatedRuns } from './rows.tsx'
 import { sizeText } from './artifacts.tsx'
 import { actorName, errorText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
@@ -97,8 +97,7 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
           { evidence: direction.evidence })}</Hint>}
     </div>],
   ] : []
-  const version = <button type="button" className="dt-textlink dt-mono" onClick={() => navigate(policyRoute({ segment: 'rules',
-    version: mandate.policyVersion }))}>{mandate.policyVersion.slice(0, 8)}</button>
+  const version = <button type="button" className="dt-textlink dt-mono" onClick={() => navigate(settingsRoute('routing'))}>{mandate.policyVersion.slice(0, 8)}</button>
   return <Section title={t('mandateDetails')} icon="shield">
     <KeyValues rows={[...rows, [t('term.scope'), legacy ? t('legacyScopeShort') : mandate.scope || t('empty')],
       ...facts.map((item): [string, string] => [valueLabel(t, 'basis', item.name), fact(item)]),

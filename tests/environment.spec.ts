@@ -15,6 +15,13 @@ import { gitEnv } from './fixtures/git.ts'
 vi.setConfig({ testTimeout: 30_000 })
 const exec = promisify(execFile)
 let dir: string
+/** Whether this account may create a file symbolic link; Windows without the symlink privilege refuses it. */
+function canFileSymlink(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), 'symlink-'))
+  try { writeFileSync(join(probe, 'target'), ''); symlinkSync(join(probe, 'target'), join(probe, 'link')); return true }
+  catch { return false }
+  finally { rmSync(probe, { recursive: true, force: true }) }
+}
 const program = (path: string, body: string): string => { writeFileSync(path, `#!/bin/sh\n${body}\n`); chmodSync(path, 0o755); return path }
 /** Worker shell environment after DSH strips credential-shaped variables. */
 const workerEnv = (env: Record<string, string | undefined>): Record<string, string> =>
@@ -68,9 +75,13 @@ describe('worker shims', () => {
     writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
     rmSync(join(workerBin(dir), 'notes'))
-    symlinkSync(join(workerBin(dir), 'gh'), join(workerBin(dir), 'link'))
+    // A non-regular entry in the shims' directory is foreign too: a symbolic link to a shim, or, where the account cannot
+    // create one (Windows without its symlink privilege), a directory with the same name.
+    const foreign = join(workerBin(dir), 'link')
+    if (canFileSymlink()) symlinkSync(join(workerBin(dir), 'gh'), foreign)
+    else mkdirSync(foreign)
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
-    rmSync(join(workerBin(dir), 'link'))
+    rmSync(foreign, { recursive: true, force: true })
     writeFileSync(workerGitConfig(dir), '[user]\n\tname = someone\n')
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by dsh-superagent`)
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toBe('[user]\n\tname = someone\n')
@@ -129,7 +140,8 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
 
 it('removes every spelling of a directory from PATH and keeps the other entries', () => {
   mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
-  symlinkSync(join(dir, 'state'), join(dir, 'link'))
+  // A Windows account without the symlink privilege cannot create a directory symbolic link; a junction needs no privilege.
+  symlinkSync(join(dir, 'state'), join(dir, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
   const bin = join(dir, 'state', 'worker-bin')
   expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(delimiter), bin)).toBe(['/usr/bin', 'node_modules/.bin'].join(delimiter))
 })

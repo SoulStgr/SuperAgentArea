@@ -321,7 +321,8 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       }).strict(),
       execute: async args => {
         if (args.preview) {
-          const preview = host.prompts.preview(args.config)
+          // A preview composes from an installation-level draft; a Source instance's own prompts are edited in the panel.
+          const preview = host.prompts.preview(undefined, args.config)
           return { scope: preview.scope, previews: (['orchestrator', 'worker'] as const).map(role => {
             const resource = `prompt-preview/${key(agent.id, role, preview[role])}`
             host.resources.pages.set(`${agent.id}:${resource}`, preview[role])

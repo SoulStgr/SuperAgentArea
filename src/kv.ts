@@ -28,14 +28,23 @@ export const KV = {
   settings: { revision: record<number>('settings-revision'),
     block: family<number, [block: SettingsSave]>('settings-block-revision:'),
     version: family<SettingsVersion, [revision: number]>('settings-version:') },
-  /** Prompts: current revision and saved prompt versions. */
+  /**
+   * Prompts: the installation's default revision and saved versions (the main Session's prompt, and what a Source instance
+   * inherits until it saves its own), and a Source instance's own revision and saved versions, keyed by instance id.
+   */
   prompts: { revision: record<number>('prompt-revision'), version: family<PromptVersion, [revision: number]>('prompt-version:'),
+    scopeRevision: family<number, [scope: string]>('prompt-revision:'),
+    scopeVersion: family<PromptVersion, [scope: string, revision: number]>('prompt-version:', (scope, revision) => `${scope}:${revision}`),
     /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
     builtIn: family<string, [base: string]>('prompt-built-in:') },
   /** Runtime: the main Session's ID. */
   runtime: { masterId: record<string>('master-id') },
-  /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
-  sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
+  /**
+   * Sessions: the prompt revisions each Session has worked under, ordered oldest first, as `<scope>#<revision>` where `scope`
+   * is the Source instance whose prompt configuration a worker read (empty for the installation's default, the main Session);
+   * the last entry (`.at(-1)`) is its active revision.
+   */
+  sessions: { prompts: family<string[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },

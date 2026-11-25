@@ -9,7 +9,7 @@ usePanel()
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '工单源', '工作站', '产物', '提示词', '策略'])
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '工单源', '工作站', '产物'])
   expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
   expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
@@ -71,12 +71,11 @@ it('offers each Ticket that needs a person its actions on the overview: answer i
   expect(text()).not.toContain('截图工具')
 })
 
-it('shows paused processing as a system problem with its resume action, and says so on the Policy records', async () => {
+it('shows paused processing as a system problem with its resume action, and says so on the Decisions', async () => {
   server.settings = { ...server.settings, paused: true }
   await mount()
   expect(text()).toContain(zh.problemPaused)
-  await click(zh['tab.policy'])
-  await click(find(zh['policySegment.decisions'], '.dt-main [role="tab"]'))
+  await click(all('.dt-stat button')[1]!)
   expect(text()).toContain(zh.evalRecordsPaused)
   await click(zh.resumeWhere)
   expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
@@ -93,8 +92,8 @@ it('offers the step that fixes a settings problem as a button on the overview', 
   await mount()
   expect(text()).toContain(zh.problemNoAllowed)
   await click(zh.actionAddAllowed)
-  expect(tab(zh['tab.policy']).getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.dt-policy-segments [aria-selected="true"]')?.textContent).toBe(zh['policySegment.rules'])
+  expect(tab(zh['tab.source']).getAttribute('aria-selected')).toBe('true')
+  expect(all('.dt-source-card').length).toBeGreaterThan(0)
 })
 
 it('counts the messages not sent in the last day, linking to the Source status, and shows nothing when there are none', async () => {

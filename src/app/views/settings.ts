@@ -1,20 +1,25 @@
 /** Settings view combining versioned configuration blocks, per-source forms and policy metadata, and execution environment details. */
 import { SETUP_FIELDS } from '../../deployment.ts'
 import { KV } from '../../kv.ts'
-import { policyVersion } from '../../policy.ts'
+import { policyVersion, rulesFor, type Settings } from '../../policy.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
 import { declaredVariables, executionRoot } from '../execution-environment.ts'
 import type { Store } from '../store.ts'
 import { problemOf, sourceTitle, type HealthMap, type SetupState } from './sources.ts'
 
-function policyOf(sources: SourceRegistry, id: string, kind: string, health: HealthMap) {
+/**
+ * One Source instance's policy: its kind's editable fields and rows, the sync state, and its own rules when it saved any —
+ * `rules` is what applies to its work (own rules, else the installation's default), and `inherited` says which.
+ */
+function policyOf(sources: SourceRegistry, store: Store, settings: Settings, id: string, kind: string, health: HealthMap) {
   const policy = sources.kind(kind)?.policy
   if (!policy) return {}
   const part = sources.policyPart(id)!
   const config = sources.instance(id)?.config ?? {}
   const sync = policy.sync && { label: policy.sync.label, ready: policy.sync.ready(part), health: health[`sync:${id}`] }
   return { policy: { fields: policy.fields, explicit: policy.explicit, ...policy.rows ? { rows: policy.rows(config, id) } : {}, ...sync
-    ? { sync } : {} } }
+    ? { sync } : {}, revision: store.blockRevision(`policy:${id}`), rules: rulesFor(settings, id),
+  inherited: settings.policy.sources[id]?.rules === undefined, value: part } }
 }
 /** A kind's title, or a named instance's own title: its label, or its kind and key when it shares the kind with others. */
 /**
@@ -37,7 +42,7 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
         value: { enabled: instance.enabled, config: instance.config }, revision: store.blockRevision(`source:${instance.id}`),
         restarts: SETUP_FIELDS[instance.kind] ?? [], fields: kind?.fields ?? [], facts: kind?.facts?.(setup.deployment) ?? {},
         labels: store.get(KV.sources.labels(instance.id)) ?? {}, ...problem ? { problem } : {},
-        ...policyOf(sources, instance.id, instance.kind, health) }
+        ...policyOf(sources, store, settings, instance.id, instance.kind, health) }
     }),
     environment: { root: executionRoot(settings, stateDir), variables: declaredVariables(sources, settings) },
   }

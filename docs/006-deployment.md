@@ -8,7 +8,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 - **An agent GitHub account (optional).** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account. An installation whose GitHub Source names no repository runs without GitHub: its `gh` fails, and its other Sources work as they do with one.
 - **Optional:** a Feishu bot for chat requests.
 
-Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
+Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for each instance's repository, account, allowed list, rules and prompts, and Settings for the installation-wide Eval, Executor and deployment settings.
 
 ### Permissions and isolation
 
@@ -146,9 +146,10 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
-2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
-3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
+1. **Sources.** Each Source instance's page edits its own configuration. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. **Add Source** creates a named instance of an installed kind.
+2. **Policy and prompts, per Source.** An installed instance's page has a **Policy and prompts** section (策略提示配置). Its **Policy** holds the accept rules the instance's work is assessed by — the installation's default rules until the instance saves its own — plus the allowed GitHub accounts and Feishu users who may ask for work, the bot list and the admission table. Until a list has someone, no request through that instance can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**. Its **Prompts** holds the prompt configuration its Tickets' workers read; a default skill of the instance's kind is shown read-only. The installation default rules and configuration, which the main Session reads, are not edited from the panel: change them through the main Session's settings and prompt tools or the management API.
+3. **Routing and Eval.** The header gear's Routing and Eval group sets the accept mode, the Eval timeout and the assessment model, and shows the history of Policy and Eval saves. A rule or admission change on a Source page saves that Source's Policy block; saving an Eval setting saves the Eval block. Each save uses its own revision.
+4. **Executor and environment.** The header gear's Executor and environment group sets the directory root and a prepare command. To give each Ticket a checkout of the repository:
 
    ```sh
    git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
@@ -156,7 +157,6 @@ Setup must succeed before polling or work starts. Overview lists missing require
    ```
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
-4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
 ### Management API
 
@@ -171,13 +171,14 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 | Request | Answer |
 | --- | --- |
 | `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, `problems`, the setup problems of named GitHub and Feishu instances by instance id, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
-| `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
+| `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, `revision`, its kind's form, and its setup `problem` when it has one; each installed instance's `policy`: its kind's `fields`, the `explicit` wording, its admission `rows` and `sync` when the kind has them, the block `revision` of `policy:<id>`, the `rules` that apply to its work, `inherited` — whether they are the installation's defaults rather than its own — and its Policy `value`; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
-| `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
+| `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `<block>` is `policy`, `eval`, `executor`, `source:<instance id>` or `policy:<instance id>`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
 | `POST executor/pause` with `{"paused": true}` or `false` | Pauses or resumes processing: `paused` |
 | `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused only when setup, Feishu and every named instance are already healthy |
 | `POST policy-sync/<source id>` | Syncs that Source's allowed list now: `policy`, the Source's part as saved |
-| `GET prompts`, `PUT prompts` with `{"config", "baseRevision"}` | Reads the prompt configuration: `current`, with its `revision` and `config`, `defaults`, `sections`, the team sections in the order Sessions read them, `skillName`, the pattern of a team skill's name, `builtin`, the names a team skill cannot take, and `skillPrefix`, which Sessions load a skill's name under. Or saves it: the new `revision` |
+| `GET prompts`, `PUT prompts` with `{"config", "baseRevision"}` | Reads the installation's default prompt configuration, which the main Session reads and an unsaved Source inherits: `current`, with its `revision` and `config`, `defaults`, `sections`, the team sections in the order Sessions read them, `skillName`, the pattern of a team skill's name, `builtin`, the names a team skill cannot take, `skillPrefix`, which Sessions load a skill's name under, and `defaultSkills`, the default skills of the configured Source kinds. Or saves it: the new `revision` |
+| `GET sources/<id>/prompts`, `PUT sources/<id>/prompts` with `{"config", "baseRevision"}`, `POST sources/<id>/prompts/preview` | Reads, saves or previews one Source instance's own prompt configuration, which its Tickets' worker Sessions read: the same view, with `source` and the instance kind's `defaultSkills`, or the new `revision`. An instance that never saved shows the inherited installation configuration |
 | `POST tickets/<id>/retry`, `POST tickets/<id>/stop` | Retries or stops a Ticket, as the panel does |
 
 Health entries are grouped by responsibility:
@@ -203,7 +204,8 @@ The blocks:
 
 - `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `source:<instance id>`: the id is the kind for a Source stored before instances, else `<kind>:<key>`. A folder Source is one inbox per instance and its config has `inbox`, `outbox`, `operator` and `pollSeconds`; the upgrade turns each old row into `source:folder:<row id>`.
-- `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
+- `policy`: the installation's Policy: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
+- `policy:<instance id>`: that Source instance's own Policy part: its kind's fields (such as `allowed`, `bots` and `syncChat`), its `admission` table, and optionally its own `rules` — the same rule shape as the installation's `rules`. Absent `rules` inherits the installation's default rules; a saved list replaces them for that instance only.
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
 
@@ -214,6 +216,14 @@ api=http://127.0.0.1:3082/orchestrator/api
 rev=$(curl -s -H 'x-orchestrator-request: 1' $api/settings | jq '.sources[] | select(.id == "github") | .revision')
 curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json' $api/settings/source:github \
   -d "{\"value\": {\"enabled\": true, \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}, \"revision\": $rev}"
+```
+
+A Source's own Policy is saved the same way, with the `policy:<instance id>` revision from `GET settings` (`sources[].policy.revision`):
+
+```sh
+rev=$(curl -s -H 'x-orchestrator-request: 1' $api/settings | jq '.sources[] | select(.id == "github") | .policy.revision')
+curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json' $api/settings/policy:github \
+  -d "{\"value\": {\"allowed\": [{\"id\": \"octocat\"}], \"bots\": [], \"admission\": {}, \"rules\": []}, \"revision\": $rev}"
 ```
 
 ## Setup checks
@@ -242,7 +252,7 @@ From an allowed GitHub account, open an Issue or post a comment containing `@<ag
 3. Run `git pull && pnpm install && pnpm build`.
 4. Run `scripts/dsh-superagent restart` and inspect its status.
 
-A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
+A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained per scope: the installation default and each Source instance that saved its own. Parts without overrides follow the new defaults, and a Source that never saved a configuration follows the upgraded installation default. Overrides of removed parts, such as the old `skill/feishu` and `skill/github`, are dropped when that configuration is next saved. Review parts marked **Default updated** after upgrading.
 
 A database migrated by a newer version cannot be opened by an older one. Rollback therefore requires the pre-upgrade backup. After upgrading DeepSeek Harness itself, restart the running instance so the panel loads matching artifacts.
 

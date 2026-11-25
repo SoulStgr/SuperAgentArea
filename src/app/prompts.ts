@@ -1,9 +1,10 @@
 /** Manages versioned role prompts, behavioral policies, and operational skills independently of access settings. */
 import { z } from 'zod'
 import { UserError, key } from '../core/index.ts'
-import { policyVersion, type Settings, type SettingsOrigin } from '../policy.ts'
-import { masterPrompt, workerPrompt, sharedPrompt, guides, mainAdmissionPolicy, handoffPolicy, teamDefaults, sourceSkills, cliNotes } from './context.ts'
+import { policyVersion, rulesFor, type Settings, type SettingsOrigin } from '../policy.ts'
+import { masterPrompt, workerPrompt, sharedPrompt, guides, mainAdmissionPolicy, handoffPolicy, teamDefaults, cliNotes } from './context.ts'
 import { environmentLines, type Variable } from './execution-environment.ts'
+import { bundledSkillNames, bundledSkills } from './skill-files.ts'
 import { promptsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
 import type { Store } from './store.ts'
@@ -18,12 +19,12 @@ const TEAM_HEADINGS: Record<TeamSection, string> = { communication: 'Communicati
 export const SKILL_NAME = /^[a-z][a-z0-9-]*$/
 /** Prefix prepended to skill names when registering them in DSH Sessions. */
 export const SKILL_PREFIX = 'dsh-superagent-'
-const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !(Object.keys(sourceSkills) as string[]).includes(name),
+const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !bundledSkillNames.includes(name),
   'This name belongs to a built-in skill')
-/** The built-in parts a team may override, by key: both roles' parts, the Source skills, and the generated parts' templates. */
+/** The built-in parts a team may override, by key: both roles' parts, and the generated parts' templates. */
 const PART_KEYS = ['runtime/shared', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
   'runtime/dispatch', 'runtime/work', 'runtime/admission', 'runtime/handoff/orchestrator', 'runtime/handoff/worker', 'runtime/environment',
-  'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github'] as const
+  'runtime/policy', 'runtime/policy/none'] as const
 export type PartKey = typeof PART_KEYS[number]
 /** A team's text for a built-in part, and `base`, the key of the built-in text it was edited from. */
 const OverrideSchema = z.object({ text: z.string(),
@@ -49,8 +50,8 @@ interface BuiltInPart { roles: readonly Role[]; text: string; placeholders?: rea
 const BOTH: readonly Role[] = ['orchestrator', 'worker'], MAIN: readonly Role[] = ['orchestrator'], WORKER: readonly Role[] = ['worker']
 let parts: Readonly<Record<PartKey, BuiltInPart>> | undefined
 /**
- * The built-in parts of both roles' prompts, the two Source skills, and the templates of the generated parts, whose data the
- * system fills in, by the key an override names them by. Built on first use, as the texts it reads are imported in a cycle.
+ * The built-in parts of both roles' prompts, and the templates of the generated parts, whose data the system fills in, by the
+ * key an override names them by. Built on first use, as the texts it reads are imported in a cycle.
  */
 export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts ??= {
   'runtime/shared': { roles: BOTH, text: sharedPrompt }, 'runtime/orchestrator': { roles: MAIN, text: masterPrompt },
@@ -62,11 +63,9 @@ export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts 
   'runtime/handoff/orchestrator': { roles: MAIN, text: handoffPolicy('orchestrator') },
   'runtime/handoff/worker': { roles: WORKER, text: handoffPolicy('worker') },
   'runtime/environment': { roles: BOTH, text: `${ENVIRONMENT_HEADING}\n{variables}`, placeholders: ['{variables}'] },
-  'runtime/policy': { roles: MAIN, text: `${POLICY_HEAD} The enabled rules, by name and id:\n{rules}`, placeholders: ['{version}', '{mode}', '{rules}'] },
+  'runtime/policy': { roles: MAIN, text: `${POLICY_HEAD} The enabled rules of each Source instance, by name and id:\n{rules}`, placeholders: ['{version}', '{mode}', '{rules}'] },
   'runtime/policy/none': { roles: MAIN, text: `${POLICY_HEAD} No rule is enabled: a proactive candidate can only be ignored.`,
     placeholders: ['{version}', '{mode}'] },
-  'skill/feishu': { roles: BOTH, text: `${sourceSkills.feishu}\n\n## CLI usage\n${cliNotes}` },
-  'skill/github': { roles: BOTH, text: `${sourceSkills.github}\n\n## CLI usage\n${cliNotes}` },
 }
 /** The key of a built-in text, which an override's `base` records. */
 export const builtInBase = (text: string): string => key('prompt-built-in', text)
@@ -85,15 +84,31 @@ export function environmentSection(config: PromptConfig, variables: Variable[] |
     : 'Execution environment: dsh-superagent is waiting for setup; the management panel names what is missing.'
 }
 /**
- * The main Session's Policy section: the Policy version and accept mode it judges proactive candidates by, and every enabled
- * rule, as the settings hold them, each on one line, so a line of an instruction reads as no rule or heading of its own; the
- * settings bound each instruction (`LIMITS.ruleInstruction`). `key` names the template it was filled from.
+ * The main Session's Policy section: the Policy version and accept mode it judges proactive candidates by, and the enabled
+ * rules of every Source instance (its own rules, or the installation's defaults it inherits), each rule on one line, so a
+ * line of an instruction reads as no rule or heading of its own; the settings bound each instruction (`LIMITS.ruleInstruction`).
+ * `key` names the template it was filled from.
  */
 export function policySection(settings: Settings, config: PromptConfig = defaultPrompts()): { key: string; text: string } {
   const line = (text: string) => text.replace(/\s*\n\s*/g, ' ')
-  const rules = settings.policy.rules.filter(rule => rule.enabled).map(({ id, name, instruction }) => `- ${line(name)} (${id}): ${line(instruction)}`)
-  const part = rules.length ? 'runtime/policy' : 'runtime/policy/none'
-  return { key: part, text: fill(builtIn(config, part), { version: policyVersion(settings), mode: settings.eval.mode, rules: rules.join('\n') }) }
+  const rulesOf = (rules: readonly { id: string; name: string; enabled: boolean; instruction: string }[]) =>
+    rules.filter(rule => rule.enabled).map(({ id, name, instruction }) => `- ${line(name)} (${id}): ${line(instruction)}`)
+  const instances = Object.keys(settings.sources).sort()
+  // The installation's default rules apply to every Source instance until one saves its own rules; then each instance's
+  // rules are listed under that instance, so the main Session judges each candidate by the rules of its source.
+  const own = instances.filter(id => settings.policy.sources[id]?.rules !== undefined)
+  const blocks = own.length ? instances.map(id => {
+    const rules = rulesOf(rulesFor(settings, id))
+    const inherited = settings.policy.sources[id]?.rules === undefined
+    return rules.length ? `- Source ${id}${inherited ? ' (installation default rules)' : ''}:\n${rules.map(rule => `  ${rule}`).join('\n')}`
+      : `- Source ${id}: no rule is enabled: a proactive candidate from this Source can only be ignored.`
+  }) : []
+  const flat = rulesOf(settings.policy.rules)
+  const rules = blocks.length ? blocks.join('\n') : flat.join('\n')
+  const anyEnabled = blocks.length ? instances.some(id => rulesFor(settings, id).some(rule => rule.enabled)) : flat.length > 0
+  const part = !anyEnabled ? 'runtime/policy/none' : 'runtime/policy'
+  return { key: part, text: fill(builtIn(config, part), { version: policyVersion(settings), mode: settings.eval.mode,
+    rules: part === 'runtime/policy/none' ? '' : rules }) }
 }
 /**
  * Assemble a role's system prompt sections in order from fixed templates, team sections, the generated execution environment
@@ -117,12 +132,27 @@ export function promptParts(config: PromptConfig, role: Role, environment?: stri
 export function composePrompt(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string }): string {
   return promptParts(config, role, environment, policy).map(part => part.text).join('\n\n')
 }
+/**
+ * A skill's text: a bundled Source skill reads from its packaged `SKILL.md` and the CLI notes, and a team skill from the
+ * configuration. Bundled skills are not override keys: their text follows what the installation ships.
+ */
 export function composeSkill(config: PromptConfig, name: string): string {
-  return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : config.skills[name] ?? ''
+  const bundled = bundledSkills[name]
+  return bundled ? `${bundled.content}\n\n## CLI usage\n${cliNotes}` : config.skills[name] ?? ''
 }
 
 /** An override whose built-in text changed since its `base`, with that text when kept, or whose part this version no longer has. */
 export interface DefaultChange { part: string; base?: string; previous?: string; removed?: true }
+/** A composed prompt configuration, as a preview or a Source page shows it. */
+export interface PromptPreview { source?: string; orchestrator: string; worker: string
+  parts: { orchestrator: ReturnType<typeof promptParts>; worker: ReturnType<typeof promptParts> }; skills: Record<string, string>
+  defaultSkills: { name: string; description: string }[]; builtin: string[]; scope: string }
+/** One saved prompt version of a scope in its history, without the full configuration. */
+export type PromptHistoryEntry = Omit<PromptVersion, 'config'> & { changed: string[] }
+/** A page of a scope's prompt history; `next_offset` is `null` when it holds the oldest revision. */
+export interface PromptHistory { revisions: PromptHistoryEntry[]; next_offset: number | null }
+/** A configured Source instance, by the kind a prompt scope reads its default skill from. */
+export interface PromptScopeInstance { id: string; kind: string }
 /**
  * Indicates an optimistic concurrency conflict when saving a prompt configuration against a stale base revision.
  * Thrown by `Prompts.save` and translated into an HTTP 409 response by the management routes.
@@ -130,40 +160,113 @@ export interface DefaultChange { part: string; base?: string; previous?: string;
 export class PromptConflict extends Error {}
 /**
  * Stores numbered prompt configurations in `Store` via `Versions` and composes role system prompts and skills with the execution environment.
- * `Sessions` reads the composed prompts and skills for orchestrator and worker runs, while management routes and tools validate, preview, and save revisions through it.
+ * The installation holds one default configuration (`scope` undefined); every Source instance may save its own (`scope` = its id),
+ * and until it does it inherits the installation's current configuration, as `source: 'inherited'` shows.
+ * `Sessions` reads the composed prompts and skills for orchestrator and worker runs, while management routes and tools validate,
+ * preview, and save revisions through it.
  */
 export class Prompts {
-  private readonly versions: Versions<PromptVersion>
+  private readonly install: Versions<PromptVersion>
+  /**
+   * `instances` names the configured Source instances, whose kinds decide the default skills of the main Session and of each
+   * worker; where it is not given (tests, older call sites) the stored settings' Source instances stand in for it.
+   */
   constructor(private readonly store: Store, private readonly maxChars: () => number, private readonly environment: () => Variable[] | undefined,
-    private readonly feishu: () => boolean) {
-    this.versions = new Versions(store, KV.prompts.revision, KV.prompts.version)
+    _feishu: () => boolean, private readonly instances?: () => readonly PromptScopeInstance[]) {
+    this.install = new Versions(store, KV.prompts.revision, KV.prompts.version)
   }
   /** A role's prompt; the main Session's Policy section follows the settings as they are now, at each model request. */
   compose(config: PromptConfig, role: Role, variables = this.environment()): string {
     return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
   }
-  /** Returns skills to register in every Session: built-in Source skills (`feishu` only when a Feishu bot is configured) followed by team skills. */
-  skills(config: PromptConfig): [string, string][] {
-    return [...this.feishu() ? ['feishu'] : [], 'github', ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
+  /**
+   * Returns skills to register in a Session: the default skills of the Source kind the scope names (`scope` undefined, the
+   * installation, reads every configured Source kind's), followed by the team skills.
+   */
+  skills(config: PromptConfig, scope?: string): [string, string][] {
+    return [...this.defaultSkills(scope).map(skill => skill.name), ...Object.keys(config.skills)]
+      .map(name => [name, composeSkill(config, name)])
   }
-  current(): PromptVersion {
-    const revision = this.versions.revision()
-    return revision ? this.version(revision) : { revision: 0, previousRevision: null, savedAt: '', source: 'defaults', config: defaultPrompts() }
+  /**
+   * The bundled skills a scope registers by default: its Source kind's skill for a Source instance, or every configured Source
+   * kind's for the installation. The panel shows them as read-only defaults beside the team skills.
+   */
+  defaultSkills(scope?: string): { name: string; description: string }[] {
+    return this.defaultKinds(scope).flatMap(kind => {
+      const bundled = bundledSkills[kind]
+      return bundled ? [{ name: bundled.name, description: bundled.description }] : []
+    })
   }
-  /** Reads a revision by number; revision 0 resolves to built-in defaults before the first save persists it. */
-  version(revision: number): PromptVersion {
-    const version = this.versions.get(revision) ?? (revision === 0 && this.versions.revision() === 0 ? this.current() : undefined)
-    if (!version) throw new UserError('unknownPromptRevision', { revision: String(revision) })
-    return version
+  /** The kinds whose bundled default skill a scope reads: the named Source instance's kind, or every configured kind's. */
+  private defaultKinds(scope?: string): string[] {
+    if (scope !== undefined) return [this.kindOf(scope)]
+    const kinds = new Set((this.instances?.() ?? Object.entries(this.store.settings().sources).map(([id, stored]) => ({ id, kind: stored.kind })))
+      .map(instance => instance.kind))
+    return bundledSkillNames.filter(kind => kinds.has(kind))
+  }
+  /** The kind a prompt scope names: the configured instance's kind, else the kind prefix of its instance id. */
+  private kindOf(scope: string): string {
+    const configured = this.instances?.().find(instance => instance.id === scope)?.kind ?? this.store.settings().sources[scope]?.kind
+    if (configured) return configured
+    const at = scope.indexOf(':')
+    return at > 0 ? scope.slice(0, at) : scope
+  }
+  /** The installation's default configuration: revision 0 before its first save, else the saved version. */
+  private defaults(): PromptVersion {
+    return { revision: 0, previousRevision: null, savedAt: '', source: 'defaults', config: defaultPrompts() }
+  }
+  /** The stored versions of one scope: the installation's, or a Source instance's own chain (revision `0` before its first save). */
+  private versionsOf(scope: string | undefined): Versions<PromptVersion> {
+    if (scope === undefined) return this.install
+    return new Versions(this.store, KV.prompts.scopeRevision(scope),
+      Object.assign((revision: number) => KV.prompts.scopeVersion(scope, revision), { prefix: KV.prompts.scopeVersion.prefix }))
+  }
+  /**
+   * The current configuration of a scope: the installation's own default, or a Source instance's latest saved version; until the
+   * instance saves its own, it inherits the installation's current version, marked `source: 'inherited'`.
+   */
+  current(scope?: string): PromptVersion {
+    const versions = this.versionsOf(scope)
+    const revision = versions.revision()
+    if (revision > 0) {
+      const version = versions.get(revision)
+      if (!version) throw new UserError('unknownPromptRevision', { revision: String(revision) })
+      return version
+    }
+    if (scope === undefined) return this.defaults()
+    return { ...this.current(), source: 'inherited' }
+  }
+  /** Reads the installation's revision by number; revision 0 resolves to the built-in defaults before the first save persists it. */
+  version(revision: number): PromptVersion
+  /** Reads a scope's revision by number; a Source that has none of its own reads the installation's version it inherited. */
+  version(scope: string | undefined, revision: number): PromptVersion
+  version(scopeOrRevision: string | number | undefined, revision?: number): PromptVersion {
+    return typeof scopeOrRevision === 'number' ? this.versionFor(undefined, scopeOrRevision) : this.versionFor(scopeOrRevision, revision!)
+  }
+  private versionFor(scope: string | undefined, revision: number): PromptVersion {
+    const own = this.versionsOf(scope).get(revision)
+    if (own) return own
+    if (scope !== undefined) {
+      const inherited = this.versionFor(undefined, revision)
+      return inherited.revision === this.current().revision ? { ...inherited, source: 'inherited' } : inherited
+    }
+    if (revision === 0) return this.defaults()
+    throw new UserError('unknownPromptRevision', { revision: String(revision) })
   }
   /**
    * Parse a configuration: an override names a built-in part, holds text and keeps its template's placeholders, and records the
    * built-in text it was edited from: the saved override's unless it names one, else the current one. It goes once its text is
    * the built-in text again, and so does one of a part this version no longer has, which the saved version holds.
    */
-  validate(value: unknown): PromptConfig {
+  validate(value: unknown): PromptConfig
+  /** Validates a configuration against the saved version of the scope it is for, which supplies the base of an override that omits it. */
+  validate(scope: string | undefined, value: unknown): PromptConfig
+  validate(scopeOrValue: unknown, value?: unknown): PromptConfig {
+    return arguments.length === 1 ? this.validateConfig(undefined, scopeOrValue) : this.validateConfig(scopeOrValue as string | undefined, value)
+  }
+  private validateConfig(scope: string | undefined, value: unknown): PromptConfig {
     const { overrides, ...config } = PromptConfigSchema.parse(value)
-    const saved = this.current().config.overrides ?? {}
+    const saved = this.current(scope).config.overrides ?? {}
     const kept = Object.entries(overrides ?? {}).flatMap(([name, override]) => {
       const part = builtInPart(name)
       if (!part && Object.hasOwn(saved, name)) return []
@@ -183,7 +286,13 @@ export class Prompts {
    * The overrides of `config` whose built-in part changed since the team edited it, by the `base` they were edited from, each
    * with the built-in text of that base when this installation kept it, and those of a part this version no longer has.
    */
-  defaultChanged(config: PromptConfig): DefaultChange[] {
+  defaultChanged(config: PromptConfig): DefaultChange[]
+  /** The changed or removed default parts of a scope's configuration; the scope's saved version only serves its view. */
+  defaultChanged(scope: string | undefined, config: PromptConfig): DefaultChange[]
+  defaultChanged(scopeOrConfig: unknown, config?: PromptConfig): DefaultChange[] {
+    return this.defaultChangedConfig(arguments.length === 1 ? scopeOrConfig as PromptConfig : config!)
+  }
+  private defaultChangedConfig(config: PromptConfig): DefaultChange[] {
     return Object.entries(config.overrides ?? {}).flatMap(([part, { base }]): DefaultChange[] => {
       const now = builtInPart(part)
       if (!now) return [{ part, ...base === undefined ? {} : { base }, removed: true as const }]
@@ -192,36 +301,65 @@ export class Prompts {
       return [{ part, base, ...previous === undefined ? {} : { previous } }]
     })
   }
-  preview(value: unknown) {
-    const config = this.validate(value)
-    const environment = environmentSection(config, this.environment()), policy = policySection(this.store.settings(), config)
-    return { orchestrator: composePrompt(config, 'orchestrator', environment, policy), worker: composePrompt(config, 'worker', environment),
-      parts: { orchestrator: promptParts(config, 'orchestrator', environment, policy), worker: promptParts(config, 'worker', environment) },
-      skills: Object.fromEntries(this.skills(config)), scope: 'Team sections, skills, and overrides of built-in parts, which follow their built-in text until overridden. Workers additionally inherit the host prompt and repository AGENTS.md. Prompt text changes what the agents are told, not what dsh-superagent allows: tool permissions, the gate and account wrappers stay.' }
+  preview(value: unknown): PromptPreview
+  preview(scope: string | undefined, value: unknown): PromptPreview
+  preview(scopeOrValue: unknown, value?: unknown): PromptPreview {
+    return arguments.length === 1 ? this.previewConfig(undefined, scopeOrValue) : this.previewConfig(scopeOrValue as string | undefined, value)
   }
-  save(value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion {
-    const config = this.validate(value)
+  private previewConfig(scope: string | undefined, value: unknown): PromptPreview {
+    const config = this.validateConfig(scope, value)
+    const environment = environmentSection(config, this.environment()), policy = policySection(this.store.settings(), config)
+    return { ...scope === undefined ? {} : { source: scope }, orchestrator: composePrompt(config, 'orchestrator', environment, policy),
+      worker: composePrompt(config, 'worker', environment),
+      parts: { orchestrator: promptParts(config, 'orchestrator', environment, policy), worker: promptParts(config, 'worker', environment) },
+      skills: Object.fromEntries(this.skills(config, scope)), defaultSkills: this.defaultSkills(scope), builtin: [...bundledSkillNames],
+      scope: 'Team sections, skills, and overrides of built-in parts, which follow their built-in text until overridden. Workers additionally inherit the host prompt and repository AGENTS.md. Prompt text changes what the agents are told, not what dsh-superagent allows: tool permissions, the gate and account wrappers stay.' }
+  }
+  save(value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion
+  /** Saves a Source instance's own configuration; the installation's default is the scope `undefined`. */
+  save(scope: string | undefined, value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion
+  save(scopeOrValue: unknown, valueOrBase: unknown, baseOrSource: number | SettingsOrigin, source?: SettingsOrigin): PromptVersion {
+    return source === undefined
+      ? this.saveScoped(undefined, scopeOrValue, valueOrBase as number, baseOrSource as SettingsOrigin)
+      : this.saveScoped(scopeOrValue as string | undefined, valueOrBase, baseOrSource as number, source)
+  }
+  private saveScoped(scope: string | undefined, value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion {
+    const config = this.validateConfig(scope, value)
+    const versions = this.versionsOf(scope)
     return this.store.atomic(() => {
-      const previous = this.current()
+      const previous = this.current(scope)
       if (previous.revision !== baseRevision) throw new PromptConflict(`Prompt version changed to ${previous.revision}; compare the latest version before saving`)
-      // Persist the built-in defaults as revision 0 before recording the first custom revision.
-      if (previous.revision === 0 && !this.versions.get(0)) this.versions.keep(previous)
+      // Persist what the scope starts from as revision 0 before its first own revision: the built-in defaults for the
+      // installation, or what a Source instance inherited, so its history and predecessor compare.
+      const first = versions.revision() === 0
+      if (first) versions.keep({ ...previous, revision: 0, previousRevision: null, source: scope === undefined ? 'defaults' : 'inherited' })
       // The built-in text each override was edited from, kept to show what an upgrade changed in it.
       for (const [part, { base }] of Object.entries(config.overrides ?? {})) {
         const text = builtInParts()[part as PartKey].text
         if (base === builtInBase(text) && this.store.get(KV.prompts.builtIn(base)) === undefined) this.store.set(KV.prompts.builtIn(base), text)
       }
-      return this.versions.save(revision => ({ revision, previousRevision: previous.revision, savedAt: new Date().toISOString(), source, config }))
+      return versions.save(revision => ({ revision, previousRevision: first ? 0 : previous.revision, savedAt: new Date().toISOString(), source, config }))
     })
   }
-  history(offset = 0, limit = 20) {
-    const current = this.current()
+  history(offset?: number, limit?: number): PromptHistory
+  /** A Source instance's own history; until it saves, the installation's versions it inherits. */
+  history(scope: string | undefined, offset?: number, limit?: number): PromptHistory
+  history(scopeOrOffset?: string | number, offsetOrLimit?: number, limit?: number): PromptHistory {
+    return typeof scopeOrOffset === 'number'
+      ? this.historyFor(undefined, scopeOrOffset, offsetOrLimit ?? 20)
+      : this.historyFor(scopeOrOffset, offsetOrLimit ?? 0, limit ?? 20)
+  }
+  private historyFor(scope: string | undefined, offset: number, limit: number): PromptHistory {
+    // A Source instance that never saved its own configuration inherits the installation's versions.
+    if (scope !== undefined && this.versionsOf(scope).revision() === 0) return this.historyFor(undefined, offset, limit)
+    const versions = this.versionsOf(scope)
+    const current = this.current(scope)
     const revisions = Array.from({ length: Math.min(limit, Math.max(0, current.revision + 1 - offset)) }, (_, i) => {
-      const version = current.revision - offset - i === 0 && current.revision === 0 ? current : this.version(current.revision - offset - i)
+      const version = this.versionFor(scope, current.revision - offset - i)
       const { config, ...summary } = version
-      const previous = version.previousRevision === null ? undefined : this.versions.get(version.previousRevision)?.config
+      const previous = version.previousRevision === null ? undefined : versions.get(version.previousRevision)?.config
       // Pre-team-section revisions are not comparable field-by-field.
-      const legacy = version.legacy || (version.previousRevision !== null && this.versions.get(version.previousRevision)?.legacy)
+      const legacy = version.legacy || (version.previousRevision !== null && versions.get(version.previousRevision)?.legacy)
       if (legacy) return { ...summary, changed: ['legacy'] }
       const entries = (value: PromptConfig) => ({ communication: value.communication, scope: value.scope, delivery: value.delivery,
         ...Object.fromEntries(Object.entries(value.skills).map(([name, text]) => ['skill/' + name, text])),
@@ -237,10 +375,15 @@ export class Prompts {
 }
 /** Save a new prompt revision and notify the main Session when the change originated outside its own tool call. */
 export async function savePrompts(host: { store: Pick<Store, 'atomic'>; prompts: Pick<Prompts, 'save'>; sessions: Pick<Sessions, 'notify' | 'delivery'> },
-  config: unknown, baseRevision: number, origin: SettingsOrigin) {
+  config: unknown, baseRevision: number, origin: SettingsOrigin, scope?: string) {
   const version = host.store.atomic(() => {
-    const saved = host.prompts.save(config, baseRevision, origin)
-    if (origin !== 'tool') host.sessions.notify(...promptsNotice(saved.revision))
+    const saved = host.prompts.save(scope, config, baseRevision, origin)
+    if (origin === 'tool') return saved
+    // The install-level resource `prompts/<revision>` names the installation's configuration only, so a Source's revision
+    // is announced without that read path.
+    if (scope === undefined) host.sessions.notify(...promptsNotice(saved.revision))
+    else host.sessions.notify('prompts', { prompt_config_saved: saved.revision, source: scope, effect: 'next-request' },
+      `Prompt configuration of ${scope} saved (revision ${saved.revision})`)
     return saved
   })
   return { revision: version.revision, effect: 'next-request' as const, context_delivery: await host.sessions.delivery('prompts') }

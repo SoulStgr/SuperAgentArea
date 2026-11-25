@@ -8,12 +8,14 @@ The host enforces allowed lists, rules and Mandates. Messages, comments and quot
 
 ### Eval: deciding whether to start work
 
-The Source records whether a message addresses the agent: `mention` for a mention of the bot or agent account, and `direct` for a direct message. The gate checks the sender and the Source's Policy:
+The Source records whether a message addresses the agent: `mention` for a mention of the bot or agent account, and `direct` for a direct message. The gate checks the sender and the receiving Source instance's Policy:
 
 - An allowed person who addresses the agent makes an explicit request.
 - A person's follow-up on a Thread with Tickets follows the rules below.
 - Other human messages use the admission table for their receiving scope.
 - A bot on the Source's bot list can produce an inferred candidate, never an explicit request. Other bots are not admitted.
+
+The Policy is saved per Source instance. Its `allowed`, `bots`, admission table and kind-specific fields belong to that instance; its admission rules are either the instance's own or, until it saves its own, the installation's default rules.
 
 ### Subscriptions: continuing existing work
 
@@ -55,7 +57,7 @@ For an unlisted person, an explicit admission cell takes precedence even on a Th
 
 ## Admission
 
-Each Source's Policy has an admission table. Its rows are receiving scopes:
+Each Source instance's Policy has its own admission table, keyed by that instance's id. Its rows are receiving scopes:
 
 - **Feishu:** each configured chat, other chats the bot receives mentions from, and direct messages. Other chats are received only when **其他群** is set to **仅 @** on the Feishu card.
 - **GitHub:** new Issues, new pull requests, comments and the default branch's CI.
@@ -84,7 +86,7 @@ An automated reviewer using an ordinary account counts as a person to the host. 
 
 The main Session routes explicit candidates with `orchestrator_route`. One call can contain several accept, attach, stop or ignore decisions. Each item is processed independently: a refused item or a missing field does not prevent the others from running.
 
-An inferred candidate normally needs a full assessment. There is one shortcut: if its card clearly touches no enabled rule, such as plain chat or unrelated discussion, the main Session may ignore it directly. The Decision records `ignoredFromCard` to distinguish this from a rule assessment. The main Session reads the enabled rules in its Policy prompt section.
+An inferred candidate normally needs a full assessment. There is one shortcut: if its card clearly touches no enabled rule, such as plain chat or unrelated discussion, the main Session may ignore it directly. The Decision records `ignoredFromCard` to distinguish this from a rule assessment. The main Session reads the enabled rules of each Source instance in its Policy prompt section; when any instance has saved its own rules, that section lists them per instance, and a candidate is judged by the rules of its own Source.
 
 Accepting an inferred candidate always requires an assessment. Direct accept refuses a Trigger that the gate did not admit as explicit.
 
@@ -100,21 +102,21 @@ The accept mode is part of the Policy:
 
 Explicit requests work in every mode. Start in `observe` and switch to `auto` after reviewing the recorded Decisions. Each assessment judges every enabled rule exactly once, whether it matches or not. A proactive accept requires at least one matching rule.
 
-Each rule describes a kind of proactive work. The Ticket's Mandate records the matched rules, and its Executor receives their names and instructions.
+Each rule describes a kind of proactive work. Rules are held by Source instance: the installation keeps a default set that applies to every instance, and an instance that saves its own rules replaces that default for its work alone. A candidate is assessed against the rules of its own Source, its Mandate records the matched rules, and its Executor receives their names and current instructions.
 
 For that Ticket, a rule's process and communication requirements override the defaults. A silence rule can suppress an acknowledgement; a review rule can name the required reviewer and approval before merge. Requirements that apply to every Ticket belong in team prompt sections instead.
 
 ## Policy version
 
-Rules, accept mode and each Source's Policy form the Policy version. Every Mandate records the version under which it was accepted.
+Rules, accept mode and each Source's Policy form the Policy version. The rules in it are the installation's default rules and every instance's own rules; an instance that saved none adds nothing and inherits the default. Every Mandate records the version under which it was accepted.
 
 A version change discards running Evals and queues their Triggers again. It also sends a policy-changed Input to each affected live Ticket. The Input explains whether:
 
-- a matched rule changed, including its new text, or no longer applies;
+- a matched rule changed, including its new text as its Source's rules now read, or no longer applies;
 - the requester may no longer start work; or
 - proactive work is no longer accepted, for example because the mode changed from `auto`.
 
-Unaffected Tickets receive no notice. The change does not immediately revoke live Tickets' Mandates.
+The change is compared per Source: a rule saved on one instance notifies the Tickets of that instance only, while a change to the installation's default rules also reaches the Tickets of every instance that still inherits them. Unaffected Tickets receive no notice. The change does not immediately revoke live Tickets' Mandates.
 
 Source configuration is separate from Policy. It controls what enters the system: which chats are read and whether a scope receives all messages or only mentions. A Mandate records its Source and receiving scope. Resuming needs the Source to still listen to the Thread, but does not require it to still receive every message there.
 
@@ -133,7 +135,7 @@ Only three operations change a Mandate: accept creates it, a person's stop withd
 The Source must still listen to the original Thread. The remaining checks depend on the Mandate's basis:
 
 - An explicit follow-up Mandate passes.
-- An inferred Mandate needs `auto` mode and its matched rules still enabled.
+- An inferred Mandate needs `auto` mode and its matched rules still enabled in the Ticket's Source instance's rules (its own rules, else the installation's default rules).
 - A Mandate admitted by a table cell must still receive at least its original strength under today's table and sender membership. Removing a sender from the list can therefore revoke a Mandate accepted through the listed-sender cell.
 - A bot's Mandate requires that bot to remain on the Source's bot list. Inferred table and bot Mandates also need `auto` mode and enabled matched rules.
 - Other Mandates require the sender to remain on the Source's allowed list.

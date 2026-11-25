@@ -46,8 +46,8 @@ export function ownersOf(store: Pick<Store, 'tickets' | 'threads' | 'triggers'>)
 /** One request's reads, each read once: the Threads each Ticket subscribes to, the rules by id, and the senders' names. */
 export interface Snapshot extends ViewHost {
   threadsOf(ticketId: string): Thread[]
-  /** Current rule name, falling back to `id` once a rule has been removed. */
-  rule(id: string): { id: string; name: string }
+  /** Current rule name, falling back to `id` once a rule has been removed; `source` reads that instance's own rules first. */
+  rule(id: string, source?: string): { id: string; name: string }
   /** Resolves sender display name from policy allowlists/bot lists, falling back to the Source kind's unnamed label or raw id. */
   actor(actor: ActorRef, human?: boolean): ActorView
   /** The owners of follow-ups (see `ownersOf`). */
@@ -65,7 +65,11 @@ export function snapshot(host: ViewHost): Snapshot {
     return subscribed.get(ticketId) ?? []
   }
   const settings = store.settings()
-  const rules = new Map(settings.policy.rules.map(rule => [rule.id, rule.name]))
+  const names = (rules: readonly { id: string; name: string }[]) => new Map(rules.map(rule => [rule.id, rule.name]))
+  const rules = names(settings.policy.rules)
+  // A Source instance may override the installation's rules; a name resolves from the instance's rules first.
+  const bySource = new Map(Object.entries(settings.policy.sources).flatMap(([id, part]) => part.rules === undefined ? []
+    : [[id, names(part.rules)] as const]))
   const named = (name: string) => ({ zh: name, en: name })
   const actor = ({ source, id }: ActorRef, human?: boolean): ActorView => {
     if (!id) return { source, id }
@@ -74,7 +78,8 @@ export function snapshot(host: ViewHost): Snapshot {
     const unnamed = sources.kind(source)?.policy?.unnamed
     return { source, id, name: unnamed ? human === false ? unnamed.bot : unnamed.person : named(id) }
   }
-  return { ...host, threadsOf, rule: id => ({ id, name: rules.get(id) ?? id }), actor, owners: ownersOf(store) }
+  return { ...host, threadsOf, rule: (id, source) => ({ id, name: (source === undefined ? undefined : bySource.get(source)?.get(id))
+    ?? rules.get(id) ?? id }), actor, owners: ownersOf(store) }
 }
 
 /**
@@ -208,12 +213,15 @@ export function decisionView(view: Snapshot, decision: Decision) {
   const thread = store.threads.get(decision.threadKey)
   const texts = decision.triggerIds.flatMap(id => { const trigger = store.triggers.get(id); return trigger ? [preview(trigger.text)] : [] })
   const audit = AuditSchema.parse(decision.audit ?? {})
+  // The rules a Decision judged are the rules of the Source instance its Trigger came from.
+  const source = decision.ticketId ? store.tickets.get(decision.ticketId)?.sourceId
+    : decision.triggerIds.flatMap(id => store.triggers.get(id)?.source ?? [])[0]
   // Fall back to `matches` for assessments recorded by older versions.
   const judged = audit.rule_assessments ?? audit.matches?.map(match => ({ ...match, matched: true })) ?? []
   return { id: decision.id, kind: decision.kind, outcome: outcomeOf(decision), reason: decision.reason, at: decision.at,
     strength: decision.strength, policyVersion: decision.policyVersion, ticketId: decision.ticketId, triggerIds: decision.triggerIds,
     thread: decision.threadKey,
-    rules: judged.map(rule => ({ ...view.rule(rule.rule_id), matched: rule.matched, reason: rule.reason })),
+    rules: judged.map(rule => ({ ...view.rule(rule.rule_id, source), matched: rule.matched, reason: rule.reason })),
     ...audit.direction ? { direction: audit.direction } : {},
     ...thread ? { threadTitle: threadTitle(store, thread) } : {}, preview: texts.join(' / '),
     ticketTitle: decision.ticketId ? store.tickets.get(decision.ticketId)?.title : undefined }

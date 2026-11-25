@@ -4,7 +4,9 @@ import { UserError } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
-import { startRuntime, type Host } from './fixtures/host.ts'
+import { policyHistory } from '../src/app/settings-history.ts'
+import { policyVersion } from '../src/policy.ts'
+import { CHAT, MEMBER, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
 afterEach(async () => { await h?.stop(); h = undefined })
@@ -14,6 +16,11 @@ function deferred<T>() {
   return { promise, resolve }
 }
 const model = { provider: 'worker-provider', model: 'worker-model' }
+/** Wait for the Policy syncs the Runtime runs as it starts, so a test's own save cannot race them. */
+async function settled(host: Host) {
+  await vi.waitFor(() => expect(host.runtime.health['sync:feishu']).toMatchObject({ state: 'ready' }))
+  await host.runtime.idle()
+}
 
 it('refuses a save of a block that another save changed during its model or account check, and saves nothing of it', async () => {
   h = await startRuntime()
@@ -98,4 +105,133 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   await expect(settings.sync('feishu')).rejects.toThrow(new UserError('nothingToSync', { source: 'feishu' }))
   vi.mocked(Setup.prototype.configured).mockRestore()
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
+})
+
+it('saves one Source instance\'s own Policy part under its own block revision, keeping the kind fields and admission table', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { settings, store } = h.runtime
+  const initial = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  expect(initial.value).toMatchObject({ allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT, admission: {} })
+  expect(initial.value.rules).toBeUndefined()
+  const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const policyRevision = store.blockRevision('policy'), defaultRules = store.settings().policy.rules
+  const saved = await settings.save('policy:feishu', { ...initial.value, rules }, initial.revision, 'panel')
+  expect(saved).toMatchObject({ saved: true, policy_changed: true, restarting: false })
+  expect(store.settings().policy.sources.feishu).toMatchObject({ rules, allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT })
+  expect(store.blockRevision('policy:feishu')).toBe(initial.revision + 1)
+  // The installation's own `policy` block and its default rules are untouched.
+  expect([store.blockRevision('policy'), store.settings().policy.rules]).toEqual([policyRevision, defaultRules])
+  // A save against the old revision is refused as stale, while the stored part and its revision keep the last save.
+  await expect(settings.save('policy:feishu', { ...initial.value, rules: [] }, initial.revision, 'panel')).rejects.toThrow(SettingsConflict)
+  expect(store.settings().policy.sources.feishu!.rules).toEqual(rules)
+  expect(settings.block('policy:feishu')).toMatchObject({ revision: initial.revision + 1,
+    value: { rules, allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT } })
+})
+
+it('summarizes each Source\'s effective rules in the settings view, marking the ones that inherit the default rules', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { settings, store } = h.runtime
+  const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const block = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  await settings.save('policy:feishu', { ...block.value, rules }, block.revision, 'panel')
+  const view = settings.view()
+  const summary = (rule: { id: string; name: string; enabled: boolean }) => ({ id: rule.id, name: rule.name, enabled: rule.enabled })
+  expect(view.sources.find(item => item.id === 'feishu')).toMatchObject({ policy: { revision: block.revision + 1, inherited: false,
+    rules: rules.map(summary), read: 'settings/policy:feishu' } })
+  // A Source without its own rules inherits the installation's default ones.
+  const github = view.sources.find(item => item.id === 'github')!
+  expect(github.policy).toEqual({ revision: store.blockRevision('policy:github'), inherited: true,
+    rules: store.settings().policy.rules.map(summary), read: 'settings/policy:github' })
+})
+
+it('keeps a Source\'s own rules through a save of the installation\'s Policy block, and validates a Source part against its kind', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { settings, store } = h.runtime
+  const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const block = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  await settings.save('policy:feishu', { ...block.value, rules }, block.revision, 'panel')
+  const policy = store.settings().policy
+  const design = { id: 'design', name: 'Design', enabled: true, instruction: 'Adjust design.' }
+  await settings.save('policy', { ...policy, rules: [...policy.rules, design] }, store.blockRevision('policy'), 'panel')
+  expect(store.settings().policy).toMatchObject({ rules: [...policy.rules, design], sources: { feishu: { rules }, github: { allowed: [{ id: 'alice' }] } } })
+  expect((settings.block('policy:github') as { value: Record<string, unknown> }).value.rules).toBeUndefined()
+  // A kind-specific field is validated by the kind, and duplicate rule ids by the Policy's rule schema.
+  const revision = (settings.block('policy:feishu') as { revision: number }).revision
+  await expect(settings.save('policy:feishu', { ...block.value, syncChat: 'not a chat' }, revision, 'panel')).rejects.toThrow()
+  await expect(settings.save('policy:feishu', { ...block.value, rules: [...rules, { ...rules[0]!, name: 'Again' }] }, revision, 'panel')).rejects.toThrow()
+  await expect(settings.save('policy:missing', { allowed: [], admission: {} }, 0, 'panel'))
+    .rejects.toThrow(new UserError('unknownSource', { source: 'missing' }))
+})
+
+it('syncs a Source\'s roster into its own Policy part without dropping its own rules', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { settings, store } = h.runtime
+  const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const block = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  await settings.save('policy:feishu', { ...block.value, rules }, block.revision, 'panel')
+  const before = store.blockRevision('policy:feishu'), policyRevision = store.blockRevision('policy')
+  vi.mocked(Commands.prototype.lark).mockResolvedValueOnce({ users: [{ member_id: MEMBER, name: 'Alice' }, { member_id: 'ou_new', name: 'New' }], has_more: false })
+  const synced = await settings.sync('feishu')
+  expect(synced).toMatchObject({ rules, allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_new', name: 'New' }] })
+  expect(store.settings().policy.sources.feishu).toMatchObject({ rules, allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_new', name: 'New' }] })
+  // The synced part is its own block revision; the installation's Policy block is not rewritten.
+  expect([store.blockRevision('policy:feishu'), store.blockRevision('policy')]).toEqual([before + 1, policyRevision])
+})
+
+it('shows a Source\'s own rule changes in the policy history without changing the global rule history', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { settings, store } = h.runtime
+  const history = () => policyHistory(store, h!.runtime.sources, policyVersion(store.settings()))
+  const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const block = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  await settings.save('policy:feishu', { ...block.value, rules }, block.revision, 'panel')
+  expect(history().items[0]).toMatchObject({ block: 'policy:feishu' })
+  // A Source that starts overriding the default rules reports the rules its work gains and loses.
+  expect(history().items[0]!.changes).toEqual(expect.arrayContaining([
+    { code: 'ruleAdded', name: 'Docs', source: 'feishu', part: true },
+    { code: 'ruleRemoved', name: 'Copy fixes', source: 'feishu', part: true },
+    { code: 'ruleRemoved', name: 'Visual fixes', source: 'feishu', part: true }]))
+  const changed = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  await settings.save('policy:feishu', { ...changed.value, rules: [{ ...rules[0]!, instruction: 'Fix docs only.', enabled: false }] }, changed.revision, 'panel')
+  expect(history().items[0]!.changes).toEqual(expect.arrayContaining([
+    { code: 'ruleInstruction', name: 'Docs', source: 'feishu', part: true },
+    { code: 'ruleDisabled', name: 'Docs', source: 'feishu', part: true }]))
+  const emptied = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
+  await settings.save('policy:feishu', { ...emptied.value, rules: [] }, emptied.revision, 'panel')
+  expect(history().items[0]!.changes).toEqual(expect.arrayContaining([{ code: 'ruleRemoved', name: 'Docs', source: 'feishu', part: true }]))
+  // The installation's own rule history still reports its rules by name alone.
+  const policy = store.settings().policy
+  const design = { id: 'design', name: 'Design', enabled: true, instruction: 'Adjust design.' }
+  await settings.save('policy', { ...policy, rules: [...policy.rules, design] }, store.blockRevision('policy'), 'panel')
+  const changes = history().items[0]!.changes!
+  expect(changes).toEqual(expect.arrayContaining([{ code: 'ruleAdded', name: 'Design' }]))
+  expect(changes.filter(change => change.source === undefined && change.code === 'ruleAdded')).toEqual([{ code: 'ruleAdded', name: 'Design' }])
+})
+
+it('saves a Source Policy part through the panel settings route, and the settings view reports its rules and inheritance', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { store } = h.runtime
+  type SettingsBody = { sources: { id: string; policy: { revision: number; inherited: boolean; value: Record<string, unknown>;
+    rules: { id: string; name: string; enabled: boolean }[] } }[] }
+  const read = async () => (await h!.api('GET', 'settings')).body as SettingsBody
+  const feishuOf = (body: SettingsBody) => body.sources.find(item => item.id === 'feishu')!
+  const before = feishuOf(await read())
+  expect(before.policy).toMatchObject({ inherited: true })
+  expect(before.policy.rules.map(rule => rule.id)).toEqual(store.settings().policy.rules.map(rule => rule.id))
+  const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const policyRevision = store.blockRevision('policy'), defaultRules = store.settings().policy.rules
+  const saved = await h.api('PUT', 'settings/policy:feishu', { value: { ...before.policy.value, rules }, revision: before.policy.revision })
+  expect(saved).toMatchObject({ status: 200, body: { saved: true, policy_changed: true } })
+  const after = feishuOf(await read())
+  expect(after.policy).toMatchObject({ revision: before.policy.revision + 1, inherited: false,
+    rules: rules.map(({ id, name, enabled }) => ({ id, name, enabled })) })
+  expect(store.settings().policy.sources.feishu!.rules).toEqual(rules)
+  // The installation's own Policy block and its default rules stay as they were.
+  expect([store.blockRevision('policy'), store.settings().policy.rules]).toEqual([policyRevision, defaultRules])
 })

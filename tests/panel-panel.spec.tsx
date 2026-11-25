@@ -43,21 +43,17 @@ it('returns to the exact page after a remount of the main panel', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
 })
 
-it('keeps six tabs, opens the Prompts and Policy pages from them, and reaches Settings through the header gear', async () => {
+it('keeps four tabs, opens each page from them, and reaches Settings through the header gear', async () => {
   await mount()
-  expect(all('.dt-tabs [role="tab"]').map(item => item.textContent)).toEqual(['概览', '工单源', '工作站', '产物', '提示词', '策略'])
-  // The Trigger, Eval, Execution and Settings tabs are gone; their pages are reached from links or the gear.
-  expect(all('.dt-tabs [role="tab"]').map(item => item.getAttribute('id'))).toEqual(['dt-tab-overview', 'dt-tab-source', 'dt-tab-workstations',
-    'dt-tab-artifacts', 'dt-tab-prompts', 'dt-tab-policy'])
-  await click(tab(zh['tab.prompts']))
-  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh['tab.prompts'])
-  await click(tab(zh['tab.policy']))
-  expect(all('.dt-policy-segments [role="tab"]').map(item => item.textContent)).toEqual([zh['policySegment.rules'], zh['policySegment.eval'],
-    zh['policySegment.decisions']])
-  // The gear opens Settings with only the Executor/environment and Deployment groups.
+  expect(all('.dt-tabs [role="tab"]').map(item => item.textContent)).toEqual(['概览', '工单源', '工作站', '产物'])
+  // The Prompt, Policy, Trigger, Eval and Execution tabs are gone; those pages are reached from links or the gear.
+  expect(all('.dt-tabs [role="tab"]').map(item => item.getAttribute('id'))).toEqual(['dt-tab-overview', 'dt-tab-source',
+    'dt-tab-workstations', 'dt-tab-artifacts'])
+  // The gear opens Settings with the Routing and Eval, Executor and Deployment groups.
   const gear = find(zh['tab.settings'], '.dt-head button')
   await click(gear)
-  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.execution'], zh['settingsGroup.deployment']])
+  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.routing'],
+    zh['settingsGroup.execution'], zh['settingsGroup.deployment']])
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
 })
 
@@ -69,25 +65,34 @@ it('reopens the last Settings group from the gear, and falls back to Execution f
   await click(tab(zh['tab.overview']))
   await click(find(zh['tab.settings'], '.dt-head button'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
-  // A route saved under a removed group opens Execution settings.
-  at({ page: 'settings', query: { group: 'prompts' } })
+  // A group that is gone falls back to Execution; Eval settings moved to Routing and Eval.
+  at({ page: 'settings', query: { group: 'gone' } })
   await remount()
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+  at({ page: 'settings', query: { group: 'eval' } })
+  await remount()
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.routing'])
 })
 
-it('restores the removed tabs\' pages from an old route, and the Policy page for an old Eval route', async () => {
+it('restores the pages of removed tabs and routes: Prompts and Policy open the Sources, the old Eval opens the Decisions', async () => {
   at({ page: 'trigger', id: 'feishu:oc_1:om_root' })
   await mount()
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('这个文案好奇怪')
   expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
+  // The Prompts page is gone: each Source owns its prompts now, so the Sources page opens.
+  at({ page: 'prompts' })
+  await remount()
+  expect(tab(zh['tab.source']).getAttribute('aria-selected')).toBe('true')
+  // The Policy page's rules moved to each Source, so an old Policy route opens the Sources too.
+  at({ page: 'policy', query: { segment: 'rules', version: 'abcdef12' } })
+  await remount()
+  expect(tab(zh['tab.source']).getAttribute('aria-selected')).toBe('true')
+  // The old Eval page's Decisions keep their page, which has no tab of its own.
   at({ page: 'eval', query: { filter: 'stop', window: '24h' } })
   await remount()
-  expect(tab(zh['tab.policy']).getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.dt-policy-segments [aria-selected="true"]')?.textContent).toBe(zh['policySegment.decisions'])
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.decisionsTitle)
+  expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
   expect(server.requests.some(request => request.path === 'decisions?limit=30&kind=stop&window=24h')).toBe(true)
-  at({ page: 'settings', query: { group: 'source' } })
-  await remount()
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
 })
 
 it('navigates to a workstation page from its card section, and remembers the section', async () => {
@@ -106,7 +111,7 @@ it('navigates to a workstation page from its card section, and remembers the sec
 
 it('shows domain terms in the interface language only and lists both languages in the (?) glossary', async () => {
   await mount(en)
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts', 'Prompts', 'Policy & Eval'])
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts'])
   await click('Glossary')
   const dialog = document.querySelector('[role="dialog"]')!
   const row = [...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Ticket'))!

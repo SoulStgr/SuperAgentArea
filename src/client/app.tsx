@@ -4,19 +4,18 @@ import type { SearchView } from './api.ts'
 import { ArtifactsPage } from './artifacts.tsx'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
-import { PolicyPage } from './eval.tsx'
+import { DecisionsPage } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
-import { PromptsPage } from './prompts.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { ProjectPage } from './project.tsx'
 import type { ProjectSession } from '../navigation.ts'
 import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
-import { SourcePage } from './source.tsx'
+import { GovernancePage, SourcePage } from './source.tsx'
 import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers } from './text.ts'
 import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
@@ -157,13 +156,13 @@ function Pages({ route, openTab, openSettings, deploymentForm }: { route: Route;
   const page = (() => {
     switch (route.page) {
       case 'overview': return <OverviewPage />
-      case 'source': return route.id !== undefined ? <SourcePage key={route.id} id={route.id} /> : <SourcePage />
+      case 'source': return route.id !== undefined ? <SourcePage key={route.id} id={route.id}
+        segment={route.query?.segment ?? 'overview'} /> : <SourcePage />
+      case 'governance': return <GovernancePage key={route.id} id={route.id} part={route.query?.part ?? 'policy'} />
       case 'workstations': return route.id !== undefined ? <ProjectPage key={route.id} id={route.id} segment={route.query?.segment} />
         : <ProjectPage />
       case 'artifacts': return <ArtifactsPage key={route.id ?? 'index'} id={route.id} query={route.id === undefined ? route.query : undefined} />
-      case 'prompts': return <PromptsPage />
-      case 'policy': return <PolicyPage segment={route.query?.segment ?? 'rules'} filter={route.query?.filter ?? 'work'}
-        window={route.query?.window} version={route.query?.version} paused={!!state?.paused} />
+      case 'decisions': return <DecisionsPage filter={route.query?.filter ?? 'work'} window={route.query?.window} paused={!!state?.paused} />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />

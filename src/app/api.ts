@@ -35,6 +35,8 @@ export interface ProjectPatch { name?: string; aliases?: string[]; archived?: bo
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
+/** One Source instance's prompt configuration: the shared prompt view plus the instance it belongs to and its default skills. */
+export type SourcePromptsView = PromptsView & { source: string; defaultSkills: { name: string; description: string }[] }
 
 export interface Api {
   'GET state': { response: StateView }
@@ -77,6 +79,10 @@ export interface Api {
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }
   'POST prompts/preview': { body: PromptConfig; response: ReturnType<Prompts['preview']> }
+  /** One Source instance's own prompt configuration, which its Tickets' worker Sessions read. */
+  'GET sources/:id/prompts': { query?: { revision?: number; offset?: number }; response: SourcePromptsView }
+  'PUT sources/:id/prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }
+  'POST sources/:id/prompts/preview': { body: PromptConfig; response: ReturnType<Prompts['preview']> }
 }
 type Path<K> = K extends `${string} ${infer P}` ? P : never
 type Params<P> = P extends `${string}:${infer Name}/${infer Rest}` ? Record<Name, string> & Params<Rest>
