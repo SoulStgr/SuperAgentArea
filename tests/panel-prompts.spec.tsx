@@ -6,6 +6,8 @@ import { expect, it } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 import { server, promptVersion, type PromptScope } from './fixtures/panel-server.ts'
+import { usePanel, mount, remount, settle, all, tab, click, type, text, field, at } from './fixtures/panel.tsx'
+import { server, promptVersion, type PromptScope } from './fixtures/panel-server.ts'
 
 usePanel()
 const governancePart = (name: string) => all('.dt-governance-parts [role="tab"]').find(item => item.textContent === name)!
@@ -22,6 +24,7 @@ it('lists the team sections and the built-in parts without source skill parts, e
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
   await openPrompts()
+  await openPrompts()
   const names = all('.dt-prompt-nav .dt-nav-item > span').map(item => item.textContent)
   expect(names.slice(0, 3)).toEqual(['沟通方式', '工单范围', '交付要求'])
   const parts = Object.keys(builtInParts())
@@ -37,6 +40,8 @@ it('lists the team sections and the built-in parts without source skill parts, e
   // The full prompt shows every part, team or built in, as editable, in the order the Session reads them.
   const shown = all('.dt-preview-part').map(part => [part.querySelector('b')?.textContent, part.hasAttribute('data-editable')])
   expect(shown.slice(0, 5)).toEqual([['共享约定', true], ['主 Session 角色', true], ['沟通方式', true], ['工单范围', true], ['交付要求', true]])
+  const shown = all('.dt-preview-part').map(part => [part.querySelector('b')?.textContent, part.hasAttribute('data-editable')])
+  expect(shown.slice(0, 5)).toEqual([['共享约定', true], ['主 Session 角色', true], ['沟通方式', true], ['工单范围', true], ['交付要求', true]])
   expect(text()).toContain('Custom communication rule')
   await click(all('.dt-preview-part').find(part => part.querySelector('b')?.textContent === '沟通方式')!.querySelector('button')!)
   await click(zh.promptResetSection)
@@ -46,7 +51,11 @@ it('lists the team sections and the built-in parts without source skill parts, e
   expect(sourceScope().current.config.communication).toBe('Second rule')
   // The save went to this Source's prompts, not to its settings or to the installation's prompts.
   expect(server.requests.some(request => request.method === 'PUT' && request.path === 'sources/feishu/prompts')).toBe(true)
+  expect(sourceScope().current.config.communication).toBe('Second rule')
+  // The save went to this Source's prompts, not to its settings or to the installation's prompts.
+  expect(server.requests.some(request => request.method === 'PUT' && request.path === 'sources/feishu/prompts')).toBe(true)
   expect(server.requests.some(request => request.path.startsWith('settings/'))).toBe(false)
+  expect(server.requests.some(request => request.method === 'PUT' && request.path === 'prompts')).toBe(false)
   expect(server.requests.some(request => request.method === 'PUT' && request.path === 'prompts')).toBe(false)
 })
 
@@ -54,13 +63,17 @@ it('keeps a conflicting prompt draft, rebases it onto the newer version and save
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
   await openPrompts()
+  await openPrompts()
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Mine')
+  server.promptScopes.feishu = { revision: 1, current: { ...promptVersion(1, { ...defaultPrompts(), scope: 'Theirs' }), source: 'panel' },
+    revisions: [{ ...promptVersion(1, { ...defaultPrompts(), scope: 'Theirs' }), changed: [] }], next_offset: null }
   server.promptScopes.feishu = { revision: 1, current: { ...promptVersion(1, { ...defaultPrompts(), scope: 'Theirs' }), source: 'panel' },
     revisions: [{ ...promptVersion(1, { ...defaultPrompts(), scope: 'Theirs' }), changed: [] }], next_offset: null }
   await click(zh.save)
   expect(document.querySelector('.dt-savebar')?.textContent).toContain('提示词已被修改到版本 1。已保留你的草稿')
   await click(zh.save)
   // The other save's section stays: the draft moved onto version 1 section by section, not as a whole.
+  expect(sourceScope().current.config).toMatchObject({ communication: 'Mine', scope: 'Theirs' })
   expect(sourceScope().current.config).toMatchObject({ communication: 'Mine', scope: 'Theirs' })
 })
 
@@ -76,7 +89,11 @@ it('shows a bundled default skill read-only in the full prompt, and adds a team 
   await click(tab(zh.promptViewFull))
   await act(async () => { const select = field<HTMLSelectElement>(zh.promptPreviewTarget); select.value = 'skill/github'
     select.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
+  await act(async () => { const select = field<HTMLSelectElement>(zh.promptPreviewTarget); select.value = 'skill/github'
+    select.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
   expect(text()).toContain('## CLI usage')
+  // A default skill is not a part of the configuration: the editor offers none of them as editable.
+  expect(all('.dt-preview-part[data-editable]')).toHaveLength(0)
   // A default skill is not a part of the configuration: the editor offers none of them as editable.
   expect(all('.dt-preview-part[data-editable]')).toHaveLength(0)
   await click(tab(zh.promptViewEdit))
@@ -95,17 +112,20 @@ it('loads all defaults into the draft from the history without saving them', asy
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
   await openPrompts()
+  await openPrompts()
   await click(tab(zh.promptViewHistory))
   const first = `版本 0 · ${zh.promptHistoryInitial} · ${zh['historySource.defaults']}`
   expect(all('.dt-row-title').map(title => title.textContent)).toContain(first)
   await click(zh.promptDefaults)
   expect(text()).toContain(zh.promptDraftFromDefaults)
   expect(server.requests.some(request => request.path === 'sources/feishu/prompts' && request.method === 'PUT')).toBe(false)
+  expect(server.requests.some(request => request.path === 'sources/feishu/prompts' && request.method === 'PUT')).toBe(false)
 })
 
 it('keeps the save bar hidden while a preview loads for an unchanged draft', async () => {
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
   await openPrompts()
   let shown = false
   const watch = new MutationObserver(() => { if (document.querySelector('.dt-savebar')) shown = true })
@@ -118,9 +138,13 @@ it('keeps the save bar hidden while a preview loads for an unchanged draft', asy
 
 it('marks team sections that differ from the defaults, and shows a draft as a diff against the saved version or the defaults', async () => {
   server.prompts.revision = 1
+  server.prompts.revision = 1
   server.prompts.current = promptVersion(1, { ...defaultPrompts(), delivery: `${defaultPrompts().delivery}\nCommit as the bot account.` })
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
+  expect(all('.dt-prompt-nav .dt-nav-item').filter(item => item.querySelector('.dt-changed-tag:not(.dt-default-tag)'))
+    .map(item => item.querySelector('span')!.firstChild?.textContent)).toEqual(['交付要求'])
   await openPrompts()
   expect(all('.dt-prompt-nav .dt-nav-item').filter(item => item.querySelector('.dt-changed-tag:not(.dt-default-tag)'))
     .map(item => item.querySelector('span')!.firstChild?.textContent)).toEqual(['交付要求'])
@@ -138,10 +162,14 @@ it('discards a prompt draft by reading the saved version again', async () => {
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
   await openPrompts()
+  await openPrompts()
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Mine')
   server.prompts.revision = 1
   server.prompts.current = promptVersion(1, { ...defaultPrompts(), communication: 'Theirs' })
+  server.prompts.revision = 1
+  server.prompts.current = promptVersion(1, { ...defaultPrompts(), communication: 'Theirs' })
   await click(zh.discard)
+  await settle()
   await settle()
   expect(field<HTMLTextAreaElement>(zh.promptBody).value).toBe('Theirs')
   expect(all('.dt-savebar')).toHaveLength(0)
@@ -150,6 +178,7 @@ it('discards a prompt draft by reading the saved version again', async () => {
 it('edits a built-in part as an override of its built-in text, marks it changed, and resets it to the built-in text', async () => {
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
   await openPrompts()
   const shared = builtInParts()['runtime/shared']!
   await click(builtInItem(zh['promptPart.runtime/shared']))
@@ -160,6 +189,7 @@ it('edits a built-in part as an override of its built-in text, marks it changed,
   await click(zh.save)
   // The override records the built-in text it was edited from.
   expect(sourceScope().current.config.overrides).toEqual({ 'runtime/shared': { text: 'Shared, the team way.', base: builtInBase(shared.text) } })
+  expect(sourceScope().current.config.overrides).toEqual({ 'runtime/shared': { text: 'Shared, the team way.', base: builtInBase(shared.text) } })
   // The full prompt reads the override in place of the built-in text, compared with the defaults.
   await click(tab(zh.promptViewFull))
   expect(all('.dt-preview-part ins').map(line => line.textContent)).toContain('Shared, the team way.\n')
@@ -168,11 +198,13 @@ it('edits a built-in part as an override of its built-in text, marks it changed,
   expect(field<HTMLTextAreaElement>(zh.promptBody).value).toBe(shared.text)
   await click(zh.save)
   expect(sourceScope().current.config).not.toHaveProperty('overrides')
+  expect(sourceScope().current.config).not.toHaveProperty('overrides')
 })
 
 it('says which placeholders a template keeps', async () => {
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
   await openPrompts()
   await click(builtInItem(zh['promptPart.runtime/policy']))
   expect(text()).toContain('这是模板：保留占位符 {version}、{mode}、{rules}，由系统填入内容。')
@@ -180,13 +212,17 @@ it('says which placeholders a template keeps', async () => {
 })
 
 it('marks an override whose built-in text an upgrade changed, shows how it changed, and keeps or takes the default', async () => {
+it('marks an override whose built-in text an upgrade changed, shows how it changed, and keeps or takes the default', async () => {
   const dispatch = builtInParts()['runtime/dispatch']!
   const overrides = { 'runtime/dispatch': { text: '## dispatch\nOur routing.', base: builtInBase('## dispatch\nThe old routing.') } }
+  server.prompts.revision = 1
+  server.prompts.current = promptVersion(1, { ...defaultPrompts(), overrides })
   server.prompts.revision = 1
   server.prompts.current = promptVersion(1, { ...defaultPrompts(), overrides })
   server.prompts.defaultChanged = [{ part: 'runtime/dispatch', base: overrides['runtime/dispatch'].base, previous: '## dispatch\nThe old routing.' }]
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
   await openPrompts()
   expect(all('.dt-prompt-nav .dt-updated-tag').map(tag => tag.closest('.dt-nav-item')!.querySelector('span')!.firstChild?.textContent))
     .toEqual([zh['promptPart.runtime/dispatch']])
@@ -208,20 +244,25 @@ it('marks an override whose built-in text an upgrade changed, shows how it chang
   expect(all('.dt-default-updated')).toHaveLength(0)
   await click(zh.save)
   expect(sourceScope().current.config.overrides).toEqual({ 'runtime/dispatch': { text: '## dispatch\nOur routing.', base: builtInBase(dispatch.text) } })
+  expect(sourceScope().current.config.overrides).toEqual({ 'runtime/dispatch': { text: '## dispatch\nOur routing.', base: builtInBase(dispatch.text) } })
 })
 
 it('keeps both sides\' first overrides when a draft moves onto a version saved meanwhile', async () => {
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
   await openPrompts()
+  await openPrompts()
   await click(builtInItem(zh['promptPart.runtime/shared']))
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Shared, ours.')
   const theirs = { 'runtime/dispatch': { text: '## dispatch\nTheirs.', base: builtInBase(builtInParts()['runtime/dispatch'].text) } }
   server.promptScopes.feishu = { revision: 1, current: promptVersion(1, { ...defaultPrompts(), overrides: theirs }),
     revisions: [], next_offset: null }
+  server.promptScopes.feishu = { revision: 1, current: promptVersion(1, { ...defaultPrompts(), overrides: theirs }),
+    revisions: [], next_offset: null }
   await click(zh.save)
   expect(document.querySelector('.dt-savebar')?.textContent).not.toContain('undefined')
   await click(zh.save)
+  expect(sourceScope().current.config.overrides).toEqual({ ...theirs,
   expect(sourceScope().current.config.overrides).toEqual({ ...theirs,
     'runtime/shared': { text: 'Shared, ours.', base: builtInBase(builtInParts()['runtime/shared'].text) } })
 })
@@ -229,6 +270,7 @@ it('keeps both sides\' first overrides when a draft moves onto a version saved m
 it('shows a draft\'s template of a generated part filled, and names a part by its label when a save is refused', async () => {
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
   await openPrompts()
   await click(builtInItem(zh['promptPart.runtime/environment']))
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Where you work:\n{variables}')
@@ -240,6 +282,7 @@ it('shows a draft\'s template of a generated part filled, and names a part by it
   await type(field<HTMLTextAreaElement>(zh.promptBody), '## Policy\n{version} {mode}')
   await click(zh.save)
   await settle()
+  await settle()
   expect(text()).toContain(`「${zh['promptPart.runtime/policy']}」的模板必须保留占位符 {rules}`)
 })
 
@@ -247,6 +290,7 @@ it('lists the overrides of parts this version no longer has, which the next save
   server.prompts.defaultChanged = [{ part: 'runtime/retired', base: 'b', removed: true }]
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
+  await openPrompts()
   await openPrompts()
   expect(text()).toContain(zh.promptRemovedParts.replace('{parts}', 'runtime/retired'))
 })
@@ -256,9 +300,12 @@ it('loads a version from the history without its overrides of parts this version
   at({ page: 'governance', id: 'feishu', query: { part: 'prompts' } })
   await mount()
   await openPrompts()
+  await openPrompts()
   await click(tab(zh.promptViewHistory))
   // The version restored overrides a part a later version removed.
   const saved = server.prompts.current
+  server.prompts.current = promptVersion(0, { ...defaultPrompts(),
+    overrides: { 'runtime/dispatch': dispatch, 'runtime/retired': { text: 'Old.', base: 'b' } } })
   server.prompts.current = promptVersion(0, { ...defaultPrompts(),
     overrides: { 'runtime/dispatch': dispatch, 'runtime/retired': { text: 'Old.', base: 'b' } } })
   await click(zh.promptRestore)
