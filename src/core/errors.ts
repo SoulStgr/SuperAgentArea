@@ -44,6 +44,10 @@ export const USER_ERRORS = {
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
   noLabels: ['refused', 'This Source has no names to refresh'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
+  projectUnknown: ['missing', 'Unknown Project: {project}'],
+  notNeedsProject: ['refused', 'This Trigger is not waiting for a Project; answer the question of a Trigger whose assessment refused it for an unregistered Project'],
+  projectLocationInvalid: ['refused', 'The Project location is not usable: {reason}'],
+  projectSpecifiedByModel: ['refused', 'Only a person may name a Project\'s external address; an assessment may only propose one for a person to confirm'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
 export type UserErrorCode = keyof typeof USER_ERRORS
 

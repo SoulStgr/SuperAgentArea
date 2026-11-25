@@ -24,11 +24,13 @@ const bot = (ctx: SourceContext): FeishuBot => {
   return resolved
 }
 async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
-  await ctx.receive(trigger)
   const chatId = String(trigger.meta.chatId ?? '')
+  // The chat's title is what the Trigger states about its Project; the bot's chat list holds it.
+  const name = chatId ? ctx.state.get(KV.sources.labels(SOURCE))?.[chatId] : undefined
+  if (chatId && name) trigger.meta.chatName = name
+  await ctx.receive(trigger)
   if (!chatId) return
-  const name = ctx.state.get(KV.sources.labels(SOURCE))?.[chatId] ?? chatId
-  const chat = trigger.meta.direct === true ? { value: { zh: '私聊', en: 'Direct message' } } : { value: name }
+  const chat = trigger.meta.direct === true ? { value: { zh: '私聊', en: 'Direct message' } } : { value: name ?? chatId }
   for (const ref of trigger.threads) ctx.threads.describe(threadKey(ref), { url: chatLink(ctx, chatId), facts: { chat } })
 }
 const chatLink = (ctx: SourceContext, chatId: string): string => feishuChatLink(ctx.deployment.feishu?.brand ?? 'feishu', chatId)

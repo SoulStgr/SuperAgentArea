@@ -25,7 +25,8 @@ export function reasonLabel(t: T, reason: string | Reason | readonly Reason[] | 
 }
 function label(t: T, reason: Reason): string {
   const key = `reason.${reason.code}` as DshSuperagentKey
-  const text = reason.code === 'said' ? reason.values?.text ?? '' : t(key, reason.values)
+  const values = reason.values as Record<string, unknown> | undefined
+  const text = reason.code === 'said' ? String(values?.text ?? '') : t(key, values)
   if (reason.code !== 'said' && text !== key) return text
   const written = reason.code === 'said' ? text : reasonText({ ...reason, triggerId: undefined })
   if (/^\w*Error\b/.test(written)) { const first = written.split('\n')[0]!; return first.length > 140 ? `${first.slice(0, 140)}…` : first }

@@ -1,5 +1,5 @@
 /** Registry of installed Source kinds, their configured instances, and the Engine's SourceScope implementation. */
-import type { ChannelRef, OutboundMessage, ScopeResult, SourceScope, Trigger } from '../core/index.ts'
+import type { ChannelRef, OutboundMessage, PersonRef, ProjectHint, ScopeResult, SourceScope, Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { HealthBoard, type HealthEntry } from '../infra/health.ts'
 import { AdmissionTableSchema, type Settings } from '../policy.ts'
@@ -130,6 +130,33 @@ export class SourceRegistry implements SourceScope {
     const { admission, ...rest } = settings.policy.sources[id] ?? {}
     const parsed = policy.schema.safeParse(rest)
     return { ...parsed.success ? parsed.data : policy.schema.parse({}), admission: AdmissionTableSchema.safeParse(admission ?? {}).data ?? {} }
+  }
+  /**
+   * The default Project the Trigger's instance names and the Project hints its kind reads from the event (see plan §2.5):
+   * a folder's `PROJECT.md` or task-folder name, an IM chat title. The Project registry resolves them; the hints carry names,
+   * local paths and repository URLs, never a Project id.
+   */
+  projectHints(trigger: Trigger, settings = this.settings()): { defaultProjectId?: string; hints: ProjectHint[] } {
+    const kind = this.kind(trigger.source, settings)
+    const instance = this.instanceFor(trigger.source, rowHint(trigger.meta), settings)
+    if (!kind || !instance) return { hints: [] }
+    return { ...instance.defaultProjectId ? { defaultProjectId: instance.defaultProjectId } : {},
+      hints: kind.projectHints?.(trigger, instance.config) ?? [] }
+  }
+  /** People the Trigger's instance itself knows beside the Policy's lists, such as a folder instance's operator. */
+  people(trigger: Trigger, settings = this.settings()): PersonRef[] {
+    const kind = this.kind(trigger.source, settings)
+    const instance = this.instanceFor(trigger.source, rowHint(trigger.meta), settings)
+    if (!kind || !instance) return []
+    return (kind.people?.(instance.config, instance.id) ?? []).map(person => ({ source: instance.id, id: person.id,
+      ...person.name ? { name: person.name } : {} }))
+  }
+  /** Renders `person` as the Channel's Source mentions people, or `''` when that kind has no mention support. */
+  mention(person: PersonRef, channel: ChannelRef, settings = this.settings()): string {
+    const kind = this.kind(channel.source, settings)
+    if (!kind?.channel?.mention) return ''
+    const instance = this.instanceFor(channel.source, channel.address.row, settings)
+    return instance ? kind.channel.mention(person) : ''
   }
   channelAllowed(channel: { source: string; address: Record<string, string> }, settings = this.settings()): boolean {
     const kind = this.kind(channel.source, settings)

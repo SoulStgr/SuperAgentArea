@@ -23,16 +23,21 @@ export const REASONS = {
   noRuleMatched: 'No enabled admission rule matched',
   ignoredFromCard: 'Ignored from its card, without a rule assessment',
   observed: 'Observe mode: would accept ({text})',
+  needsProject: 'The Project is not registered',
+  unknownMention: 'Unknown person for this Source, dropped from the mentions: {people}',
 } as const
 export type ReasonCode = keyof typeof REASONS
-/** Reason code and template values; `triggerId` identifies the trigger in a batch that the reason applies to. */
-export interface Reason { code: ReasonCode | (string & {}); values?: Record<string, string>; triggerId?: string }
+/**
+ * Reason code and template values; `triggerId` identifies the trigger in a batch that the reason applies to. Values are
+ * normally strings for the template, and a code may keep structured ones, such as the candidates of `needsProject`.
+ */
+export interface Reason { code: ReasonCode | (string & {}); values?: Record<string, unknown>; triggerId?: string }
 export const said = (text: string): Reason => ({ code: 'said', values: { text } })
 /** Formats reasons in English (prefixed by `triggerId` when present) for agent consumption. */
 export function reasonText(reasons: readonly Reason[] | Reason | undefined): string {
   return [reasons ?? []].flat().map(reason => {
     const template: string = REASONS[reason.code as ReasonCode] ?? reason.code
-    const text = template.replace(/\{(\w+)\}/g, (match, name: string) => reason.values?.[name] ?? match)
+    const text = template.replace(/\{(\w+)\}/g, (match, name: string) => reason.values?.[name] === undefined ? match : String(reason.values[name]))
     return reason.triggerId ? `${reason.triggerId}: ${text}` : text
   }).join('; ')
 }

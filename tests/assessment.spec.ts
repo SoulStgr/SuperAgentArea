@@ -41,6 +41,10 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
+    // These Evals judge no Project: no Project is registered, and no answer creates one here.
+    projects: { resolve: () => ({ candidates: [], hints: [] }), pending: () => undefined,
+      create: () => { throw new Error('No Project is created in this fixture') } },
+    people: { settings: () => SettingsSchema.parse({}), sources },
   }
   const assessor = new MasterAssessor(host)
   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
@@ -123,12 +127,12 @@ it('routes an explicit candidate instead of assessing it: each eval tool names t
   await expect(s.tools.orchestrator_eval_decide!(decision, signal)).rejects.toThrow(routed)
 })
 
-it('asks the assessment only for decisions its tool accepts, which no longer include reopen or stop', () => {
+it('asks the assessment only for decisions its tool accepts, which include no reopen or stop but do include needsProject', () => {
   expect(mainAdmissionPolicy).not.toMatch(/reopen|decision=stop/)
   const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'e' }
   const result = (decision: string, extra = {}) =>
     AssessmentSchema.safeParse({ decision, rule_assessments: [], direction, title: 't', scope: 's', reason: 'r', ...extra }).success
-  expect([result('ignore'), result('unavailable'), result('reopen'), result('stop')]).toEqual([true, true, false, false])
+  expect([result('ignore'), result('unavailable'), result('needsProject'), result('reopen'), result('stop')]).toEqual([true, true, true, false, false])
   expect(result('ignore', { ticket_id: 't' })).toBe(false)
 })
 

@@ -36,8 +36,10 @@ interface Skill { name: string; description: string; content: string }
 /**
  * Maximum combined character count of system prompt and tool definitions per role (~5% above baseline).
  * Lower this limit when shrinking model-facing text; raise it only intentionally and explain why in the commit message.
+ * P2 raised the orchestrator limit by 2,000: Project ownership (needsProject, the proposal, confirm_proposal) and the
+ * reporter and mention ids add instructions and schema fields the assessment needs before any ticket exists.
  */
-const BUDGET: Record<Role, number> = { orchestrator: 59_000, worker: 40_500 }
+const BUDGET: Record<Role, number> = { orchestrator: 61_000, worker: 40_500 }
 const PROMPTS = 'prompts/, skills/', TOOLS = 'src/app/tools/', SESSIONS = 'src/app/sessions.ts'
 const NOTICES = 'src/app/notices.ts', LINKS = 'src/app/links.ts', ASSESSMENT = 'src/app/assessment.ts'
 const EXECUTOR = 'src/executor/dsh.ts', ERRORS = 'src/core/errors.ts'
@@ -148,6 +150,13 @@ async function start() {
   const feishuSource = { kind: 'feishu', enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } }
   runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: allowed }, eval: { ...settings.eval, mode: 'auto' },
     sources: { ...settings.sources, feishu: feishuSource } })
+  // A proactive acceptance needs a registered Project: this one is the Feishu instance's default, as a panel answer would make it.
+  const at = new Date().toISOString()
+  runtime.store.projects.save({ id: 'prj_aps', key: 'aps', status: 'active', createdAt: at, updatedAt: at,
+    value: { name: 'aps', kind: 'station', location: { type: 'managed' }, outputDir: join(directory, 'area', 'aps'),
+      scratchDir: join(directory, 'area', 'aps.work'), rulesDir: join(directory, 'area', 'aps.work', 'rules'), sourceIds: [], aliases: [] } })
+  runtime.store.saveSettings({ ...runtime.store.settings(), sources: { ...runtime.store.settings().sources,
+    feishu: { ...feishuSource, defaultProjectId: 'prj_aps' } } })
   const run = async (sessionId: string, name: string, args: unknown) =>
     await tools.get(sessionId)!.get(name)!.execute(args, { signal: new AbortController().signal }) as Record<string, unknown>
   const stop = async () => { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }

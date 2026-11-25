@@ -1,40 +1,48 @@
 /** The Engine's messages to Channels, each by the rule that allows it. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
+import { withMentions } from './mentions.ts'
 import { latestAssignment, liveTicket, ticketOutcome } from './model.ts'
 import type { ChannelRef, Ticket, Trigger } from './model.ts'
+import type { PersonRef } from './project.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
 
 /**
  * A message for a Channel, by purpose: an Executor's acknowledgement of a person's request it works on, the answer to a
  * person's question once the worker reported it, the result of a ticket that is `ready`, `completed`, `merged`, or `dropped`,
- * or the ticket's current `question` for a person (`attention`). When `ticketId` is omitted, the ticket that `triggerId` reached is used.
+ * the ticket's current `question` for a person (`attention`), or the host's own question about a Trigger that belongs to no
+ * registered Project, which needs no ticket. When `ticketId` is omitted, the ticket that `triggerId` reached is used.
  */
 export type ReplyRequest =
   | { purpose: 'acknowledgement'; ticketId: string; triggerId: string; text: string }
   | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string; text: string }
+  /** A question for the conversation a Trigger came from, such as how to place it in a Project; idempotent per Trigger. */
+  | { purpose: 'question'; triggerId: string; text: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
 /**
  * Replies writes the Engine's messages to Channels through the Outbox port: an acknowledgement, the answer to a person's
- * question, a ticket's result, and its question for a person, each only when its rule allows it, under a deterministic id
- * that keeps it from going out twice (idempotent). The Engine routes `reply` here; Tickets asks it for the acknowledgement
- * an accept carries, and Assignments asks it to withdraw a question a report replaced.
+ * question, a ticket's result, its question for a person, and the host's own question about a Project, each only when its
+ * rule allows it, under a deterministic id that keeps it from going out twice (idempotent). The Engine routes `reply` here;
+ * Tickets asks it for the acknowledgement an accept carries, Evals for the question a `needsProject` stop asks, and
+ * Assignments asks it to withdraw a question a report replaced. Results and questions mention the ticket's reporter and
+ * people where the conversation's Source can name them.
  */
 export class Replies extends EnginePart {
   /**
    * Queue a message for the Channel its purpose names: an acknowledgement or an answer goes where that person's message was
-   * written, attention where the message that raised the question was (or to the ticket's starting conversation), and a
-   * result to the conversation where the ticket started (`result` is allowed only for a ticket in `ready`, `completed`,
-   * `merged`, or `dropped`). Each message is queued at most once (idempotent). An acknowledgement, even one already queued,
-   * records that the ticket's worker took the message up.
+   * written, attention where the message that raised the question was (or to the ticket's starting conversation), a result to
+   * the conversation where the ticket started (`result` is allowed only for a ticket in `ready`, `completed`, `merged`, or
+   * `dropped`), and a `question` to the conversation its Trigger came from. Each message is queued at most once (idempotent).
+   * An acknowledgement, even one already queued, records that the ticket's worker took the message up.
    * @throws UserError when the ticket or trigger is unknown or the purpose's rule refuses it, such as a result of a ticket
    * that is not ready, completed, merged, or dropped.
    */
   reply(request: ReplyRequest): Reply {
-    return request.purpose === 'acknowledgement' ? this.acknowledge(request) : this.answer(request)
+    return request.purpose === 'acknowledgement' ? this.acknowledge(request)
+      : request.purpose === 'question' ? this.question(request) : this.answer(request)
   }
   /**
    * Queue the acknowledgement an accept carries where the message that started the ticket was written, if it has a Channel
@@ -42,6 +50,23 @@ export class Replies extends EnginePart {
    */
   acknowledgeAccepted(ticketId: string, trigger: Trigger, text: string): void {
     if (trigger.channel && trigger.human) this.options.outbox.send({ id: key('ack', trigger.id), channel: trigger.channel, text, kind: 'acknowledgement', ticketId })
+  }
+  /**
+   * Queue the host's question about a Trigger that belongs to no registered Project where that Trigger was written, once:
+   * its id names the Trigger, so asking again after a failed answer or a replayed Eval keeps one message. It mentions the
+   * person who wrote the Trigger when the conversation's Source can name them.
+   */
+  question(request: Extract<ReplyRequest, { purpose: 'question' }>): Reply {
+    const trigger = this.repo.triggers.get(request.triggerId)
+    if (!trigger) throw new UserError('unknownTrigger')
+    if (!trigger.channel) throw new UserError('noChannel')
+    const id = key('question', trigger.id)
+    const existing = this.options.outbox.status(id)
+    if (!existing) {
+      this.options.outbox.send({ id, channel: trigger.channel, text: this.mentioned(request.text, undefined,
+        [{ source: trigger.actor.source, id: trigger.actor.id }], trigger.channel), kind: 'reply' })
+    }
+    return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
   }
   /** Withdraw a ticket's question for a person from the outbox, unless it went out already. */
   withdrawAttention(attentionId: string): void { this.options.outbox.withdraw(key('attention-reply', attentionId)) }
@@ -61,7 +86,7 @@ export class Replies extends EnginePart {
     this.takeUp(ticket.id, trigger.id)
     return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
   }
-  private answer(request: Exclude<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
+  private answer(request: Exclude<ReplyRequest, { purpose: 'acknowledgement' | 'question' }>): Reply {
     const trigger = request.triggerId ? this.repo.triggers.get(request.triggerId) : undefined
     if (request.triggerId && !trigger) throw new UserError('unknownTrigger')
     const ticket = request.ticketId ? this.require(request.ticketId)
@@ -83,12 +108,21 @@ export class Replies extends EnginePart {
     const asker = attention?.triggerId ? this.repo.triggers.get(attention.triggerId) : undefined
     const channel = request.purpose === 'answer' ? trigger!.channel : asker?.channel ?? (ticket ? this.sourceChannel(ticket) : undefined)
     if (!channel) throw new UserError('noChannel')
-    this.options.outbox.send({ id, channel, text: request.text, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {} })
+    // A result or a question for a person names the people it concerns where that conversation's Source can mention them.
+    const mentioned = request.purpose === 'attention' || request.purpose === 'result'
+      ? this.mentioned(request.text, ticket?.reporter, ticket?.mentions, channel) : request.text
+    this.options.outbox.send({ id, channel, text: mentioned, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {} })
     if (request.purpose === 'answer' && ticket && trigger && ticket.answers?.includes(trigger.id)) {
       ticket.answers = ticket.answers.filter(item => item !== trigger.id)
       this.repo.tickets.save(ticket)
     }
     return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
+  }
+  /** `text` with the mentions its Source can render; unchanged when the host has no Source-side people adapter. */
+  private mentioned(text: string, reporter: PersonRef | undefined, mentions: readonly PersonRef[] | undefined,
+    channel: ChannelRef): string {
+    const people = this.options.people
+    return people ? withMentions(text, reporter, mentions, channel, (person, target) => people.mention(person, target)) : text
   }
   /** The conversation a ticket started in: its origin Trigger's Channel, else its first Channel. */
   private sourceChannel(ticket: Ticket): ChannelRef | undefined { return this.source(ticket)?.channel ?? ticket.channels[0] }

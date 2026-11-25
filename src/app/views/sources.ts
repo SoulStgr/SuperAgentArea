@@ -1,10 +1,11 @@
-/** Source status view: health, 24-hour trigger counts, and recently filtered or dropped messages per Source instance. */
+/** Source status view: health, 24-hour trigger counts, recently filtered or dropped messages, and unanswered Project questions per Source instance. */
 import { threadKey } from '../../core/index.ts'
 import type { Deployment } from '../../deployment.ts'
 import type { Health } from '../../sources/host.ts'
 import type { SourceInstance } from '../../sources/kind.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
 import type { SetupProblem } from '../../setup.ts'
+import { needsProjectValues } from '../project-service.ts'
 import { dayAgo, snapshot, type ViewHost } from './records.ts'
 import { preview } from './text.ts'
 
@@ -44,6 +45,7 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
   const view = snapshot(host)
   const since = dayAgo()
   const stats = store.read.triggerStats(since)
+  const pending = store.read.pendingProjects()
   const filtered = (source: string) => store.read.triggers({ source, filtered: true }, 0, 5).items.filter(trigger => trigger.at >= since)
     .map(trigger => ({ id: trigger.id, at: trigger.at, actor: view.actor(trigger.actor, trigger.human), preview: preview(trigger.text, 120),
       reason: store.triggers.disposition(trigger.id)?.filtered }))
@@ -53,6 +55,12 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
     const problem = problemOf(instance.id, setup) ?? problemOf(instance.kind, setup)
     return { ...named, installed: instance.installed, enabled: instance.enabled, state: sourceState(instance, parts, setup), health: parts,
       ...problem ? { problem } : {}, stats: stats[instance.id] ?? { received: 0, filtered: 0, lastAt: '' }, filtered: filtered(instance.id),
+      // The Project questions this Source's requests wait on, for the workstation view (P3) to answer.
+      pendingProjects: pending.filter(item => item.trigger.source === instance.id).flatMap(({ decision, trigger }) => {
+        const values = needsProjectValues(decision)
+        return values ? [{ triggerId: trigger.id, thread: threadKey(trigger.threads[0]!), at: trigger.at, candidates: values.candidates,
+          ...values.proposal ? { proposal: values.proposal } : {} }] : []
+      }),
       dropped: dropped.filter(item => item.channel.source === instance.id) }
   })
 }

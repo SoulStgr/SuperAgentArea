@@ -71,4 +71,9 @@ export const KV = {
     seen: family<Record<string, string>, [row: string]>('folder-seen:') },
   /** Artifacts: the deliverables collected from a ticket's `deliver/` directory on its ready report, oldest collection last. */
   artifacts: family<Artifact[], [ticket: string]>('artifacts:'),
+  /**
+   * Project ownership: the Project a Thread answered its `needsProject` question with, so its next Eval resolves it (and later
+   * Triggers on the Thread keep it). Written by the Project service, read by its resolution.
+   */
+  projects: { answers: family<string, [thread: string]>('project-answer:') },
 }

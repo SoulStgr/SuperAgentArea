@@ -22,6 +22,9 @@ import { environmentOf, ticketEnvironment, type Variable } from './execution-env
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
+import { ticketCardNotice } from './announcements.ts'
+import { knownPerson, mentionOf } from './people.ts'
+import { ProjectService } from './project-service.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
@@ -66,6 +69,7 @@ export class Runtime extends Service implements SourceHost {
   readonly commands: Commands
   readonly sessions: Sessions
   readonly settings: Settings
+  readonly projects: ProjectService
   readonly executor: DshExecutor
   readonly assessor: MasterAssessor
   readonly outbox: Outbox
@@ -113,7 +117,9 @@ export class Runtime extends Service implements SourceHost {
           .catch(() => { /* sync() records its failure in health. */ })
         return () => {}
       })
-      const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
+      const projects = this.projects = new ProjectService({ store, sources, settings: () => store.settings(),
+        stateDir: machine.stateDir })
+      const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime, projects }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
@@ -131,15 +137,26 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
+        projects, people: { settings: () => store.settings(), sources },
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
+      const peopleHost = { settings: () => store.settings(), sources }
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
+        people: { knows: (trigger, person) => !!knownPerson(peopleHost, trigger, person),
+          mention: (person, channel) => mentionOf(peopleHost, person, channel) },
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
           if (notice) sessions.notify(...notice)
+          // A ticket's card goes to the conversation that asked for it, mentioning the people it concerns.
+          if (event.type === 'ticket.created' && setup.configured()) {
+            const created = store.tickets.get(event.data.ticketId)
+            const request = created && store.triggers.get(created.origin.triggerId)?.text
+            const card = created ? ticketCardNotice({ store, sources, links: channel => runtime.links()(channel) }, created, request ?? created.title) : undefined
+            if (card) outbox.send(card)
+          }
           // A person's message that reached an open ticket is the ticket's; the main Session hears of it in the same transaction,
           // and of one for an ended ticket once it resumes, unless it routed the message there itself.
           const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
@@ -162,7 +179,7 @@ export class Runtime extends Service implements SourceHost {
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
-      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources, effects,
+      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources, effects, projects,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
@@ -225,8 +242,9 @@ export class Runtime extends Service implements SourceHost {
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes,
+      projects } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, projects,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),

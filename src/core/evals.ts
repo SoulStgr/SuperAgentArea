@@ -3,9 +3,12 @@ import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { liveTicket, threadKey } from './model.ts'
 import type { Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger } from './model.ts'
+import { needsProjectQuestion } from './needs-project.ts'
 import type { AssessmentOutcome, Candidate, Policy } from './ports.ts'
+import type { PersonRef } from './project.ts'
 import { said, type Reason } from './reasons.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
+import type { Replies } from './replies.ts'
 import type { Tickets } from './tickets.ts'
 
 /** An outcome for the Eval that holds a Trigger; `evalId` names the Eval it was judged for, so a later Eval refuses it. */
@@ -25,7 +28,7 @@ const REQUEUES = 2
  * Engine routes the main Session's decisions, people's replays, worker handbacks, and the pass's Eval work here.
  */
 export class Evals extends EnginePart {
-  constructor(options: EngineOptions, private readonly tickets: Tickets) { super(options) }
+  constructor(options: EngineOptions, private readonly tickets: Tickets, private readonly replies: Replies) { super(options) }
 
   /**
    * Expire a Thread's Eval past its deadline (see `expire`), unless processing is paused: then the Eval notes when the
@@ -290,6 +293,7 @@ export class Evals extends EnginePart {
     const unassessed = outcome.kind === 'ignore' && evaluation.strength !== 'explicit' && !outcome.audit ? [{ code: 'ignoredFromCard' }] : []
     if (outcome.kind === 'ignore' || outcome.kind === 'unavailable') return this.finish(thread, evaluation, { kind: outcome.kind,
       reason: [...unassessed, ...reasonOf(outcome.reason)], ...audit })
+    if (outcome.kind === 'needsProject') return this.needsProject(thread, evaluation, outcome)
     if (outcome.kind === 'stop') {
       const ticket = this.repo.tickets.get(outcome.ticketId)
       if (!ticket || !liveTicket(ticket)) return this.finish(thread, evaluation, { kind: 'ignore', reason: [{ code: 'stopUnknown' }],
@@ -302,6 +306,23 @@ export class Evals extends EnginePart {
     }
     return this.accept(thread, evaluation, outcome)
   }
+  /**
+   * Record the stop of a Trigger whose Project is not registered, with the Projects the question offers and the address an
+   * assessment proposed, and ask that Trigger's conversation how to place it. No ticket is created; an answer through the
+   * panel or a person's confirmation in the conversation starts a fresh Eval, which resolves the Project and accepts.
+   */
+  private needsProject(thread: Thread, evaluation: Evaluation, outcome: Extract<AssessmentOutcome, { kind: 'needsProject' }>): Decision {
+    const candidates = outcome.candidates ?? []
+    const values = { candidates, ...(outcome.proposal ? { proposal: outcome.proposal } : {}) }
+    const reason: Reason = { code: 'needsProject', values }
+    const audit = outcome.audit ? { audit: outcome.audit } : {}
+    const decision = this.finish(thread, evaluation, { kind: 'stop', reason: [reason, ...reasonOf(outcome.reason)], ...audit })
+    const primary = this.repo.triggers.get(evaluation.primary ?? evaluation.triggerIds[0]!)
+    if (primary) {
+      this.replies.question({ purpose: 'question', triggerId: primary.id, text: needsProjectQuestion(primary, candidates, outcome.proposal) })
+    }
+    return decision
+  }
   /** Record an accept with the Mandate the Eval gives, and have Tickets create its ticket. */
   private accept(thread: Thread, evaluation: Evaluation, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Decision {
     const at = this.now()
@@ -310,8 +331,20 @@ export class Evals extends EnginePart {
     const mandate: Mandate = { strength, policyVersion, basis, actor, scope: outcome.scope }
     const ticketId = key('ticket', evaluation.id)
     const audit = outcome.audit ? { audit: outcome.audit } : {}
-    const decision = this.finish(thread, evaluation, { kind: 'accept', reason: reasonOf(outcome.reason), ...audit, mandate, ticketId })
-    this.tickets.create(ticketId, decision.id, mandate, evaluation, outcome, at)
+    // A mention or a reporter is a person the Trigger's Source knows; anyone else is dropped and recorded on the Decision.
+    const primary = this.repo.triggers.get(evaluation.primary ?? evaluation.triggerIds.at(-1)!)
+    const known = (person: PersonRef) => !primary || !this.options.people || this.options.people.knows(primary, person)
+    const unknown: string[] = []
+    const mentions = (outcome.mentions ?? []).filter(person => {
+      if (known(person)) return true
+      unknown.push(person.name ?? person.id)
+      return false
+    })
+    const reporter = outcome.reporter && known(outcome.reporter) ? outcome.reporter : undefined
+    const reasons = [...reasonOf(outcome.reason), ...outcome.reasons ?? [],
+      ...unknown.length ? [{ code: 'unknownMention', values: { people: unknown.join(', ') } }] : []]
+    const decision = this.finish(thread, evaluation, { kind: 'accept', reason: reasons, ...audit, mandate, ticketId })
+    this.tickets.create(ticketId, decision.id, mandate, evaluation, { ...outcome, ...reporter ? { reporter } : {}, mentions }, at)
     return decision
   }
   /** Record an Eval's Decision; the Thread's own Eval ends with it, while a gate-only one leaves the Thread's Eval going. */

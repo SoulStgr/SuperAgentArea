@@ -1492,3 +1492,22 @@ describe('multiple Source instances', () => {
     } finally { vi.useRealTimers() }
   })
 })
+
+describe('project hints and mentions', () => {
+  it('states a chat title\'s Project names, and renders each Source\'s own mention syntax', () => {
+    // A chat titled after its Project points at it through the title's whole text and its words.
+    const config = feishuKind.schema.parse({ cli: 'lark-bot', chats: [{ chatId: 'oc_team', name: 'APS 填报群', listen: 'all' }] })
+    const trigger = feishuTrigger({ message_id: 'om_1', chat_id: 'oc_team', chat_type: 'group', sender_id: MEMBER, sender_type: 'user',
+      content: '改一下', create_time: '2026-09-09T00:00:00Z', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!
+    expect(feishuKind.projectHints!(trigger, config)).toEqual([{ name: 'APS 填报群' }, { name: 'APS' }, { name: '填报群' }])
+    // The searchable chat name the bot read is preferred to the configured one.
+    expect(feishuKind.projectHints!({ ...trigger, meta: { ...trigger.meta, chatName: 'aps' } }, config)).toEqual([{ name: 'aps' }])
+    // GitHub is mapped by its instance default; a Trigger states no Project hint by itself.
+    expect(githubKind.projectHints).toBeUndefined()
+    // A person is named in each Source's own syntax; a folder writes the plain name.
+    expect(githubKind.channel!.mention!({ source: 'github', id: 'alice' })).toBe('@alice')
+    expect(feishuKind.channel!.mention!({ source: 'feishu', id: 'ou_alice' })).toBe('<at id=ou_alice></at>')
+    expect(folderKind.channel!.mention!({ source: 'folder:ops', id: 'alice', name: 'Alice' })).toBe('Alice')
+    expect(folderKind.channel!.mention!({ source: 'folder:ops', id: 'alice' })).toBe('alice')
+  })
+})

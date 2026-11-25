@@ -15,9 +15,20 @@ export type ProjectLocation =
   | { type: 'repo'; path?: string; url?: string; branch?: string }
 export type ProjectStatus = 'active' | 'archived'
 /**
+ * What a Source states about the Project a Trigger belongs to (see plan §2.5): a name it reads from the event, a local
+ * path, or a repository URL. The registry matches it against the registered Projects; a Source gives none when it has
+ * nothing to say.
+ */
+export interface ProjectHint { name?: string; path?: string; url?: string }
+/** A registered Project an unanswered `needsProject` question offers as a candidate, as the question and its Decision carry it. */
+export interface ProjectCandidate { id: string; name: string; kind: ProjectKind }
+/** A new Project's address that an assessment proposes; only a person's confirmation creates it. */
+export interface ProjectProposal { name: string; location: ProjectLocation }
+/**
  * A Project's stored attributes, the `project.value` JSON: what it is called, where its deliverables and working copies live,
  * which Sources feed it, and the names a Source may call it by. `specifiedBy` records the person who named an external address,
- * which only a person may do; `adhoc` Projects also record when they were archived and how long they are kept.
+ * which only a person may do, and `confirmedBy` the person who confirmed an agent's proposal; `adhoc` Projects also record
+ * when they were archived and how long they are kept.
  */
 export interface ProjectValue {
   name: string
@@ -32,6 +43,8 @@ export interface ProjectValue {
   sourceIds: string[]
   aliases: string[]
   specifiedBy?: PersonRef
+  /** The person who confirmed an address an assessment proposed, rather than named themselves. */
+  confirmedBy?: PersonRef
   archivedAt?: string
   retentionUntil?: string
 }

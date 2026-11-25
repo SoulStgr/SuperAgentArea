@@ -97,6 +97,8 @@ export interface PanelServer {
   /** Requests with undeclared query params or invalid body presence; asserted empty after each test. */
   misuse: string[]
   queued: Set<string>
+  /** Trigger ids that wait for a Project answer, as the Source status reports their `pendingProjects`. */
+  projectQuestions: Set<string>
   searching?: (query: string) => Promise<void>
   setup: SetupView
   health: Record<string, Health>
@@ -174,6 +176,9 @@ function sourceStatuses(): SourceStatusRow[] {
         : kind.title
     return { id: instance.id, title, installed: true, enabled, state, health, ...problem ? { problem } : {},
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
+      pendingProjects: feishu ? [{ triggerId: 'e10', thread: 'feishu:oc_team:om_10', at: '2026-09-23T00:03:00Z',
+        candidates: [{ id: 'prj_aps', name: 'aps', kind: 'station' }],
+        proposal: { name: 'aps 填报', location: { type: 'managed' } } }] : [],
       filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
       dropped: server.dropped.filter(item => item.channel.source === instance.id && item.dropped.at >= dayAgo()) }
@@ -269,7 +274,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -342,6 +347,17 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { removed, thread: params.key, context_delivery: 'injected' }
   } },
   'POST triggers/:id/requeue': { answer: ({ params }) => { server.queued.add(params.id); return { queued: true } } },
+  'POST triggers/:id/answer-project': { body: true, answer: ({ params, body }) => {
+    // As the host does: the Trigger must wait for a Project question, and a new address is validated before it is created.
+    if (!server.projectQuestions.has(params.id)) return refuse(400, 'This Trigger is not waiting for a Project', { code: 'notNeedsProject', values: {} })
+    const answer = body as { projectId?: string; new?: { name: string; location: { type: string; path?: string } }; confirmProposal?: true }
+    if (answer.new?.location.type === 'folder' && !/^[A-Za-z]:[\\/]|\//.test(answer.new.location.path ?? '')) {
+      return refuse(400, 'The Project location is not usable', { code: 'projectLocationInvalid', values: { reason: 'the folder must be an absolute path' } })
+    }
+    const resolved = answer.projectId ?? 'prj_aps'
+    server.projectQuestions.delete(params.id)
+    return { resolved }
+  } },
   'GET decisions': { query: ['kind', 'window', 'offset', 'limit'], answer: ({ query }) =>
     ({ items: query.kind === 'ignore' ? [] : [acceptDecision()], next_offset: null }) },
   'POST decisions/:id/dismiss': { answer: ({ params }) => params.id === 'u1' ? { dismissed: true } : refuse(404,

@@ -11,7 +11,7 @@ import { userInfo } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { key, threadKey, type OutboundMessage, type Trigger } from '../core/index.ts'
+import { key, threadKey, type OutboundMessage, type ProjectHint, type Trigger } from '../core/index.ts'
 import { KV } from '../kv.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
@@ -38,15 +38,50 @@ export interface FolderDrop {
   text: string
   /** Files of a task folder, relative to it; a lone file lists itself. */
   files: string[]
+  /** What a task folder's `PROJECT.md` first line states about its Project, when the drop has one. */
+  project?: ProjectHint
 }
-
+/** The first non-empty line of `PROJECT.md`: an absolute path, a repository address, or a Project name. */
+function projectHintOf(projectFile: string): ProjectHint | undefined {
+  const line = projectFile.split(/\r?\n/).map(text => text.trim()).find(Boolean)
+  if (!line) return undefined
+  if (/^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(line)) return { path: line }
+  if (/^(?:https|ssh|file):\/\/|^[\w.-]+@[\w.-]+:/.test(line)) return { url: line }
+  return { name: line }
+}
+/** The names a drop itself may call its Project: a `[project]rest` prefix, and the folder's or file's own base name. */
+export function projectNamesOf(rel: string, kind: 'file' | 'task'): string[] {
+  const name = rel.slice(rel.lastIndexOf('/') + 1)
+  const bracketed = /^[[【]([^\]】]+)[\]】]/.exec(name)?.[1]?.trim()
+  const base = kind === 'file' ? name.replace(/\.[^.]+$/, '') : name
+  return [...new Set([bracketed, base].filter((value): value is string => !!value))]
+}
+/** The hints a drop's own name states about its Project. */
+const hintsOfName = (rel: string, kind: 'file' | 'task'): ProjectHint[] => projectNamesOf(rel, kind).map(name => ({ name }))
+/** The hints an old Trigger's `meta` states, or those its `rel` alone still states (a Trigger stored before hints existed). */
+function storedHints(meta: Record<string, unknown>): ProjectHint[] {
+  const lines = Array.isArray(meta.projectHints) ? meta.projectHints : []
+  const hints = lines.flatMap((line): ProjectHint[] => {
+    if (!line || typeof line !== 'object') return []
+    const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined
+    const hint = { ...text((line as Record<string, unknown>).name) ? { name: text((line as Record<string, unknown>).name)! } : {},
+      ...text((line as Record<string, unknown>).path) ? { path: text((line as Record<string, unknown>).path)! } : {},
+      ...text((line as Record<string, unknown>).url) ? { url: text((line as Record<string, unknown>).url)! } : {} }
+    return Object.keys(hint).length ? [hint] : []
+  })
+  if (hints.length) return hints
+  return typeof meta.rel === 'string' ? hintsOfName(meta.rel, meta.kind === 'task' ? 'task' : 'file') : []
+}
 /**
  * The Trigger of one drop on `instance`: its source and Thread carry the instance id, so `folder:ops` and
  * `folder:dev` keep separate Threads and the thread key is the same string the old row-based key had.
- * The operator's drop is an explicit, human, direct request.
+ * The operator's drop is an explicit, human, direct request. Its `PROJECT.md` and name are its Project hints.
  */
 export function folderTrigger(drop: FolderDrop, instance: FolderInstance, operator: string): Trigger {
   const thread = `${instance.id}:${drop.rel}`
+  const hints = [...drop.project ? [drop.project] : [], ...hintsOfName(drop.rel, drop.kind),
+    ...instance.inbox ? [{ path: join(instance.inbox, drop.rel) }] : []]
+  const projectHints = hints.filter((hint, index) => hints.findIndex(other => JSON.stringify(other) === JSON.stringify(hint)) === index)
   return {
     id: key('folder', instance.id, drop.rel, drop.hash),
     source: instance.id,
@@ -57,7 +92,7 @@ export function folderTrigger(drop: FolderDrop, instance: FolderInstance, operat
     at: drop.at,
     text: drop.text,
     channel: { source: instance.id, thread, address: { row: instance.id, outbox: instance.outbox, rel: drop.rel } },
-    meta: { row: instance.id, rel: drop.rel, kind: drop.kind, files: drop.files, inbox: instance.inbox, outbox: instance.outbox },
+    meta: { row: instance.id, rel: drop.rel, kind: drop.kind, files: drop.files, inbox: instance.inbox, outbox: instance.outbox, projectHints },
   }
 }
 
@@ -83,11 +118,13 @@ export async function readDrop(inbox: string, name: string, type: 'file' | 'dir'
   const entries = (await readdir(path, { withFileTypes: true })).filter(entry => entry.isFile()).map(entry => entry.name).sort()
   if (!entries.length) return undefined
   const instruction = entries.includes('TASK.md') ? await readFile(join(path, 'TASK.md'), 'utf8') : ''
+  // A task folder's PROJECT.md names the Project its work belongs to; its first line is a name, a path or a repository.
+  const project = entries.includes('PROJECT.md') ? projectHintOf(await readFile(join(path, 'PROJECT.md'), 'utf8')) : undefined
   const sizes = await Promise.all(entries.map(async entry => `${entry}:${(await stat(join(path, entry))).size}`))
   const info = await stat(path)
   return { rel: name, kind: 'task', hash: sha(`${instruction}\n${sizes.join('\n')}`), at: info.mtime.toISOString(),
     text: instruction.trim() || `New task folder dropped: ${name}. Files: ${entries.join(', ')}. Read them under DSH_SUPERAGENT_FOLDER_TASK.`,
-    files: entries }
+    files: entries, ...project ? { project } : {} }
 }
 
 /** Writes one reply as a markdown file under `<outbox>/<ticket>/<message id>.md`; the message id is the idempotency key. */
@@ -135,7 +172,12 @@ export const folderKind: SourceKind<FolderConfig> = {
     allowed: (address, config) => !!config.outbox && config.outbox === address.outbox,
     send: (_host, message) => sendFolder(message),
     link: address => ({ url: '', label: { zh: `文件夹交付 ${address.row}`, en: `Folder outbox ${address.row}` } }),
+    // A folder writes plain names: there is no chat to @, and the operator reads the file.
+    mention: person => person.name || person.id,
   },
+  // The operator a drop belongs to is a person the instance itself knows, beside the Policy's allowed list.
+  people: config => config.operator ? [{ id: config.operator }] : [],
+  projectHints: trigger => storedHints(trigger.meta),
   policy: {
     schema: z.object({ allowed: z.array(z.object({ id: z.string().min(1), name: z.string().trim().max(100).optional() }).strict()).default([]) }).strict(),
     fields: [{ key: 'allowed', type: 'rows', label: { zh: '能投件的操作者', en: 'Operators who may drop work' }, columns: [

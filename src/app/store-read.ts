@@ -66,6 +66,19 @@ export function storeReads(db: DatabaseSync) {
   },
   /** Newest decisions of the given kinds, for surfaces that must surface rare outcomes among many ignores. */
   decisionsOfKinds: (kinds: string[], limit = 30): Decision[] => db.prepare(`SELECT value FROM decision WHERE json_extract(value, '$.kind') IN (${kinds.map(() => '?').join(',')}) ORDER BY rowid DESC LIMIT ?`).all(...kinds, limit).map(row => JSON.parse(String(row.value)) as Decision),
+  /** Threads whose newest Decision is a `needsProject` stop, with the Trigger it refused, newest first. */
+  pendingProjects: (limit = 50): { decision: Decision; trigger: Trigger }[] => {
+    const decisions = db.prepare(`SELECT d.value FROM decision d
+      WHERE d.rowid = (SELECT MAX(rowid) FROM decision WHERE thread = d.thread)
+        AND json_extract(d.value, '$.kind') = 'stop'
+        AND EXISTS (SELECT 1 FROM json_each(json_extract(d.value, '$.reason')) r WHERE json_extract(r.value, '$.code') = 'needsProject')
+      ORDER BY d.rowid DESC LIMIT ?`).all(limit).map(row => JSON.parse(String(row.value)) as Decision)
+    return decisions.flatMap(decision => {
+      const trigger = decision.triggerIds.map(id => db.prepare('SELECT value FROM trigger WHERE id = ?').get(id))
+        .filter(row => row !== undefined).map(row => JSON.parse(String(row!.value)) as Trigger)[0]
+      return trigger ? [{ decision, trigger }] : []
+    })
+  },
   /** Messages whose `reply` effect failed, with consecutive failure count and last error, oldest first. */
   failingReplies: (): (Receipt & { attempts: number; error: string })[] => db.prepare(`SELECT o.value, e.attempts, e.error FROM effect e
     JOIN outbox o ON o.id = e.key WHERE e.kind = 'reply' AND e.attempts > 0 ORDER BY e.seq`).all()

@@ -1,6 +1,7 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
 import type { Assignment, ChannelRef, Decision, DecisionKind, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
   from './model.ts'
+import type { PersonRef, ProjectCandidate, ProjectProposal } from './project.ts'
 import type { Reason } from './reasons.ts'
 
 /** Gate admission result: either inadmissible with a reason code, or admissible with strength and MandateBasis. */
@@ -11,6 +12,17 @@ export type ScopeResult = { listened: true; observed: boolean; row?: string } | 
 /** Source configuration as the domain sees it: listening scope per trigger or per recorded Mandate basis. */
 export interface SourceScope {
   scope(input: { source: string; meta: Record<string, unknown> }): ScopeResult
+}
+/**
+ * The people a Source knows, and how its conversation names one: a person the Source's Policy allows, or one its own
+ * configuration knows, such as a folder's operator. A person another Source knows is a different person (each Source keeps
+ * its own identities), so mention rendering is by the conversation's Source only.
+ */
+export interface People {
+  /** Whether the Source that received `trigger` knows `person`; a mention of anyone else is dropped. */
+  knows(trigger: Trigger, person: PersonRef): boolean
+  /** Renders a mention of `person` for a message to `channel` in that Source's own syntax; empty when it cannot mention them. */
+  mention(person: PersonRef, channel: ChannelRef): string
 }
 
 /** Versioned rules; `gate` decides who may originate work. Source scope is not part of Policy. */
@@ -40,10 +52,20 @@ export interface Candidate {
 export type AssessmentOutcome =
   | { kind: 'ignore'; reason: string | Reason; audit?: Record<string, unknown> }
   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
-  /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
+  /**
+   * An accept: `rules` the assessment matched, `name` the ticket's requested short name, `note` a routing note for its worker,
+   * `projectId` the Project the host resolved for it, `reporter` and `mentions` the people a person named (the host checks
+   * them against the Source's own people), and `reasons` further Decision reasons the host recorded, such as dropped mentions.
+   */
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
-    name?: string; note?: string }
+    name?: string; note?: string; projectId?: string; reporter?: PersonRef; mentions?: PersonRef[]; reasons?: Reason[] }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
+  /**
+   * A refusal of a Trigger whose Project is not registered: the host records a stop with reason `needsProject`, asks the
+   * Trigger's conversation how to place it, and creates no ticket. Only a person's confirmation of `proposal`, or an answer
+   * naming a Project, starts it; `candidates` are the registered Projects the question offers.
+   */
+  | { kind: 'needsProject'; reason: string | Reason; candidates?: ProjectCandidate[]; proposal?: ProjectProposal; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */
 export interface Assessor {

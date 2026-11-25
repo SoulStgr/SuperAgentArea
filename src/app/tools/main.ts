@@ -7,6 +7,7 @@ import { UserError, followupOwners, key, reasonText, type Decision, type Decisio
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
+import { ASSESSOR_PERSON, type ProjectService } from '../project-service.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
@@ -26,6 +27,8 @@ export interface MainToolsHost {
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
+  /** Project ownership: the Project a routed request already belongs to, and the question a person may answer. */
+  readonly projects: Pick<ProjectService, 'resolve' | 'pending' | 'create'>
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -53,6 +56,7 @@ const RouteItemSchema = z.object({
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
+  confirm_proposal: z.boolean().nullish().describe('accept: this Trigger is a person\'s explicit confirmation of the Project proposal its card carries.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
 type Kind = RouteItem['kind']
@@ -65,13 +69,14 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
+  confirm_proposal: { check: z.boolean(), reads: ['accept'], needs: [] },
 }
 /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
 function invalid(item: RouteItem): string | undefined {
   for (const [field, { check, reads, needs }] of Object.entries(FIELDS) as [Field, typeof FIELDS[Field]][]) {
     const value = item[field]
     if (!reads.includes(item.kind)) continue
-    if (value === undefined || value === null || value.trim() === '') {
+    if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
       if (needs.includes(item.kind)) return `${item.kind} needs ${field}`
       continue
     }
@@ -94,8 +99,21 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
   switch (item.kind) {
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
+      // An explicit request joins the Project its Source resolves, such as its instance's default; without one it stays in
+      // the built-in workspace, as requests from people who named no station always did.
+      const trigger = host.store.triggers.get(item.trigger_id)
+      let projectId = trigger ? host.projects.resolve(trigger).project?.id : undefined
+      // A person's answer to a Project question creates the Project it confirms before the ticket is created.
+      if (trigger && !projectId && item.confirm_proposal && trigger.human) {
+        const proposed = host.projects.pending(trigger)?.proposal
+        if (proposed) {
+          const person = { source: trigger.source, id: trigger.actor.id }
+          projectId = host.projects.create({ ...proposed, kind: 'station', sourceIds: [trigger.source],
+            specifiedBy: ASSESSOR_PERSON, confirmedBy: person }).id
+        }
+      }
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...projectId ? { projectId } : {}, ...note })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -125,7 +143,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept joins the Project its Source resolves; on a card with pending_project, set confirm_proposal to confirm that proposal. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()

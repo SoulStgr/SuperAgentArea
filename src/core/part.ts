@@ -2,7 +2,7 @@
 import { UserError } from './errors.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
 import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
-import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
+import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, People, Policy, Repositories, SourceScope } from './ports.ts'
 
 export interface EngineOptions {
   repo: Repositories
@@ -12,6 +12,8 @@ export interface EngineOptions {
   assessor: Assessor
   executor: Executor
   outbox: Outbox
+  /** The people a Source knows and how its conversations mention one; a host without it mentions nobody. */
+  people?: People
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
   now?: () => string
   emit?: (event: DomainEvent) => void

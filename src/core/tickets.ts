@@ -41,11 +41,11 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
-    // Every new ticket belongs to the built-in workspace and names the Source and person it came from; Projects and mentions
-    // that a later stage resolves replace these defaults.
-    const reporter = primary && primary.actor.id ? { source: primary.actor.source, id: primary.actor.id } : undefined
+    // Every new ticket belongs to the Project the host resolved for it, or to the built-in workspace, and names the Source and
+    // person it came from; an acceptance may name another reporter and people to mention.
+    const reporter = outcome.reporter ?? (primary && primary.actor.id ? { source: primary.actor.source, id: primary.actor.id } : undefined)
     let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
-      createdAt: at, updatedAt: at, origin, projectId: WORKSPACE_PROJECT_ID, mentions: [],
+      createdAt: at, updatedAt: at, origin, projectId: outcome.projectId ?? WORKSPACE_PROJECT_ID, mentions: outcome.mentions ?? [],
       ...primary ? { sourceId: primary.source } : {}, ...reporter ? { reporter } : {} }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel

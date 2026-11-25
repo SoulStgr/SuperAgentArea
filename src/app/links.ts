@@ -6,6 +6,7 @@ import { feishuRef, feishuSettings } from '../sources/feishu.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { triggerMessage } from '../executor/dsh.ts'
 import { relatedTickets, ticketCard, triggerCard } from './cards.ts'
+import type { PendingProject, ProjectService } from './project-service.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
 
@@ -15,6 +16,8 @@ export interface LinkHost {
   readonly commands: Commands
   readonly sources: SourceRegistry
   readonly lifetime: AbortSignal
+  /** Project questions a card names, so the main Session can answer a person's confirmation with the right proposal. */
+  readonly projects?: Pick<ProjectService, 'pending'>
 }
 
 /** Resolves and caches a trigger's external message URL, falling back to a readable resource path when lookup fails. */
@@ -60,11 +63,15 @@ export async function candidateCard(host: LinkHost, candidate: Candidate) {
   // Triggers that a worker Session handed back as outside its ticket's scope, with the worker's reason.
   const handedBack = candidate.triggers.flatMap(trigger => (host.store.triggers.disposition(trigger.id)?.handbacks ?? [])
     .map(item => ({ trigger_id: trigger.id, ticket_id: item.ticketId, reason: item.reason })))
+  // A message on a Thread that asked how to place its work: an explicit accept confirms the proposal it carries.
+  const pending: PendingProject | undefined = host.projects?.pending(primary)
   // Format the primary trigger like a worker input (including the message it replies to) and summarize earlier batch triggers as cards.
   const others = candidate.triggers.filter(trigger => trigger.id !== primary.id)
   return { ...triggerMessage(primary, await sourceLink(host, primary), undefined, repliedTo(host, primary)), strength: candidate.strength,
     mode: settings.eval.mode, ...others.length ? { batch: others.map(trigger => triggerCard(trigger)) } : {},
     ...handedBack.length ? { handed_back: handedBack } : {}, ...relatedTickets(candidate.tickets),
+    ...pending ? { pending_project: { trigger_id: pending.trigger.id, candidates: pending.candidates,
+      ...pending.proposal ? { proposal: pending.proposal } : {} } } : {},
     ...(delivered.length ? { delivered_to: delivered } : {}), ...(referenced.length ? { referenced_tickets: referenced.map(ticketCard) } : {}),
     next_action: candidate.strength === 'explicit' ? 'Route it with orchestrator_route as dispatch says: accept, attach, stop or ignore.'
       : 'Ignore it with orchestrator_route if the card shows it touches no enabled rule; else assess it with orchestrator_eval, orchestrator_eval_read, then orchestrator_eval_decide.' }

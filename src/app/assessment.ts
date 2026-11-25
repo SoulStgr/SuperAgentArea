@@ -1,8 +1,8 @@
 /** Proactive candidate assessment for the main Session: relays candidate cards, serves bounded context reads, and records outcomes. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
-  type Trigger } from '../core/index.ts'
+import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession, type PersonRef,
+  type ProjectRecord, type Trigger } from '../core/index.ts'
 import { AdmissionDirectionSchema, RuleAssessmentSchema, assessmentOutcome, directionAllowed, type Settings } from '../policy.ts'
 import { checkedImText } from '../infra/text.ts'
 import type { Commands } from '../infra/commands.ts'
@@ -12,14 +12,21 @@ import { readRepositoryPath } from '../sources/github-read.ts'
 import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
+import { knownPerson, sourcePeople, type PeopleHost } from './people.ts'
+import { ASSESSOR_PERSON, locationOfAddress, type ProjectService } from './project-service.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
 import type { Effects } from './effects.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
+/** A person an assessment names, by the id its Source knows them by; the host keeps their Source name. */
+export const AssessedPersonSchema = z.string().trim().min(1).max(200)
+/** A new workstation an assessment proposes: its name, and an address (a local folder or a repository) when it has one. */
+export const ProjectProposalSchema = z.object({ name: z.string().trim().min(1).max(100),
+  address: z.string().trim().min(1).max(500).optional() }).strict()
 /** Schema for the main Session's proactive candidate assessment decision (`orchestrator_eval_decide`). */
 export const AssessmentSchema = z.object({
-  decision: z.enum(['accept', 'ignore', 'unavailable']),
+  decision: z.enum(['accept', 'ignore', 'unavailable', 'needsProject']),
   rule_assessments: z.array(RuleAssessmentSchema)
     .refine(assessments => new Set(assessments.map(assessment => assessment.rule_id)).size === assessments.length,
       'Duplicate rule assessment IDs').describe('One per enabled rule.'),
@@ -29,6 +36,10 @@ export const AssessmentSchema = z.object({
   scope: z.string().max(1500),
   intent_evidence: z.string().trim().min(1).max(700).nullish().describe('For acceptance: the quotes that establish the three facts.'),
   acknowledgement: AcknowledgementSchema.nullish().describe('For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.'),
+  reporter: AssessedPersonSchema.nullish().describe('accept: the id its Source knows the reporter by, when that is not the sender.'),
+  mentions: z.array(AssessedPersonSchema).max(20).nullish().describe('accept: ids the Source knows of people the discussion asks to look at the work; anyone else is dropped.'),
+  proposal: ProjectProposalSchema.nullish().describe('needsProject: a new workstation the discussion suggests, with a local folder or repository address; a person confirms it.'),
+  confirm_proposal: z.boolean().nullish().describe('accept: this Trigger is a person\'s explicit confirmation of the pending proposal.'),
   reason: z.string().min(1).max(500),
 }).strict().refine(value => value.decision !== 'accept' || !directionAllowed(value.direction) || !value.rule_assessments.some(rule => rule.matched)
   || !!value.worktree_name, { message: 'Accepted work requires a short English worktree_name', path: ['worktree_name'] })
@@ -61,6 +72,10 @@ export interface AssessorHost {
   /** Delivers a candidate card to the main Session once per request ID, resolving after the Session receives it. */
   deliver(requestId: string, text: string): Promise<void>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
+  /** Project ownership: the registry's resolution, questions and creations. */
+  readonly projects: Pick<ProjectService, 'resolve' | 'pending' | 'create'>
+  /** The people each Source knows, for a reporter and mentions an assessment names. */
+  readonly people: PeopleHost
 }
 
 /** Schema for bounded context or repository read requests during an active evaluation (`orchestrator_eval_read`). */
@@ -206,9 +221,21 @@ export class MasterAssessor implements Assessor {
     })() : { error: error ?? 'Call orchestrator_eval to load initial context', complete: false }
     const settings = this.host.settings()
     const others = candidate.triggers.filter(item => item.id !== trigger.id)
+    const primary = this.primaryOf(candidate, trigger)
+    const resolution = this.host.projects.resolve(primary)
+    const pending = this.host.projects.pending(trigger)
     return { trigger_id: trigger.id, strength: candidate.strength, mode: settings.eval.mode,
       source: { kind: trigger.source, actor: trigger.actor.id, thread: threadKey(trigger.threads[0]!), ...(trigger.url
         ? { url: trigger.url } : {}) },
+      // The Project the host resolved, or the candidates and hints a person's answer may choose from; a trigger whose
+      // Project is not registered may only be refused (needsProject), never accepted.
+      project: resolution.project
+        ? { id: resolution.project.id, key: resolution.project.key, name: resolution.project.value.name, kind: resolution.project.value.kind }
+        : { candidates: resolution.candidates, ...resolution.hints.length ? { hints: resolution.hints } : {} },
+      // The people this Source knows: a reporter or a mention of anyone else is dropped.
+      people: sourcePeople(this.host.people, trigger).map(person => ({ id: person.id, ...person.name ? { name: person.name } : {} })),
+      ...pending ? { pending_project: { trigger_id: pending.trigger.id, candidates: pending.candidates,
+        ...pending.proposal ? { proposal: pending.proposal } : {} } } : {},
       ...cut(trigger.text, TRIGGER_CHARS), ...imageIds(source?.messageId ?? '', trigger.text),
       ...others.length ? { batch: others.map(item => {
         const text = cut(item.text, WINDOW_CHARS)
@@ -268,12 +295,55 @@ export class MasterAssessor implements Assessor {
       snapshots.set(cacheKey, body)
       return textPage(read.resource, body, read.offset, 4000)
   }
+  /** The Trigger that gave its Eval its strength: what the host resolves the batch's Project for and mentions belong to. */
+  private primaryOf(candidate: Candidate, fallback: Trigger): Trigger {
+    const primaryId = candidate.thread.evaluating?.primary
+    return candidate.triggers.find(item => item.id === primaryId) ?? fallback
+  }
+  /**
+   * The Project a person confirmed while assessing: the Thread's pending proposal the person explicitly confirmed, or the new
+   * workstation the person named in this message (`proposal`). Only an explicit request of a person can confirm one.
+   */
+  private confirmedProject(candidate: Candidate, trigger: Trigger, result: z.infer<typeof AssessmentSchema>): ProjectRecord | undefined {
+    if (!result.confirm_proposal || !trigger.human || candidate.strength !== 'explicit') return undefined
+    const person = { source: trigger.source, id: trigger.actor.id }
+    const proposed = result.proposal ? { name: result.proposal.name, location: locationOfAddress(result.proposal.address) }
+      : this.host.projects.pending(trigger)?.proposal
+    if (!proposed) return undefined
+    return this.host.projects.create({ ...proposed, sourceIds: [trigger.source],
+      specifiedBy: result.proposal ? person : ASSESSOR_PERSON, confirmedBy: person })
+  }
+  /** The refusal of a Trigger whose Project is not registered, with the candidates and the address the assessment proposed. */
+  private needsProject(candidate: Candidate, trigger: Trigger, result: z.infer<typeof AssessmentSchema>,
+    audit?: Record<string, unknown>): AssessmentOutcome {
+    // An assessment may propose a new workstation; only a person's answer creates it.
+    const proposal = result.proposal ? { name: result.proposal.name, location: locationOfAddress(result.proposal.address) } : undefined
+    return { kind: 'needsProject', reason: result.reason, candidates: this.host.projects.resolve(this.primaryOf(candidate, trigger)).candidates,
+      ...proposal ? { proposal } : {}, ...audit ? { audit } : {} }
+  }
   /** Converts the assessment into an outcome under current settings and passes it to `Engine.decide` for policy verification. */
   async decide(triggerId: string, result: z.infer<typeof AssessmentSchema>, signal?: AbortSignal): Promise<{ state: string; ticket_id?: string; reason: string }> {
-    const { candidate } = this.evalFor(triggerId)
+    const { candidate, trigger } = this.evalFor(triggerId)
     signal?.throwIfAborted()
-    let outcome: AssessmentOutcome = assessmentOutcome(result, this.host.settings(), candidate.strength)
+    const primary = this.primaryOf(candidate, trigger)
+    const resolution = this.host.projects.resolve(primary)
+    let outcome: AssessmentOutcome = assessmentOutcome(result, this.host.settings(), candidate.strength, primary.source)
     if (outcome.kind === 'accept' && outcome.acknowledgement) outcome = { ...outcome, acknowledgement: checkedImText(outcome.acknowledgement) }
+    // Acceptance needs a registered Project: a person's confirmation creates one, and anything else becomes the question.
+    if (outcome.kind === 'accept' && !resolution.project) {
+      const project = this.confirmedProject(candidate, trigger, result)
+      outcome = project ? { ...outcome, projectId: project.id }
+        : this.needsProject(candidate, trigger, result, { ...outcome.audit, project_unresolved: true })
+    }
+    if (outcome.kind === 'accept') {
+      // The reporter and mentions use the ids this Source knows, with the names it shows; the host drops anyone else.
+      const people = this.host.people
+      const canonical = (person: PersonRef): PersonRef =>
+        knownPerson(people, primary, person) ?? { source: primary.source, id: person.id, ...person.name ? { name: person.name } : {} }
+      outcome = { ...outcome, ...resolution.project ? { projectId: resolution.project.id } : {},
+        ...outcome.reporter ? { reporter: canonical(outcome.reporter) } : {},
+        ...outcome.mentions?.length ? { mentions: outcome.mentions.map(canonical) } : {} }
+    }
     const decision = this.host.engine.decide(triggerId, { ...outcome, evalId: candidate.evalId })
     return { state: decision.kind, ...(decision.ticketId ? { ticket_id: decision.ticketId } : {}), reason: reasonText(decision.reason) }
   }

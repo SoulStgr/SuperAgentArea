@@ -1,5 +1,6 @@
 /** Type-only management API contract between the web panel and host routes, imported by the panel without bundling host code. */
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { ProjectLocation } from '../core/index.ts'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
@@ -13,6 +14,14 @@ export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as 
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
 export type TicketFilter = typeof TICKET_FILTERS[number]
 export type ThreadFilter = typeof THREAD_FILTERS[number]
+/**
+ * A person's answer to a Trigger's Project question: an existing Project, a new one (a station, or one temporary `adhoc`
+ * task), or the assessment's proposal confirmed.
+ */
+export type AnswerProject =
+  | { projectId: string }
+  | { new: { name: string; location: ProjectLocation; kind?: 'station' | 'adhoc' } }
+  | { confirmProposal: true }
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
@@ -28,6 +37,7 @@ export interface Api {
   'GET threads/:key': { query?: { limit?: number; before?: string; around?: string }; response: ThreadDetailView }
   'POST threads/:key/unsubscribe': { response: { removed: boolean; thread: string; context_delivery: Delivery } }
   'POST triggers/:id/requeue': { response: { queued: boolean } }
+  'POST triggers/:id/answer-project': { body: AnswerProject; response: { resolved: string } }
   'GET decisions': { query?: Paged & { kind?: string; window?: '24h' }; response: DecisionListView }
   'POST decisions/:id/dismiss': { response: { dismissed: true } }
   'GET tickets': { query?: Paged & { state?: TicketFilter }; response: TicketListView }

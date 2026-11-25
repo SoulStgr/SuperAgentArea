@@ -136,6 +136,21 @@ async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归')) {
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   return { trigger, ticket, sessionId: `worker-${ticket.id}` }
 }
+/**
+ * Registers a station Project and makes the Feishu instance default to it, as a person's Project answer would: a proactive
+ * acceptance needs a registered Project, since a ticket never looks one up afterwards.
+ */
+function stationProject(id = 'prj_aps', keyValue = 'aps', name = 'aps'): string {
+  const at = new Date().toISOString()
+  runtime.store.projects.save({ id, key: keyValue, status: 'active', createdAt: at, updatedAt: at,
+    value: { name, kind: 'station', location: { type: 'managed' }, outputDir: join(directory, 'area', keyValue),
+      scratchDir: join(directory, 'area', `${keyValue}.work`), rulesDir: join(directory, 'area', `${keyValue}.work`, 'rules'),
+      sourceIds: [], aliases: [] } })
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    feishu: { ...settings.sources.feishu!, defaultProjectId: id } } })
+  return id
+}
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'orchestrator-runtime-'))
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : args[1]?.includes('/pulls/') ? { state: 'open', user: { login: 'agent-bot' }, html_url: 'https://github.com/acme/widgets/pull/' + args[1].split('/').at(-1), head: { ref: `agent/${String(runtime.store.tickets.list()[0]?.execution?.name)}`, sha: 'head-1', repo: { full_name: 'acme/widgets' } } } : { default_branch: 'master', permissions: { push: true } })
@@ -266,6 +281,7 @@ it('fans a person\'s later thread message out to the live worker as context and 
 })
 
 it('assesses a proactive observation in the orchestrator Session and creates the ticket only on a positive auto-mode decision', async () => {
+  const project = stationProject()
   const observe = (mode: 'observe' | 'auto') => runtime.settings.save('eval', { ...runtime.store.settings().eval, mode }, runtime.store.blockRevision('eval'), 'panel')
   await observe('observe')
   const trigger = feishu('3', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
@@ -290,12 +306,16 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', decision(again.id))
   expect(accepted).toMatchObject({ decision: 'accept', ticket: { ticket_id: expect.any(String) } })
   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket).toMatchObject({ projectId: project, mentions: [] })
   expect(ticket.mandate).toMatchObject({ strength: 'inferred', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
   expect(runtime.store.replyStatus(key('ack', again.id))).toBeDefined()
+  // The accepted ticket works in the station's scratch directory, not the workspace's.
+  expect(ticket.execution?.directory).toBe(join(directory, 'area', 'aps.work', ticket.execution!.name))
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
 })
 
 it('accepts silently under a rule that says so, gives the worker the rule procedure, and closes it as dropped when nothing is left for a human', async () => {
+  stationProject()
   const policy = runtime.store.settings().policy
   await runtime.settings.save('policy', { ...policy, rules: [...policy.rules, { id: 'silent-bugfix', name: '沉默地复现和修复', enabled: true, instruction: 'Reproduce minimally first; accept silently.' }] }, runtime.store.blockRevision('policy'), 'panel')
   await runtime.settings.save('eval', { ...runtime.store.settings().eval, mode: 'auto' }, runtime.store.blockRevision('eval'), 'panel')
@@ -1850,12 +1870,15 @@ it('keeps two folder instances apart: their Threads, Tickets, environments and r
     DSH_SUPERAGENT_FOLDER_TASK: join(inbox('in-ops'), 'ops.txt') })
   expect(env(devTicket)).toMatchObject({ DSH_SUPERAGENT_FOLDER_INBOX: inbox('in-dev'), DSH_SUPERAGENT_FOLDER_OUTBOX: inbox('out-dev'),
     DSH_SUPERAGENT_FOLDER_TASK: join(inbox('in-dev'), 'dev.txt') })
-  // The acknowledgements are written to the outbox of the instance each Ticket came from, and nowhere else.
+  // The acknowledgements and ticket cards are written to the outbox of the instance each Ticket came from, and nowhere else.
   await runtime.sendReplies()
-  expect(readdirSync(join(inbox('out-ops'), opsTicket.id))).toHaveLength(1)
-  expect(readdirSync(join(inbox('out-dev'), devTicket.id))).toHaveLength(1)
+  expect(readdirSync(join(inbox('out-ops'), opsTicket.id))).toHaveLength(2)
+  expect(readdirSync(join(inbox('out-dev'), devTicket.id))).toHaveLength(2)
   expect(existsSync(join(inbox('out-ops'), devTicket.id))).toBe(false)
   expect(existsSync(join(inbox('out-dev'), opsTicket.id))).toBe(false)
   expect(runtime.store.replyStatus(key('ack', ops.id))).toBe('sent')
   expect(runtime.store.replyStatus(key('ack', dev.id))).toBe('sent')
+  expect(runtime.store.replyStatus(key('ticket-card', opsTicket.id))).toBe('sent')
+  // A folder card names its reporter in plain text, since the folder Source has no @ syntax.
+  expect(readFileSync(join(inbox('out-ops'), opsTicket.id, `${key('ticket-card', opsTicket.id)}.md`), 'utf8')).toContain('alice')
 })

@@ -3,10 +3,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
-import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
-import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
+import { dirname, join } from 'node:path'
+import { isWorkspaceProject, key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson }
   from '../core/index.ts'
+import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, ProjectRecord, Ticket, TicketInput,
+  Trigger } from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
 import type { Settings } from '../policy.ts'
@@ -64,7 +65,7 @@ export interface ExecutorHost {
   /** Where the Executor reports what happened to Assignments and Inputs. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
     | 'assignmentInterrupted' | 'reply'>
-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'artifacts' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'projects' | 'artifacts' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry, which reports whether background worker event handling failed. */
@@ -97,7 +98,7 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
-  stateDir: string): Execution {
+  stateDir: string, project?: Pick<ProjectRecord, 'id' | 'key' | 'value'>): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
   const ruleIds = ticket.mandate.basis.rules
@@ -108,8 +109,11 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
-  // A ticket without a Project of its own works in the built-in workspace's scratch directory, `<area>/workspace/.work/`.
-  return { name, directory: workspaceTicketDirectory(settings, stateDir, name), assignment }
+  // A station's ticket works in its scratch directory; a ticket without a station works in the built-in workspace's.
+  const directory = project && !isWorkspaceProject(project)
+    ? join(project.value.scratchDir, name)
+    : workspaceTicketDirectory(settings, stateDir, name)
+  return { name, directory, assignment }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -240,12 +244,16 @@ export class DshExecutor implements Executor {
   }
   /** Promotes a ticket's `deliver/` files into its Project's output directory after its ready report, indexing and replying. */
   private async artifacts(ticketId: string): Promise<void> {
-    const { outputDir } = workspaceDirectories(this.host.store.settings(), this.host.machine.stateDir)
-    await deliverArtifacts({ store: this.host.store, engine: this.host.engine, targetRoot: outputDir }, ticketId)
+    const ticket = this.host.store.tickets.get(ticketId)
+    const project = ticket?.projectId ? this.host.store.projects.get(ticket.projectId) : undefined
+    const targetRoot = project && !isWorkspaceProject(project) ? project.value.outputDir
+      : workspaceDirectories(this.host.store.settings(), this.host.machine.stateDir).outputDir
+    await deliverArtifacts({ store: this.host.store, engine: this.host.engine, targetRoot }, ticketId)
   }
-  /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
+  /** Populates a newly accepted ticket's `execution` attributes from its Project: worktree name, working directory, and assignment text. */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const project = ticket.projectId ? this.host.store.projects.get(ticket.projectId) : undefined
+    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, project) }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's

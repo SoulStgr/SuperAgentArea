@@ -28,6 +28,15 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
   otherChats: z.enum(['none', 'mentions']).default('none'),
 }).strict()
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
+/**
+ * The Project names one chat title states: the whole title and its words, so a chat named "APS 填报群" points at a
+ * Project called "APS". The Project registry matches them case-insensitively against keys, names and aliases.
+ */
+export function chatProjectHints(title: string): { name: string }[] {
+  const whole = title.trim()
+  const words = whole.split(/[\s,，、;；:：/|（）()【】[\]·—–-]+/).map(word => word.trim()).filter(word => word.length >= 2)
+  return [...new Set([whole, ...words].filter(Boolean))].slice(0, 6).map(name => ({ name }))
+}
 export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,
   refreshLabels: (host, signal) => refreshChatNames(sourceContext(host, feishuKind), signal),
@@ -62,6 +71,15 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     allowed: (address, config) =>
       feishuKind.scope!({ meta: { chatId: address.chatId ?? '', direct: address.direct === 'true' }, instance: SOURCE }, config).listened,
     send: sendFeishu, link: feishuLink,
+    // Feishu renders a mention in its own tag; the open_id is the id a person is known by here.
+    mention: person => `<at id=${person.id}></at>`,
+  },
+  // The chat's title is the Project hint a conversation states; the trigger records it from the bot's chat list.
+  projectHints: (trigger, config) => {
+    const chatId = typeof trigger.meta.chatId === 'string' ? trigger.meta.chatId : ''
+    const title = typeof trigger.meta.chatName === 'string' && trigger.meta.chatName ? trigger.meta.chatName
+      : config.chats.find(chat => chat.chatId === chatId)?.name
+    return title ? chatProjectHints(title) : []
   },
   threadContext: feishuThreadContext,
   find: query => ({ threads: [], terms: [...new Set(query.match(/om_[A-Za-z0-9_-]+/g) ?? [])] }),

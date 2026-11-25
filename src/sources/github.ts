@@ -93,7 +93,8 @@ export const githubKind: SourceKind<GithubConfig> = {
     return { listened: true, observed: row !== undefined && config[OBSERVED[row]], ...row ? { row } : {} }
   },
   health: ['github'],
-  channel: { send: sendGithub, link: githubLink },
+  // A GitHub mention is the login; a person is known by it on this Source only.
+  channel: { send: sendGithub, link: githubLink, mention: person => `@${person.id}` },
   threadContext: githubThreadContext,
   // `#12`, `12`, or the page of an Issue or PR, of any repository, names Thread 12.
   find: query => {

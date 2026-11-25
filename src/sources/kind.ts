@@ -1,7 +1,7 @@
 /** SourceKind plugin contract: configuration schema, UI form fields, policy integration, channel adapter, and thread context reader. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { z } from 'zod'
-import type { OutboundMessage, ScopeResult, Trigger } from '../core/index.ts'
+import type { OutboundMessage, PersonRef, ProjectHint, ScopeResult, Trigger } from '../core/index.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SourceContext, SourceHost } from './host.ts'
@@ -53,6 +53,11 @@ export interface SourceChannel<C> {
   send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
   /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
   link(address: Record<string, string>, links: ChannelLinks, config?: C): ChannelLink
+  /**
+   * Renders a mention of `person` in this Source's own syntax, such as `@login` on GitHub or `<at id=…></at>` on Feishu;
+   * a kind without mention support returns `''`, and messages then name nobody. Persons of another Source are never passed.
+   */
+  mention?(person: PersonRef): string
 }
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message can never authorize work on its own (at most an inferred candidate). */
 export interface ContextMessage {
@@ -111,6 +116,17 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */
   policy?: SourcePolicyPart<Record<string, unknown> & { allowed: { id: string; name?: string }[] }>
+  /**
+   * The Project a Trigger's event points at, read from what the Source received: a folder's `PROJECT.md` or task-folder
+   * name, an IM chat title. The registry matches the hints against the registered Projects; a kind with nothing to say
+   * omits it or returns none, since its instance's default Project is the stable mapping.
+   */
+  projectHints?(trigger: Trigger, config: C): ProjectHint[]
+  /**
+   * People this kind's own configuration knows beside the Policy's lists, such as a folder instance's operator: an
+   * assessment may mention them, while anyone else it names is dropped.
+   */
+  people?(config: C, instance: string): { id: string; name?: string }[]
   /** Rereads display names for row keys (such as chat names), stores the resolved names in `KV.sources.labels(kind)`, and returns them. */
   refreshLabels?(host: SourceHost, signal?: AbortSignal): Promise<Record<string, string>>
   /** Variables the kind registers with the execution environment and how their values are computed. */

@@ -5,8 +5,8 @@
 import { LIMITS } from './limits.ts'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
-import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
-  type Trigger, type ActorRef, type GateResult } from './core/index.ts'
+import { key, type AssessmentOutcome, type Mandate, type PersonRef, type Policy, type PolicyEffect, type ProjectProposal, type ProjectLocation,
+  type SourceScope, type Strength, type Thread, type Ticket, type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
 
@@ -27,17 +27,28 @@ export function directionAllowed(value: unknown): value is AdmissionDirection {
   const result = AdmissionDirectionSchema.safeParse(value)
   return result.success && result.data.implementation_requested && result.data.target_basis !== 'undetermined' && !result.data.requires_design_decision
 }
+/** A person an assessment names, by the id its Source knows them by, with the name that Source shows. */
+export interface AssessedPerson { id: string; name?: string }
 export interface Assessment {
-  decision: 'accept' | 'ignore' | 'unavailable'; rule_assessments: RuleAssessment[]; direction: unknown
+  decision: 'accept' | 'ignore' | 'unavailable' | 'needsProject'; rule_assessments: RuleAssessment[]; direction: unknown
   title: string; scope: string; reason: string; intent_evidence?: string | null; acknowledgement?: string | null; worktree_name?: string
+  /** The Source id of who reports accepted work, and the Source ids of the people the discussion asks to look at it. */
+  reporter?: AssessedPerson | string | null; mentions?: (AssessedPerson | string)[] | null
+  /** A new workstation's name and address the discussion suggests; only a person's confirmation creates it. */
+  proposal?: { name: string; address?: string } | null
+  /** This Trigger is a person's explicit confirmation of the Thread's pending proposal. */
+  confirm_proposal?: boolean | null
 }
 /**
  * Validate an assessment against enabled rules and convert it into an engine `AssessmentOutcome`.
  * Acceptance requires a settled direction, at least one matched enabled rule, and `intent_evidence`, and accepts an
- * inferred candidate only in `auto` mode (otherwise recording it as `would_accept`).
+ * inferred candidate only in `auto` mode (otherwise recording it as `would_accept`). A `needsProject` outcome records the
+ * refusal before any rule check and turns the proposed address into a Project location; `source` gives the Source the
+ * assessed people belong to, and people are kept only when it is given.
  * @throws when `rule_assessments` does not cover every enabled rule exactly once, or an accept omits `intent_evidence`.
  */
-export function assessmentOutcome(assessment: Assessment, settings: Pick<Settings, 'policy' | 'eval'>, strength: Strength): AssessmentOutcome {
+export function assessmentOutcome(assessment: Assessment, settings: Pick<Settings, 'policy' | 'eval'>, strength: Strength,
+  source?: string): AssessmentOutcome {
   const enabled = settings.policy.rules.filter(rule => rule.enabled)
   const judged = assessment.rule_assessments
   const ids = new Set(judged.map(item => item.rule_id))
@@ -47,6 +58,11 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
   const matches = judged.filter(item => item.matched).map(({ rule_id, reason }) => ({ rule_id, reason }))
   const evidence = assessment.intent_evidence ? { intent_evidence: assessment.intent_evidence } : {}
   const audit = { matches, rule_assessments: judged, direction: assessment.direction, ...evidence }
+  // A Project the host must resolve before work: the assessment proposes an address, and only a person confirms it.
+  if (assessment.decision === 'needsProject') {
+    const proposal = assessment.proposal ? { name: assessment.proposal.name, location: locationOf(assessment.proposal.address) } : undefined
+    return { kind: 'needsProject', reason: assessment.reason, audit, ...proposal ? { proposal } : {} }
+  }
   if (assessment.decision !== 'accept') return { kind: assessment.decision, reason: assessment.reason, audit }
   if (!directionAllowed(assessment.direction)) return { kind: 'ignore', audit, reason: { code: 'directionUnsettled' } }
   if (!matches.length) return { kind: 'ignore', audit, reason: { code: 'noRuleMatched' } }
@@ -56,8 +72,23 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
     const proposal = { title, scope, worktree_name: name }
     return { kind: 'ignore', audit: { ...audit, would_accept: true, proposal }, reason: { code: 'observed', values: { text: assessment.reason } } }
   }
+  const person = (value: AssessedPerson | string | null | undefined): PersonRef | undefined => {
+    if (!source || value == null) return undefined
+    const id = typeof value === 'string' ? value.trim() : value.id.trim()
+    const shown = typeof value === 'string' ? undefined : value.name
+    return id ? { source, id, ...shown ? { name: shown } : {} } : undefined
+  }
+  const mentions = source && assessment.mentions ? assessment.mentions.flatMap(value => person(value) ?? []) : undefined
+  const reporter = person(assessment.reporter)
   return { kind: 'accept', title, scope, reason: assessment.reason, ...(assessment.acknowledgement ? { acknowledgement: assessment.acknowledgement } : {}),
-    rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}) }
+    rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}), ...(reporter ? { reporter } : {}),
+    ...(mentions?.length ? { mentions } : {}) }
+}
+/** The location an assessment's proposed address names: a repository for a protocol or scp address, otherwise a folder. */
+function locationOf(address: string | undefined): ProjectLocation {
+  const trimmed = address?.trim() ?? ''
+  if (!trimmed) return { type: 'managed' }
+  return /^(?:https|ssh|file):\/\/|^[\w.-]+@[\w.-]+:/.test(trimmed) ? { type: 'repo', url: trimmed } : { type: 'folder', path: trimmed }
 }
 const DEFAULT_RULES = [
   { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },

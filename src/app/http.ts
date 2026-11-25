@@ -16,6 +16,7 @@ import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
+import type { ProjectService } from './project-service.ts'
 import type { Sessions } from './sessions.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
@@ -38,6 +39,8 @@ export interface HttpHost {
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
+  /** Project ownership answers: the pending question of a Trigger, and the Project a person answered with. */
+  readonly projects: Pick<ProjectService, 'answer' | 'pending'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -147,6 +150,19 @@ const PromptsQuery = z.object({ revision: count.optional(), offset: count.defaul
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+const ProjectLocationInput = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('managed') }).strict(),
+  z.object({ type: z.literal('folder'), path: z.string().trim().min(1) }).strict(),
+  z.object({ type: z.literal('repo'), path: z.string().trim().min(1).optional(), url: z.string().trim().min(1).optional(),
+    branch: z.string().trim().max(200).optional() }).strict(),
+])
+/** A person's answer to a Trigger's Project question: an existing Project, a new one, or the assessment's proposal confirmed. */
+const AnswerProjectRequest = z.union([
+  z.object({ projectId: z.string().trim().min(1) }).strict(),
+  z.object({ new: z.object({ name: z.string().trim().min(1).max(100), location: ProjectLocationInput,
+    kind: z.enum(['station', 'adhoc']).optional() }).strict() }).strict(),
+  z.object({ confirmProposal: z.literal(true) }).strict(),
+])
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
@@ -178,6 +194,14 @@ function routes(runtime: HttpHost): Routes {
       const queued = runtime.engine.reevaluate(params.id)
       runtime.requestPass()
       return { queued }
+    },
+    // A person answered a Trigger's Project question in the panel: create or pick the Project, then queue its fresh Eval,
+    // which resolves the Project and accepts. The same-origin check of every route is the panel's authentication.
+    'POST triggers/:id/answer-project': async ({ params, body }) => {
+      const { resolved } = runtime.projects.answer(params.id, AnswerProjectRequest.parse(await body()))
+      runtime.engine.reevaluate(params.id)
+      runtime.requestPass()
+      return { resolved }
     },
     'GET decisions': ({ query }) => {
       const { kind, window, offset, limit } = DecisionsQuery.parse(query)
