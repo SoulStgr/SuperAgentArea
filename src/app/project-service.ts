@@ -30,8 +30,15 @@ export interface Resolution {
   project?: ProjectRecord
   /** The active stations the question offers as candidates, newest first. */
   candidates: ProjectCandidate[]
-  /** What the Source stated about the Project: a name, a local path, or a repository address. */
+  /** What the Source stated about the Project: a name, a local path, or a repository address, marked when it states one outright. */
   hints: ProjectHint[]
+  /** The hints that state a Project outright, such as a `PROJECT.md`, a bracketed task name or a chat title. */
+  strongHints: ProjectHint[]
+  /**
+   * Whether the Trigger names a Project no registered one fits: the request is asked about instead of continuing in the
+   * workspace. A Trigger that only hints at one, or states nothing, still belongs to the workspace.
+   */
+  needsQuestion: boolean
   via?: 'answer' | 'default' | 'match'
 }
 /** The question a Thread waits to answer: the `needsProject` Decision, its Trigger, and what it offers. */
@@ -139,8 +146,9 @@ export function matchProject(projects: readonly ProjectRecord[], hint: ProjectHi
 
 /**
  * Resolves the Project a Trigger belongs to, before any ticket exists (see plan §2.5): the answer its Thread already gave,
- * then its Source instance's default Project, then what the event itself states. A Trigger with none of these belongs to no
- * station; the assessment refuses it with `needsProject` instead of letting a ticket find its Project afterwards.
+ * then its Source instance's default Project, then what the event itself states. A Trigger whose event states a Project
+ * no registered one fits is asked about (`needsQuestion`, the `needsProject` refusal), while one that only hints at a
+ * Project, or states none, belongs to no station and continues in the workspace.
  */
 export class ProjectService {
   constructor(private readonly host: ProjectHost) {}
@@ -155,16 +163,17 @@ export class ProjectService {
   resolve(trigger: Trigger): Resolution {
     const candidates = this.candidates()
     const answered = this.active(this.host.store.get(KV.projects.answers(threadKey(trigger.threads[0]!))))
-    if (answered) return { project: answered, candidates, hints: [], via: 'answer' }
+    if (answered) return { project: answered, candidates, hints: [], strongHints: [], needsQuestion: false, via: 'answer' }
     const { defaultProjectId, hints } = this.host.sources.projectHints(trigger, this.host.settings())
+    const strongHints = hints.filter(hint => hint.strong)
     const fallback = this.active(defaultProjectId)
-    if (fallback) return { project: fallback, candidates, hints, via: 'default' }
+    if (fallback) return { project: fallback, candidates, hints, strongHints, needsQuestion: false, via: 'default' }
     const projects = this.host.store.projects.list('active')
     for (const hint of hints) {
       const project = matchProject(projects, hint)
-      if (project) return { project, candidates, hints, via: 'match' }
+      if (project) return { project, candidates, hints, strongHints, needsQuestion: false, via: 'match' }
     }
-    return { candidates, hints }
+    return { candidates, hints, strongHints, needsQuestion: strongHints.length > 0 }
   }
   /**
    * The Thread's unanswered Project question: its newest Decision is a `needsProject` stop, with that Decision, the Trigger

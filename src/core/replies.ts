@@ -54,7 +54,8 @@ export class Replies extends EnginePart {
   /**
    * Queue the host's question about a Trigger that belongs to no registered Project where that Trigger was written, once:
    * its id names the Trigger, so asking again after a failed answer or a replayed Eval keeps one message. It mentions the
-   * person who wrote the Trigger when the conversation's Source can name them.
+   * person who wrote the Trigger when the conversation's Source can name them, and its `purpose` tells the Source that a
+   * folder, for one, answers it with a question file rather than a reply in the ticket's folder.
    */
   question(request: Extract<ReplyRequest, { purpose: 'question' }>): Reply {
     const trigger = this.repo.triggers.get(request.triggerId)
@@ -64,7 +65,7 @@ export class Replies extends EnginePart {
     const existing = this.options.outbox.status(id)
     if (!existing) {
       this.options.outbox.send({ id, channel: trigger.channel, text: this.mentioned(request.text, undefined,
-        [{ source: trigger.actor.source, id: trigger.actor.id }], trigger.channel), kind: 'reply' })
+        [{ source: trigger.actor.source, id: trigger.actor.id }], trigger.channel), kind: 'reply', purpose: 'question' })
     }
     return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
   }

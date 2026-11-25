@@ -71,8 +71,8 @@ it('resolves a folder task by its PROJECT.md, its task-folder name and its path'
   const drop = (await readDrop(join(directory, 'inbox'), 'fix-login', 'dir'))!
   expect(drop.project).toEqual({ name: 'ops' })
   const trigger = folderTrigger(drop, { id: 'folder:ops', inbox: join(directory, 'inbox'), outbox: join(directory, 'outbox') }, 'alice')
-  expect(trigger.meta.projectHints).toContainEqual({ name: 'ops' })
-  expect(sources.projectHints(trigger).hints).toContainEqual({ name: 'ops' })
+  expect(trigger.meta.projectHints).toContainEqual({ name: 'ops', strong: true })
+  expect(sources.projectHints(trigger).hints).toContainEqual({ name: 'ops', strong: true })
   expect(projects.resolve(trigger)).toMatchObject({ project: { id: folderProject.id }, via: 'match' })
   // A bracketed task-folder name and the drop's path are hints too, so a Project inside the inbox's parent matches by address.
   const parent = projects.create({ name: 'parent', location: { type: 'folder', path: mkdir(join(directory, 'inbox', 'nested')) },
@@ -83,6 +83,40 @@ it('resolves a folder task by its PROJECT.md, its task-folder name and its path'
   expect(nested.project).toBeUndefined()
   const nestedTrigger = folderTrigger(nested, { id: 'folder:ops', inbox: join(directory, 'inbox', 'nested'), outbox: join(directory, 'outbox') }, 'alice')
   expect(projects.resolve(nestedTrigger).project?.id).toBe(parent.id)
+})
+
+it('tells the hints that name a Project outright from those that only help a match', async () => {
+  const aps = projects.create({ name: 'aps', location: { type: 'managed' }, specifiedBy: PANEL_PERSON })
+  const instance = { id: 'folder:ops', inbox: join(directory, 'inbox'), outbox: join(directory, 'outbox') }
+  const dropOf = async (name: string, projectFile?: string) => {
+    const task = mkdir(join(instance.inbox, name))
+    writeFileSync(join(task, 'TASK.md'), 'Work.\n')
+    if (projectFile) writeFileSync(join(task, 'PROJECT.md'), `${projectFile}\n`)
+    return (await readDrop(instance.inbox, name, 'dir'))!
+  }
+  // A PROJECT.md that names no registered Project is a strong hint: the request is asked about, not left to the workspace.
+  const named = folderTrigger(await dropOf('explain', 'financial reports'), instance, 'alice')
+  expect(projects.resolve(named)).toMatchObject({ needsQuestion: true })
+  expect(projects.resolve(named).project).toBeUndefined()
+  expect(projects.resolve(named).strongHints).toContainEqual({ name: 'financial reports', strong: true })
+  // A `[project]` task-folder name is strong too, whether a registered Project fits it or not.
+  expect(projects.resolve(folderTrigger(await dropOf('[financial reports]budget'), instance, 'alice')).needsQuestion).toBe(true)
+  expect(projects.resolve(folderTrigger(await dropOf('[aps]budget'), instance, 'alice')))
+    .toMatchObject({ project: { id: aps.id }, via: 'match', needsQuestion: false })
+  // A plain file or folder name only helps a match: nothing asks about it, and a matching one resolves.
+  expect(projects.resolve(folderTrigger(await dropOf('notes'), instance, 'alice'))).toMatchObject({ strongHints: [], needsQuestion: false })
+  writeFileSync(join(instance.inbox, 'report.txt'), 'numbers\n')
+  expect(projects.resolve(folderTrigger((await readDrop(instance.inbox, 'report.txt', 'file'))!, instance, 'alice')))
+    .toMatchObject({ strongHints: [], needsQuestion: false })
+  expect(projects.resolve(folderTrigger(await dropOf('aps'), instance, 'alice')))
+    .toMatchObject({ project: { id: aps.id }, via: 'match', needsQuestion: false })
+  // A chat title states a Project too, while a GitHub Trigger states none: its instance's default maps the repository.
+  const chat = feishu('3', {})
+  chat.meta.chatName = 'Billing 群'
+  const titled = projects.resolve(chat)
+  expect(titled).toMatchObject({ needsQuestion: true })
+  expect(titled.strongHints).toContainEqual({ name: 'Billing 群', strong: true })
+  expect(projects.resolve(github('9'))).toMatchObject({ hints: [], strongHints: [], needsQuestion: false })
 })
 
 it('matches a Project by an alias, a folder path and a normalized repository address', () => {

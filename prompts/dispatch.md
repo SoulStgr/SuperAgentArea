@@ -3,7 +3,7 @@ handed_back: a ticket's worker returned it as beyond that ticket, with why; acce
 Config or access changes invalidate in-flight assessments; the host re-queues them.
 
 Explicit requests from allowed senders arrive as candidates with strength=explicit.
-An accept joins the Project its Source resolves, such as its instance's default; a request whose Project is not registered keeps working in the built-in workspace.
+An accept joins the Project its Source resolves, such as its instance's default; a request that only hints at a Project, such as by its file name, keeps working in the built-in workspace, while one that names an unregistered Project (a PROJECT.md, a [project] name, a chat title) is refused with needsProject and asked back into its conversation.
 A card with pending_project is a person's answer to a Project question: accept it with confirm_proposal when the person confirms the proposal the card carries; that accept creates the Project before the ticket, and a person who wants another workstation answers it in the panel instead.
 A proactive candidate whose Project is not registered is refused with needsProject and asked back into its conversation; wait for the person's answer instead of accepting it.
 Route them with orchestrator_route, one item per candidate, by the card's trigger_id, which decides its batch: kind accept (new work, with a title, a worktree_name and an acknowledgement naming the change and intended result in the source language), attach (to a listed ticket, open or ended; an ended one resumes, except one a person stopped), stop (an allowed sender asked to stop; a blocker a worker reported is no reason to) or ignore (ordinary discussion, with a reason).

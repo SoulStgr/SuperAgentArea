@@ -57,7 +57,7 @@ Each part extends `EnginePart` (`src/core/part.ts`), which provides options and 
 | `Evals` | The Evals of Threads: batching, the gate's strength, actor and basis with the Trigger that gave them (`primary`), the deadline from the candidate's delivery and its shift by a pause, the requeue of an expired Eval, candidates, replays and hand-backs, the requeue on a Policy change, and the Decision each ends with: accept, stop, ignore or unavailable | Tickets |
 | `Tickets` | The Ticket lifecycle: creation from an accept with its Mandate, Subscriptions and first Assignment, the Threads it follows and their closes (`followsDone`), attached Threads and Threads followed for context, Inputs and notes, resume and the messages a resume refuses, retry, restart, stop and end, the Subscriptions it drops, and the notice of a Policy change to the Tickets it bears on | Replies |
 | `Assignments` | What the Executor and its workers report: an Assignment started, Inputs reached it or failed to, a restart interrupted it, and a worker's Report with its question for a person | Tickets, Replies |
-| `Replies` | Channel writes through the `Outbox`: the acknowledgement, the answer, the result and the attention message, each by the rule that allows it | Nothing |
+| `Replies` | Channel writes through the `Outbox`: the acknowledgement, the answer, the result, the attention message and the host's own question about a Trigger's Project, each by the rule that allows it | Nothing |
 
 Commands use imperative names such as `stopTicket`; facts reported by adapters use past-tense names such as `assignmentStarted`. The query `candidate` uses a noun.
 
@@ -189,7 +189,9 @@ Sources extend the host through `SourceKind`, defined in `src/sources/kind.ts`. 
 
 Registry configuration methods include `kind`, `kindOf`, `instances`, `instancesOf`, `instance`, `instanceFor`, `validate`, `validatePolicy`, `policyPart`, `channelAllowed`, `declarations`, `environments`, `find` and `scope`. A kind without stored settings resolves to a default instance (`id` = kind, schema defaults, on). `find` asks each kind that supports search and names each instance's Thread key.
 
-Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
+Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed; a message marked `purpose: 'question'` is the host's question about a Trigger's Project, which a folder writes to `<outbox>/QUESTION.md` for its operator to answer with the next drop, while the other messages stay replies. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
+
+A kind's `projectHints(trigger, config)` states what its event says about the Project a request belongs to, marking a hint `strong` when it names a Project outright — a folder's `PROJECT.md` or `[project]` task-folder name, a Feishu chat title — rather than only helping a match, as a drop's plain name or path does. `ProjectService.resolve` offers the strong hints as `strongHints` and reports `needsQuestion` when none of the hints fits a registered Project.
 
 Plugins receive `SourceHost`: the registry and `context(kind)`. The kind itself uses a narrower `SourceContext`, built by `sourceContextOf` in `src/app/source-context.ts`.
 
@@ -300,17 +302,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/kv.ts` | `KV`: every family of `kv` records with its key, its value's type and its owner, and the `Key` and `Family` types the Store and `SourceContext.state` take; the GitHub read positions take an instance id and shard a named instance's keys under it, and the Project answers a Thread gave are kept by it |
 | `src/navigation.ts` | Opens a DeepSeek Harness Session from the panel once the host's catalog lists it |
 | `src/core/model.ts` | The domain types, among them the typed Ticket and `MandateBasis`, with `threadKey`, `ticketOutcome`, `reached`, `followupOwners`, `settled`, `waitsForPerson`, `liveTicket`, `runningAssignment`, `latestAssignment` and `latestReport` |
-| `src/core/project.ts` | The Project, artifact and person shapes (`ProjectValue`, `ProjectRecord`, `ArtifactValue`, `ArtifactRecord`, `PersonRef`), a Source's `ProjectHint`, the `ProjectCandidate` and `ProjectProposal` a refusal carries, the built-in workspace's id and key, `isWorkspaceProject`, and `artifactRecordId`, a delivered file's row id |
+| `src/core/project.ts` | The Project, artifact and person shapes (`ProjectValue`, `ProjectRecord`, `ArtifactValue`, `ArtifactRecord`, `PersonRef`), a Source's `ProjectHint` with its `strong` mark for a hint that states a Project outright, the `ProjectCandidate` and `ProjectProposal` a refusal carries, the built-in workspace's id and key, `isWorkspaceProject`, and `artifactRecordId`, a delivered file's row id |
 | `src/core/ports.ts` | The ports: `Repositories`, `Policy`, `SourceScope`, `People`, `Assessor`, `Executor`, `Outbox`, the assessment outcomes (among them `needsProject`), and the domain events |
 | `src/core/mentions.ts` | `mentionedPeople` and `withMentions`: which people a message to one conversation names (the reporter, then the ticket's mentions, each only on that conversation's Source) and how its last line renders them |
-| `src/core/needs-project.ts` | `needsProjectQuestion`: the fixed question a Trigger whose Project is not registered is asked back with, in its language, listing the candidate stations and any proposal |
+| `src/core/needs-project.ts` | `needsProjectQuestion`: the fixed question a Trigger whose Project is not registered is asked back with, in its language, listing the candidate stations and any proposal; `projectLocationText` words an address, and `readsChinese` picks the language of the question and of a folder's question file |
 | `src/core/engine.ts` | The Engine, the core's entry point, and the role interfaces `EngineForSources`, `EngineForMainSession`, `EngineForPeople`, `EngineForSettings` and `EngineForExecutor` |
 | `src/core/part.ts` | `EnginePart`, the base of the Engine's parts, and `EngineOptions` |
 | `src/core/intake.ts` | `Intake`: Triggers from Sources, to their Tickets and, unless a person's message reached one, to Eval |
 | `src/core/evals.ts` | `Evals`: the Evals of Threads and their Decisions, among them the `needsProject` stop that asks its Trigger's conversation how to place the work |
 | `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs; an accept gives the new Ticket the Project the host resolved, its reporter and the people it mentions |
 | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
-| `src/core/replies.ts` | `Replies`: the Engine's Channel writes, among them the host's `question` about a Trigger's Project (idempotent per Trigger, needing no Ticket), and the mentions results and questions add in their conversation's own syntax |
+| `src/core/replies.ts` | `Replies`: the Engine's Channel writes, among them the host's `question` about a Trigger's Project (idempotent per Trigger, needing no Ticket, and marked with `purpose: 'question'` for a Source that delivers it beside its replies), and the mentions results and questions add in their conversation's own syntax |
 | `src/core/stage.ts` | `ticketStage` and `canRetry`: the Ticket stages of [003 Execution](003-execution.md) |
 | `src/core/errors.ts` | `UserError` and `USER_ERRORS` |
 | `src/core/reasons.ts` | `Reason`, `REASONS` and `reasonText`: why the core recorded a Decision or set a Trigger aside, by code |
@@ -338,7 +340,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/artifacts.ts` | Artifacts: a ready ticket's `deliver/` files, collected with their hashes, promoted into its Project's output directory (`promoteArtifacts`; a name already holding other content takes the ticket's short id), indexed as artifact rows, copied to the origin Source's outbox, and named in the result reply |
 | `src/app/announcements.ts` | `ticketCardNotice`: the ticket card a Source conversation receives when a Ticket starts (id, title, Project, reporter, stage and link), naming the reporter and the people the Ticket mentions in that Source's own syntax |
 | `src/app/people.ts` | The people one Source instance knows — its Policy's allowed senders and bots, its kind's own (`people`, such as a folder's operator) and the Trigger's sender — and `knownPerson`, which canonicalizes a mention to what that Source knows |
-| `src/app/project-service.ts` | `ProjectService`: resolves a Trigger's Project (its Thread's answer, its instance's default, its hints against the registry), reads the Thread's unanswered `needsProject` question, creates the station a person named or confirmed with its directories and `specifiedBy`/`confirmedBy`, and remembers a Thread's answer; `matchProject` and `normalizedRepository` are its matching rules |
+| `src/app/project-service.ts` | `ProjectService`: resolves a Trigger's Project (its Thread's answer, its instance's default, its hints against the registry), telling the hints that state a Project outright (`strongHints`) from those that only help a match, and reports `needsQuestion` for a Trigger whose stated Project is not registered; reads the Thread's unanswered `needsProject` question, creates the station a person named or confirmed with its directories and `specifiedBy`/`confirmedBy`, and remembers a Thread's answer; `matchProject` and `normalizedRepository` are its matching rules |
 | `src/app/projects.ts` | The built-in workspace Project (`workspaceProject`), the area layout a Ticket works and delivers in (`areaRoot`, `workspaceDirectories`, `workspaceTicketDirectory`), and what a new Project needs: `projectKey`, `uniqueProjectKey`, `projectDirectories`, and the address checks `pathProblem`, `repositoryUrlProblem` and `prepareProjectDirectories` |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
@@ -349,7 +351,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/cards.ts` | Compact cards of Triggers, Tickets, Threads and Decisions for models, the closed set of ticket card states `TICKET_STATES`, and `textPage` |
 | `src/app/resources.ts` | `RESOURCES` and `readResource`: what `orchestrator_read` reads, for each role |
 | `src/app/tools/tool.ts` | The `Tool` type, `readTool`, the `orchestrator_read` of both roles, and `AcknowledgementSchema` |
-| `src/app/tools/main.ts` | The main Session's tools |
+| `src/app/tools/main.ts` | The main Session's tools, among them `orchestrator_route`, whose accept refuses a request that names an unregistered Project with the `needsProject` question instead of creating a ticket |
 | `src/app/tools/executor.ts` | An Executor Session's tools |
 | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits, one status per kind of failure, and `POST triggers/:id/answer-project`, a person's answer to a Project question |
 | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response (among them `AnswerProject`), and the filters of the lists; it imports only types, so the panel bundles it |
@@ -376,8 +378,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
-| `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch`: its chat titles are Project hints (the live loop records the bot's own chat name on the Trigger) and its Channel mentions people as `<at id=…></at>` |
-| `src/sources/folder.ts` | The local folder kind and plugin entry, exported as `./folder-watch`: one instance per inbox, drops as explicit Triggers with the `PROJECT.md` and name hints they state, write-completeness and content-hash cursors sharded by instance, outbox reply files, and the operator as a person the instance knows |
+| `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch`: its chat titles are strong Project hints (the live loop records the bot's own chat name on the Trigger) and its Channel mentions people as `<at id=…></at>` |
+| `src/sources/folder.ts` | The local folder kind and plugin entry, exported as `./folder-watch`: one instance per inbox, drops as explicit Triggers whose `PROJECT.md` and bracketed task-folder name state a Project outright while the drop's plain name and path only help a match, write-completeness and content-hash cursors sharded by instance, outbox reply files with the host's Project question written to `QUESTION.md`, and the operator as a person the instance knows |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
 | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
@@ -418,20 +420,21 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances of one kind, `kindOf` and old bare-kind resolution, default instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, several instances of one kind with their own repositories, inboxes and KV shards, the pull request rules, health, a chat title's Project hints and each kind's mention syntax |
-| `tests/folder.spec.ts` | The folder Source on a `SourceContext`: drop translation, write-completeness, per-instance cursors and duplicates, outbox reply files, the plugin entry |
+| `tests/folder.spec.ts` | The folder Source on a `SourceContext`: drop translation, write-completeness, per-instance cursors and duplicates, outbox reply files, the Project question's `QUESTION.md` and its language, the plugin entry |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/artifacts.spec.ts` | Artifact delivery and its index: collecting a ticket's `deliver/` files with their hashes, promoting them into the workspace with a conflict suffix, an idempotent outbox copy, the artifact rows and their queries, and the ready report that queues it |
 | `tests/projects.spec.ts` | The built-in workspace Project and the area layout a Ticket works in, and the Project registry: created once, saved, listed by status, found by key |
-| `tests/resolve.spec.ts` | Project ownership: resolution by an instance default, an event hint (a chat title, a `PROJECT.md`, a task-folder name, a folder path, a repository address) or an answered question; creation of managed, folder, repository and adhoc Projects with their directories and unique keys; refusal of an unusable address or one only a model named; a person's answer to a `needsProject` question |
+| `tests/resolve.spec.ts` | Project ownership: resolution by an instance default, an event hint (a chat title, a `PROJECT.md`, an `[project]` task-folder name, a folder path, a repository address) or an answered question, and which hints state a Project outright rather than only helping a match; creation of managed, folder, repository and adhoc Projects with their directories and unique keys; refusal of an unusable address or one only a model named; a person's answer to a `needsProject` question |
 | `tests/needs-project.spec.ts` | Unregistered work in the whole application: the refusal and its one question, the panel's answer and the ticket it starts, a person's confirmation creating the proposed station, the ticket card and results naming the reporter and the mentions in each Source's syntax, and unknown people dropped with a reason |
+| `tests/explicit-project.spec.ts` | An explicit folder request that names an unregistered Project: its accept refuses it with one `needsProject` Decision and no ticket, `QUESTION.md` names the candidates and how to answer, a rewritten `PROJECT.md` dropped again starts the ticket in that station, and a drop that names no Project still starts a workspace ticket |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
-| `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
+| `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed, and a folder Channel writes the host's Project question to `QUESTION.md` while its replies keep to the ticket's folder |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
 | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
@@ -477,7 +480,7 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `artifact` | The index of delivered files, by id, Ticket, Project, Source and name, with the hash, size, collection time, target root, outbox copy and result message in `value` | The Store when the Executor delivers a Ticket's artifacts |
 | `decision` | Decisions, by Thread; a `needsProject` stop keeps the candidates and proposal a person answers, and an accept keeps its dropped mentions among its reasons | Engine |
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
-| `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
+| `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for, its `purpose` when it is the host's Project question, and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
 | `kv` | Every other record, by key | The part that names it |
 
 A generated column is computed from its row's JSON and is empty outside its set, and each has an index over its set, so a pass reads only active work. A database that predates a column gets it when the Store opens it.
@@ -519,7 +522,7 @@ The main Session has 14 application tools:
 | Communicate and unsubscribe | `orchestrator_reply`, `orchestrator_thread_unsubscribe` |
 | Configure | `orchestrator_settings_save`, `orchestrator_policy_sync`, `orchestrator_prompts_save` |
 
-`orchestrator_route` accepts 1–20 decisions in order. Each accept, attach, stop or ignore runs as a separate Engine command. It also permits ignoring an inferred candidate directly from its card. An accept joins the Project its Source resolves; on a card carrying `pending_project`, `confirm_proposal` makes the accept create that proposed station first. `orchestrator_ticket_note` sends a fact as context, not authority.
+`orchestrator_route` accepts 1–20 decisions in order. Each accept, attach, stop or ignore runs as a separate Engine command. It also permits ignoring an inferred candidate directly from its card. An accept joins the Project its Source resolves; on a card carrying `pending_project`, `confirm_proposal` makes the accept create that proposed station first. A request that states a Project outright — a folder's `PROJECT.md` or bracketed task name, a chat title — but fits no registered one is not accepted: the accept records the `needsProject` refusal an assessment records, asks that conversation, and creates no ticket, so an accept answered with `project_question: true` waits for the person's answer. A request that only hints at a Project, or states none, still keeps working in the built-in workspace. `orchestrator_ticket_note` sends a fact as context, not authority.
 
 Settings saves select `policy`, `eval`, `executor`, `pause`, or `source`; the last also names its Source id. A prompt save with `preview: true` composes text without saving.
 
@@ -552,7 +555,7 @@ The worker preset is defined in `cordis.patch.yml` and selected through `WORKER_
 
 ### Result shapes and assessment context
 
-Routing results use `{decision?, reason, ticket?}`. `orchestrator_route` returns `{results}`, preserving item order and adding each item's `trigger_id` and `kind`. Invalid or refused items return `refused` and a reason without stopping the batch.
+Routing results use `{decision?, reason, ticket?}`. `orchestrator_route` returns `{results}`, preserving item order and adding each item's `trigger_id` and `kind`. Invalid or refused items return `refused` and a reason without stopping the batch. An accept that became a `needsProject` question returns `decision: 'stop'` with `project_question: true`, no ticket, and a reason saying that the host asked the Source where the work belongs.
 
 Settings and prompt saves return the saved configuration. Policy sync returns the Source, allowed-list size, and `added` and `removed` names.
 

@@ -2,12 +2,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
+import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople, type Trigger }
   from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
-import { ASSESSOR_PERSON, type ProjectService } from '../project-service.ts'
+import { ASSESSOR_PERSON, needsProjectValues, type ProjectService } from '../project-service.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
@@ -85,7 +85,15 @@ function invalid(item: RouteItem): string | undefined {
   }
   return undefined
 }
-type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[] }
+type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | undefined; triggerIds?: readonly string[]; asked?: boolean }
+/**
+ * What an accept answers when the request names a Project no registered one fits: the host asked its conversation instead
+ * of creating a ticket, so the main Session waits for the person's answer rather than accepting the same Trigger again.
+ */
+function askedProject(trigger: Trigger): string {
+  return `No ticket was created: the request names a Project that is not registered, so the host asked ${trigger.source} to place it. `
+    + 'A person\'s answer comes back as a new candidate, or through the panel\'s answer-project, and that answer is accepted instead.'
+}
 /**
  * Carry out one routing decision as its Engine command, in a transaction of its own. `decided` holds the Triggers that this
  * call's earlier items decided, with their batches.
@@ -99,10 +107,11 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
   switch (item.kind) {
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
-      // An explicit request joins the Project its Source resolves, such as its instance's default; without one it stays in
-      // the built-in workspace, as requests from people who named no station always did.
+      // An explicit request joins the Project its Source resolves, such as its instance's default; one that only hints at a
+      // Project, or states none, stays in the built-in workspace, as requests from people who named no station always did.
       const trigger = host.store.triggers.get(item.trigger_id)
-      let projectId = trigger ? host.projects.resolve(trigger).project?.id : undefined
+      const resolution = trigger ? host.projects.resolve(trigger) : undefined
+      let projectId = resolution?.project?.id
       // A person's answer to a Project question creates the Project it confirms before the ticket is created.
       if (trigger && !projectId && item.confirm_proposal && trigger.human) {
         const proposed = host.projects.pending(trigger)?.proposal
@@ -111,6 +120,15 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
           projectId = host.projects.create({ ...proposed, kind: 'station', sourceIds: [trigger.source],
             specifiedBy: ASSESSOR_PERSON, confirmedBy: person }).id
         }
+      }
+      // A request that names a Project no registered one fits is refused with the same question an assessment's refusal
+      // asks, so no ticket is created and the person's answer decides where the work belongs.
+      if (trigger && !projectId && resolution?.needsQuestion) {
+        const asked = host.projects.pending(trigger)
+        const decision = asked && asked.decision.triggerIds.includes(trigger.id) ? asked.decision
+          : host.engine.decide(trigger.id, { kind: 'needsProject', reason: { code: 'explicitRouted' }, candidates: resolution.candidates })
+        // A Decision that created no ticket is the question this item asked; one that accepted it before keeps its ticket.
+        if (needsProjectValues(decision)) return { decision: decision.kind, reason: askedProject(trigger), triggerIds: decision.triggerIds, asked: true }
       }
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
         acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...projectId ? { projectId } : {}, ...note })
@@ -143,7 +161,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept joins the Project its Source resolves; on a card with pending_project, set confirm_proposal to confirm that proposal. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept joins the Project its Source resolves; one whose request names an unregistered Project is refused with a needsProject question instead (project_question: true, no ticket), and on a card with pending_project, set confirm_proposal to confirm that proposal. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()
@@ -157,7 +175,7 @@ function routeTool(host: MainToolsHost): Tool {
           for (const id of result.triggerIds ?? []) if (!decided.has(id)) decided.set(id, item.trigger_id)
           const ticket = result.ticketId ? host.store.tickets.get(result.ticketId) : undefined
           return { ...head, ...(result.decision ? { decision: result.decision } : {}), reason: result.reason,
-            ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
+            ...(result.asked ? { project_question: true } : {}), ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
         } catch (error) {
           if (error instanceof UserError) return { ...head, refused: error.message }
           host.context.logger.warn('dsh-superagent could not route trigger %s: %s', item.trigger_id, String(error))

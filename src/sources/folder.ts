@@ -11,7 +11,7 @@ import { userInfo } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { key, threadKey, type OutboundMessage, type ProjectHint, type Trigger } from '../core/index.ts'
+import { key, readsChinese, threadKey, type OutboundMessage, type ProjectHint, type Trigger } from '../core/index.ts'
 import { KV } from '../kv.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
@@ -56,9 +56,19 @@ export function projectNamesOf(rel: string, kind: 'file' | 'task'): string[] {
   const base = kind === 'file' ? name.replace(/\.[^.]+$/, '') : name
   return [...new Set([bracketed, base].filter((value): value is string => !!value))]
 }
-/** The hints a drop's own name states about its Project. */
-const hintsOfName = (rel: string, kind: 'file' | 'task'): ProjectHint[] => projectNamesOf(rel, kind).map(name => ({ name }))
-/** The hints an old Trigger's `meta` states, or those its `rel` alone still states (a Trigger stored before hints existed). */
+/** The Project a drop's own name states outright: a `[project]rest` or `【project】rest` prefix, which asks when it fits none. */
+export function bracketedProjectName(rel: string): string | undefined {
+  return /^[[【]([^\]】]+)[\]】]/.exec(rel.slice(rel.lastIndexOf('/') + 1))?.[1]?.trim() || undefined
+}
+/** The hints a drop's own name states: a bracketed name states a Project, while its plain base name only helps a match. */
+const hintsOfName = (rel: string, kind: 'file' | 'task'): ProjectHint[] => {
+  const stated = bracketedProjectName(rel)
+  return projectNamesOf(rel, kind).map(name => name === stated ? { name, strong: true } : { name })
+}
+/**
+ * The hints an old Trigger's `meta` states, or those its `rel` alone still states (a Trigger stored before hints existed);
+ * a stored `strong` is kept, so a Trigger stored before hints carried their strength keeps its hint weak.
+ */
 function storedHints(meta: Record<string, unknown>): ProjectHint[] {
   const lines = Array.isArray(meta.projectHints) ? meta.projectHints : []
   const hints = lines.flatMap((line): ProjectHint[] => {
@@ -66,7 +76,8 @@ function storedHints(meta: Record<string, unknown>): ProjectHint[] {
     const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined
     const hint = { ...text((line as Record<string, unknown>).name) ? { name: text((line as Record<string, unknown>).name)! } : {},
       ...text((line as Record<string, unknown>).path) ? { path: text((line as Record<string, unknown>).path)! } : {},
-      ...text((line as Record<string, unknown>).url) ? { url: text((line as Record<string, unknown>).url)! } : {} }
+      ...text((line as Record<string, unknown>).url) ? { url: text((line as Record<string, unknown>).url)! } : {},
+      ...(line as Record<string, unknown>).strong === true ? { strong: true } : {} }
     return Object.keys(hint).length ? [hint] : []
   })
   if (hints.length) return hints
@@ -75,11 +86,12 @@ function storedHints(meta: Record<string, unknown>): ProjectHint[] {
 /**
  * The Trigger of one drop on `instance`: its source and Thread carry the instance id, so `folder:ops` and
  * `folder:dev` keep separate Threads and the thread key is the same string the old row-based key had.
- * The operator's drop is an explicit, human, direct request. Its `PROJECT.md` and name are its Project hints.
+ * The operator's drop is an explicit, human, direct request. Its `PROJECT.md` states the Project outright, a bracketed
+ * name states one too, and the drop's plain name and path only help a match.
  */
 export function folderTrigger(drop: FolderDrop, instance: FolderInstance, operator: string): Trigger {
   const thread = `${instance.id}:${drop.rel}`
-  const hints = [...drop.project ? [drop.project] : [], ...hintsOfName(drop.rel, drop.kind),
+  const hints = [...drop.project ? [{ ...drop.project, strong: true }] : [], ...hintsOfName(drop.rel, drop.kind),
     ...instance.inbox ? [{ path: join(instance.inbox, drop.rel) }] : []]
   const projectHints = hints.filter((hint, index) => hints.findIndex(other => JSON.stringify(other) === JSON.stringify(hint)) === index)
   return {
@@ -127,20 +139,45 @@ export async function readDrop(inbox: string, name: string, type: 'file' | 'dir'
     files: entries, ...project ? { project } : {} }
 }
 
-/** Writes one reply as a markdown file under `<outbox>/<ticket>/<message id>.md`; the message id is the idempotency key. */
+/**
+ * The file a folder Source writes for the host's Project question: what is missing, the candidates and any proposal the
+ * question names, and the two ways a person answers it — `PROJECT.md` and a new drop, or the panel's `answer-project`.
+ */
+function questionFile(message: OutboundMessage): string {
+  const chinese = readsChinese(message.text)
+  const rel = message.channel.address.rel
+  const lines = chinese
+    ? ['# 项目未归属', '', ...rel ? [`投件：${rel}`, ''] : [], message.text, '', '## 回答方式', '',
+      '1. 在该任务文件夹里写 `PROJECT.md`（首行：工作站名称、本地路径或仓库地址），然后重新投递；内容变化就是新投件，会重新解析归属并直接建单。',
+      '2. 或者由人在面板回答这条未归属问题（`POST /triggers/:id/answer-project`）。']
+    : ['# No workstation for this request', '', ...rel ? [`Drop: ${rel}`, ''] : [], message.text, '', '## How to answer', '',
+      '1. Write `PROJECT.md` in the task folder (first line: a workstation name, a local folder, or a repository address), then drop it again; changed content is a new drop, which resolves the Project and starts the ticket there.',
+      '2. Or a person answers this question in the panel (`POST /triggers/:id/answer-project`).']
+  return `${lines.join('\n')}\n`
+}
+
+/**
+ * Writes one reply as a markdown file under `<outbox>/<ticket>/<message id>.md`, once per message id. The host's Project
+ * question (`purpose: 'question'`) is written to `<outbox>/QUESTION.md` instead, replacing the question it asked before,
+ * since its answer is the operator's next drop rather than a reply in a ticket's folder.
+ */
 export async function sendFolder(message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { outbox, row } = message.channel.address
   if (!outbox || !row) throw new Error('Missing folder reply target')
-  const directory = join(outbox, message.ticketId ?? 'unticketed')
-  const file = join(directory, `${message.id}.md`)
+  const question = message.purpose === 'question'
+  const directory = question ? outbox : join(outbox, message.ticketId ?? 'unticketed')
+  const file = join(directory, question ? 'QUESTION.md' : `${message.id}.md`)
   try {
     // A recursive mkdir would recreate a deleted outbox; a missing root means delivery is permanently impossible.
     try { await stat(outbox) }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone'; throw error }
     await mkdir(directory, { recursive: true })
-    // A retry of the same message id must not duplicate the reply; the first write wins.
-    try { await writeFile(file, message.text, { flag: 'wx' }) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    // A retry of the same message id must not duplicate the reply; the first write wins, while a question is rewritten.
+    if (question) await writeFile(file, questionFile(message))
+    else {
+      try { await writeFile(file, message.text, { flag: 'wx' }) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    }
     return 'sent'
   } catch (error) {
     // The outbox root no longer exists: delivery is permanently impossible, as a deleted conversation.

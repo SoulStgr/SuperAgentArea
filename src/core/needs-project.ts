@@ -10,8 +10,8 @@ import type { ProjectCandidate, ProjectLocation, ProjectProposal } from './proje
 const CANDIDATES = 8
 const NAME_CHARS = 30
 const LIST_CHARS = 240
-/** Whether a Trigger reads as Chinese rather than English, as the Source writes it. */
-const chineseOf = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)
+/** Whether a text reads as Chinese rather than English, as the Source writes it; the question and a folder's answer file follow it. */
+export const readsChinese = (text: string): boolean => /\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)
 /** A Project address as a person reads it: a managed directory, an external folder, or a repository URL or path. */
 export function projectLocationText(location: ProjectLocation, chinese = false): string {
   if (location.type === 'managed') return chinese ? '托管目录' : 'managed directory'
@@ -33,7 +33,7 @@ function listed(candidates: readonly ProjectCandidate[], chinese: boolean): stri
 /** The three answers of the question, in the Trigger's language, from the Projects it may choose and the proposal it may confirm. */
 export function needsProjectQuestion(trigger: Pick<Trigger, 'text'>, candidates: readonly ProjectCandidate[] = [],
   proposal?: ProjectProposal): string {
-  const chinese = chineseOf(trigger.text)
+  const chinese = readsChinese(trigger.text)
   const names = listed(candidates, chinese)
   const options = [
     ...names ? [chinese ? `①归到已有工作站：${names}` : `①an existing workstation: ${names}`] : [],

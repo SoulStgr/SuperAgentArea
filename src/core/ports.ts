@@ -90,8 +90,14 @@ export interface Executor {
   stop(ticket: Ticket, assignment: Assignment, reason: string): void
 }
 
-/** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
-export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
+/**
+ * A message for a Channel; `ticketId` names the Ticket it is for, when there is one. `purpose: 'question'` marks the host's
+ * own question about the Project of the Trigger it came from (only `Replies.question` sets it), which a kind may deliver
+ * beside its replies: a folder Source writes it to `QUESTION.md`, where its operator answers it by dropping the task again.
+ */
+export interface OutboundMessage {
+  id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string; purpose?: 'question'
+}
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */

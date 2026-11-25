@@ -41,8 +41,8 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
-    // These Evals judge no Project: no Project is registered, and no answer creates one here.
-    projects: { resolve: () => ({ candidates: [], hints: [] }), pending: () => undefined,
+    // These Evals judge no Project: no Project is registered, no hint states one, and no answer creates one here.
+    projects: { resolve: () => ({ candidates: [], hints: [], strongHints: [], needsQuestion: false }), pending: () => undefined,
       create: () => { throw new Error('No Project is created in this fixture') } },
     people: { settings: () => SettingsSchema.parse({}), sources },
   }

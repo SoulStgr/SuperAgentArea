@@ -1,6 +1,7 @@
 /** Feishu source kind definition, policy synchronization, and Cordis plugin entry. */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
+import type { ProjectHint } from '../core/index.ts'
 import { FeishuBotSchema } from '../deployment.ts'
 import { feishuLink, sendFeishu } from './feishu-channel.ts'
 import { feishuThreadContext } from './feishu-read.ts'
@@ -30,12 +31,14 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 /**
  * The Project names one chat title states: the whole title and its words, so a chat named "APS 填报群" points at a
- * Project called "APS". The Project registry matches them case-insensitively against keys, names and aliases.
+ * Project called "APS". A title states a Project outright, so its hints are strong: a chat no registered Project fits is
+ * asked about rather than left to the workspace. The Project registry matches them case-insensitively against keys, names
+ * and aliases.
  */
-export function chatProjectHints(title: string): { name: string }[] {
+export function chatProjectHints(title: string): ProjectHint[] {
   const whole = title.trim()
   const words = whole.split(/[\s,，、;；:：/|（）()【】[\]·—–-]+/).map(word => word.trim()).filter(word => word.length >= 2)
-  return [...new Set([whole, ...words].filter(Boolean))].slice(0, 6).map(name => ({ name }))
+  return [...new Set([whole, ...words].filter(Boolean))].slice(0, 6).map(name => ({ name, strong: true }))
 }
 export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,

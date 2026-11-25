@@ -1,8 +1,11 @@
-/** Outbox delivery when processing is paused or a Source kind registers late. */
+/** Outbox delivery when processing is paused or a Source kind registers late, and the folder Source's question file. */
+import { mkdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { OutboundMessage } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
+import { folderKind } from '../src/sources/folder.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
@@ -39,4 +42,24 @@ it('keeps a message for a Source that is not installed waiting, and sends it onc
   // A message whose Source was not installed is tried again after 5 seconds.
   await at(5000)
   expect([h.runtime.outbox.status('waiting'), sent.map(message => message.id)]).toEqual(['sent', ['waiting']])
+})
+
+it('writes a folder Channel\'s Project question as QUESTION.md, and its replies under the ticket', async () => {
+  const inbox = join(h.directory, 'inbox'), outbox = join(h.directory, 'outbox')
+  mkdirSync(inbox); mkdirSync(outbox)
+  h.runtime.sources.register(folderKind)
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox, outbox } } },
+  policy: { ...settings.policy, sources: { ...settings.policy.sources, 'folder:ops': { allowed: [{ id: 'alice' }] } } } })
+  const channel = { source: 'folder:ops', thread: 'folder:ops:x', address: { row: 'folder:ops', outbox, rel: 'x' } }
+  // The purpose travels through the receipt, so the Channel still knows this message is a question.
+  h.runtime.outbox.send({ id: 'q1', channel, text: '这单还没有归属的工作站。请回复：①归到已有工作站：aps。', kind: 'reply', purpose: 'question' })
+  h.runtime.outbox.send({ id: 'r1', channel, text: '已改好。', kind: 'reply', ticketId: 't1' })
+  await h.runtime.pump()
+  await h.runtime.sendReplies()
+  expect([h.runtime.outbox.status('q1'), h.runtime.outbox.status('r1')]).toEqual(['sent', 'sent'])
+  expect(readFileSync(join(outbox, 'QUESTION.md'), 'utf8')).toContain('# 项目未归属')
+  expect(readFileSync(join(outbox, 'QUESTION.md'), 'utf8')).toContain('aps')
+  expect(readFileSync(join(outbox, 't1', 'r1.md'), 'utf8')).toBe('已改好。')
 })

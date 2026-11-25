@@ -16,10 +16,12 @@ export type ProjectLocation =
 export type ProjectStatus = 'active' | 'archived'
 /**
  * What a Source states about the Project a Trigger belongs to (see plan §2.5): a name it reads from the event, a local
- * path, or a repository URL. The registry matches it against the registered Projects; a Source gives none when it has
- * nothing to say.
+ * path, or a repository URL. `strong` marks a hint that states a Project outright, such as a folder's `PROJECT.md`, a
+ * `[project]` task-folder name, or an IM chat title: when no registered Project fits one, the Trigger is asked about
+ * instead of continuing in the workspace, while a plain file or folder name only helps a match. The registry matches the
+ * hints against the registered Projects; a Source gives none when it has nothing to say.
  */
-export interface ProjectHint { name?: string; path?: string; url?: string }
+export interface ProjectHint { name?: string; path?: string; url?: string; strong?: boolean }
 /** A registered Project an unanswered `needsProject` question offers as a candidate, as the question and its Decision carry it. */
 export interface ProjectCandidate { id: string; name: string; kind: ProjectKind }
 /** A new Project's address that an assessment proposes; only a person's confirmation creates it. */

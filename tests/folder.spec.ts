@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Engine, key, type Trigger } from '../src/core/index.ts'
+import { Engine, key, type OutboundMessage, type Trigger } from '../src/core/index.ts'
 import { Store } from '../src/app/store.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { Commands } from '../src/infra/commands.ts'
@@ -125,11 +125,28 @@ describe('poll rounds', () => {
 
 describe('outbox replies', () => {
   const message = (id: string, text: string) => ({ id, channel: { source: 'folder:ops', thread: 'folder:ops:x', address: { row: 'folder:ops', outbox, rel: 'x' } }, text, kind: 'reply' as const, ticketId: 't1' })
+  /** The host's own Project question for a drop: it carries no ticket, and its purpose tells the folder to ask in a file. */
+  const question = (text: string): OutboundMessage => ({ id: 'q1', channel: message('q1', text).channel, text, kind: 'reply', purpose: 'question' })
   it('writes one file per message id and never duplicates a retry', async () => {
     expect(await sendFolder(message('m1', 'Done.'))).toBe('sent')
     expect(readFileSync(join(outbox, 't1', 'm1.md'), 'utf8')).toBe('Done.')
     expect(await sendFolder(message('m1', 'Different retry text'))).toBe('sent')
     expect(readFileSync(join(outbox, 't1', 'm1.md'), 'utf8')).toBe('Done.')
+  })
+  it('writes a Project question to QUESTION.md, replacing the earlier one, and an ordinary reply to its ticket', async () => {
+    expect(await sendFolder(question('这单还没有归属的工作站。请回复：①归到已有工作站：aps。'))).toBe('sent')
+    const asked = readFileSync(join(outbox, 'QUESTION.md'), 'utf8')
+    expect(asked.startsWith('# 项目未归属\n')).toBe(true)
+    expect(asked).toContain('投件：x')
+    expect(asked).toContain('aps')
+    expect(asked).toContain('PROJECT.md')
+    expect(asked).toContain('answer-project')
+    expect(existsSync(join(outbox, 'unticketed'))).toBe(false)
+    // A new question replaces the file, so the operator answers the newest one, in the language of its Trigger.
+    expect(await sendFolder(question('This request belongs to no registered workstation.'))).toBe('sent')
+    expect(readFileSync(join(outbox, 'QUESTION.md'), 'utf8')).toContain('# No workstation for this request')
+    expect(await sendFolder(message('m3', 'Done.'))).toBe('sent')
+    expect(readFileSync(join(outbox, 't1', 'm3.md'), 'utf8')).toBe('Done.')
   })
   it('answers gone when the outbox root no longer exists, and the channel allows only its own outbox', async () => {
     rmSync(outbox, { recursive: true, force: true })

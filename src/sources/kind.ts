@@ -117,9 +117,11 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   /** Policy section for kinds whose senders have their own identity. */
   policy?: SourcePolicyPart<Record<string, unknown> & { allowed: { id: string; name?: string }[] }>
   /**
-   * The Project a Trigger's event points at, read from what the Source received: a folder's `PROJECT.md` or task-folder
-   * name, an IM chat title. The registry matches the hints against the registered Projects; a kind with nothing to say
-   * omits it or returns none, since its instance's default Project is the stable mapping.
+   * The Project a Trigger's event points at, read from what the Source received: a folder's `PROJECT.md` or a bracketed
+   * task-folder name, an IM chat title. A hint marked `strong` states a Project outright, so one that matches nothing is
+   * asked about instead of continuing in the workspace; a plain name or path only helps a match. The registry matches the
+   * hints against the registered Projects; a kind with nothing to say omits it or returns none, since its instance's
+   * default Project is the stable mapping.
    */
   projectHints?(trigger: Trigger, config: C): ProjectHint[]
   /**
