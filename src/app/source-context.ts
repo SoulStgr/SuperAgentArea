@@ -27,12 +27,13 @@ export interface SourceContextDeps {
 }
 
 /**
- * Builds the context for one Source kind. Health reports are restricted to entries declared by the kind and
- * bound to the active registration, becoming no-ops once unregistered.
+ * Builds the context for one Source kind. Health reports are restricted to the kind's declared entries and to the entries
+ * of its own instances (named by instance id), bound to the active registration, becoming no-ops once unregistered.
  */
 export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }): SourceContext {
   const { store } = deps
   const health = deps.sources.healthEntries(kind.health)
+  const instanceHealth = deps.sources.healthReporter(kind.kind)
   return {
     get deployment() { return deps.deployment },
     commands: deps.commands,
@@ -66,8 +67,10 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
     notify: message => { deps.outbox.send(message) },
     report: (entry, value) => {
-      if (!kind.health.includes(entry)) throw new Error(`The ${kind.kind} Source has no health entry ${entry}`)
-      health.get(entry)?.set(value)
+      // A declared entry is the kind's own; any other name must be an entry of one of its instances.
+      const declared = health.get(entry)
+      if (declared) { declared.set(value); return }
+      instanceHealth(entry, value)
     },
   }
 }

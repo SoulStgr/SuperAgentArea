@@ -927,6 +927,32 @@ it('waits for setup without the agent\'s GitHub CLI: the panel works, and nothin
   await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(2))
 })
 
+it('checks setup again while a named Source instance reports a problem, though the deployment itself is healthy', async () => {
+  expect(() => runtime.checkSetup()).toThrow('Setup is complete')
+  // A named GitHub instance whose own account check failed keeps the check available: it runs setup again, which checks
+  // that instance once more, and pauses only the instance.
+  runtime.setup.problems['github:acme-aps'] = { place: 'github', code: 'agentCliMissing', values: {},
+    detail: 'The agent GitHub CLI was not found.' }
+  runtime.checkSetup()
+  await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(1))
+  expect((await api('GET', 'state')).body).toMatchObject({ setup: { problems: { 'github:acme-aps': { place: 'github',
+    code: 'agentCliMissing' } } } })
+})
+
+it('checks a named GitHub instance against its own CLI at startup, and lets setup finish with that instance\'s problem alone', async () => {
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    'github:acme-aps': { kind: 'github', enabled: true, config: { repository: 'acme/aps', cli: join(directory, 'missing-gh') } } } })
+  const next = await restart()
+  await next.ready
+  // Setup itself passed: the deployment runs, and its own account is unaffected.
+  expect(next.configured()).toBe(true)
+  expect(next.setupProblem).toBeUndefined()
+  expect(next.setupProblems).toEqual({ 'github:acme-aps': expect.objectContaining({ place: 'github', code: 'agentCliMissing' }) })
+  expect((await api('GET', 'state')).body).toMatchObject({ setup: { problem: null,
+    problems: { 'github:acme-aps': { code: 'agentCliMissing' } } } })
+})
+
 it('reports each setup problem where the operator fixes it, and checks the agent CLI the way worker shells run it', async () => {
   const needs = async (place: string, code: string, values: Record<string, string>, accounts: Accounts = {}) => {
     const next = await restart({}, accounts)

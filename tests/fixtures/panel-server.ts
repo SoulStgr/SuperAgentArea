@@ -185,7 +185,8 @@ function healthOf(name: string): Health {
   return server.setup.feishuProblem ? { state: 'paused', detail: server.setup.feishuProblem.detail } : { state: 'error',
     detail: 'socket closed' }
 }
-const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
+const problemOf_ = (id: string) => server.setup.problems?.[id]
+  ?? [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
 /** The fixture's configured instances, in the panel's order: kind order, then instance id order. */
 function instancesOf(): { id: string; kind: string; enabled: boolean; config: Record<string, unknown>; label?: string }[] {
   const order = KINDS.map(kind => kind.kind)
@@ -199,7 +200,7 @@ function sourceSettings(): SourceView[] {
   return instances.map(instance => {
     const kind = KINDS.find(item => item.kind === instance.kind)!
     const config = kind.schema.parse(instance.config)
-    const problem = problemOf_(kind.kind)
+    const problem = problemOf_(instance.id) ?? problemOf_(kind.kind)
     const { admission: _admission, ...part } = server.settings.policy.sources[instance.id] ?? { allowed: [], admission: {} }
     const sync = kind.policy?.sync && { label: kind.policy.sync.label, ready: kind.policy.sync.ready(kind.policy.schema.parse(part)),
       health: server.health[`sync:${instance.id}`] }
@@ -221,8 +222,9 @@ function sourceStatuses(): SourceStatusRow[] {
   return instances.map(instance => {
     const kind = KINDS.find(item => item.kind === instance.kind)!
     const enabled = instance.enabled
-    const health = kind.health.map(name => ({ name, ...healthOf(name) }))
-    const problem = problemOf_(kind.kind)
+    // Each instance has its own entry, named by its id; the kind's other entries are shared.
+    const health = [instance.id, ...kind.health.filter(name => name !== kind.kind)].map(name => ({ name, ...healthOf(name) }))
+    const problem = problemOf_(instance.id) ?? problemOf_(kind.kind)
     const state = !enabled ? 'off' : problem || health.some(item => item.state === 'error') ? 'error' : server.setup.problem ? 'setup'
       : health.some(item => item.state === 'starting') ? 'starting' : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
     const title = instance.label ? { zh: instance.label, en: instance.label }
@@ -384,9 +386,9 @@ const overviewView = (): ApiResponse<'GET overview'> => {
         .map(thread => ({ kind: 'eval-overdue' as const, thread })),
       { kind: 'eval-unavailable' as const, decisionId: 'u1', thread: threadSummary(), reason: [{ code: 'timeout' }], triggerId: 'e3' },
       ...server.settings.paused ? [{ kind: 'executor-paused' as const }] : [],
-      // As on the host, every entry in error that is not a Source's own, a Policy sync, or the individually listed unavailable Evals is a runtime-error.
+      // As on the host, every entry in error that is not a Source's own (an instance's or its kind's), a Policy sync, or the individually listed unavailable Evals is a runtime-error.
       ...Object.entries(server.health).filter(([name, item]) => item.state === 'error' && !KINDS.some(kind => kind.health.includes(name))
-        && !name.startsWith('sync:') && name !== 'evals')
+        && !instancesOf().some(instance => instance.id === name) && !name.startsWith('sync:') && name !== 'evals')
         .map(([name, item]) => ({ kind: 'runtime-error' as const, name, detail: item.detail })),
       ...Object.values(server.settings.policy.sources).some(part => part.allowed.length) ? [] : [{ kind: 'no-allowed' as const }],
       ...server.failing.map(outgoing => ({ kind: 'outgoing' as const, outgoing }))],
@@ -471,7 +473,7 @@ function initial(): PanelServer {
     sourceExec: { feishu: { working: 1, queued: 1, waiting: 0 } },
     ticketSources: { t1: 'feishu', t0: 'feishu', t4: 'feishu' },
     dropped: [], failing: [], artifacts: [], artifactDetails: {}, artifactFiles: {}, downloads: [],
-    setup: { machine: MACHINE, problem: null, feishuProblem: null,
+    setup: { machine: MACHINE, problem: null, feishuProblem: null, problems: {},
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },

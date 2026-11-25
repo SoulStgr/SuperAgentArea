@@ -182,6 +182,37 @@ it('shows each Source\'s state on the Source page and opens its configuration fr
   expect(text()).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
 })
 
+it('shows a named instance\'s setup problem on its own card, with the check that retries it', async () => {
+  server.settings = { ...server.settings, sources: { ...server.settings.sources,
+    'github:acme-aps': { kind: 'github', enabled: true, config: { repository: 'acme/aps', cli: 'gh-aps' } } } }
+  server.setup = { ...server.setup, problems: { 'github:acme-aps': problemOf('agentCliSignedOut') } }
+  await mount()
+  await click(zh['tab.source'])
+  const aps = card('GitHub · acme-aps'), github = card('GitHub')
+  expect(aps.querySelector('.dt-status-text')?.textContent).toBe(zh['sourceState.error'])
+  expect(aps.textContent).toContain(zh['setup.agentCliSignedOut'])
+  // The default instance and the deployment keep their own state: the problem belongs to that instance alone.
+  expect(github.querySelector('.dt-status-text')?.textContent).toBe(zh['sourceState.done'])
+  expect(github.textContent).not.toContain(zh['setup.agentCliSignedOut'])
+  // Checking again re-runs setup, which checks the instance again; it asks first because running Assignments would stop.
+  await click(find(zh.setupCheck, '.dt-source-card button'))
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新检查会重启 dsh-superagent')
+  await click(zh.confirm)
+  expect(server.requests.some(request => request.path === 'setup/check')).toBe(true)
+})
+
+it('names a named instance\'s health by its own title, not by its instance id', async () => {
+  threeInstances()
+  server.health = { 'folder:ops': { state: 'error', detail: '3 consecutive failed polls; last: EOF', code: 'pollFailures',
+    values: { count: '3', error: 'EOF' } } }
+  await mount()
+  await click(zh['tab.source'])
+  const ops = card('本地文件夹 · ops')
+  expect(ops.textContent).toContain(`本地文件夹 · ops：连续 3 次轮询失败，最近一次：EOF`)
+  expect(ops.textContent).not.toContain('folder:ops')
+  expect(card('开发投件').textContent).not.toContain('consecutive')
+})
+
 it('folds more than six chats into a line of their names', async () => {
   const chats = Array.from({ length: 7 }, (_, n) => ({ chatId: n ? `oc_c${n}` : 'oc_team', listen: 'all' as const }))
   server.settings.sources.feishu = { ...server.settings.sources.feishu!, config: { ...server.settings.sources.feishu!.config, chats } }

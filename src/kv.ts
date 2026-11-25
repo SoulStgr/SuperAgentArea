@@ -70,8 +70,8 @@ export const KV = {
   folder: { pending: family<Record<string, { size: number; mtime: number }>, [row: string]>('folder-pending:'),
     seen: family<Record<string, string>, [row: string]>('folder-seen:') },
   /**
-   * Artifacts: the deliverables collected from a ticket's `deliver/` directory on its ready report, oldest collection last.
-   * Kept as a write-only compatibility copy since P5, which reads the artifact table instead; it is removed in P6.
+   * Artifacts: the deliverables earlier versions collected from a ticket's `deliver/` directory, oldest collection last.
+   * Since P6c only the schema 12 migration reads them, to index them in the artifact table; nothing writes them any more.
    */
   artifacts: family<Artifact[], [ticket: string]>('artifacts:'),
   /**

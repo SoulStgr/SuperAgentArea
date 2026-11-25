@@ -10,7 +10,7 @@ import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddres
 import { githubLink, sendGithub } from './github-channel.ts'
 import type { GithubComment, PullRef } from './github-trigger.ts'
 import { observePull, pullsOf, readPull, type Pull } from './github-pull.ts'
-import { health, sourceContext, type Health, type SourceContext } from './host.ts'
+import { health, reportFailure, sourceContext, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
 import type { Key } from '../kv.ts'
 import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
@@ -155,7 +155,7 @@ export function apply(ctx: Context): void {
     const controller = new AbortController()
     // Unhandled rejections terminate the DSH process, so a failure escaping the polling loop is reported as source health instead.
     const running = watch(source, controller.signal)
-      .catch((error: unknown) => { source.report('github', { state: 'error', detail: String(error) }) })
+      .catch((error: unknown) => { reportFailure(source, githubKind.kind, error) })
     return async () => { controller.abort(); await running }
   })
 }
@@ -170,23 +170,26 @@ function agentLogin(ctx: SourceContext): string {
   return github.login
 }
 /**
- * The polling loop: waits for setup, polls each enabled instance on its own repository, CLI and cursor, reports the shared
- * kind health (a summary once several instances run), and stops at once on abort.
+ * The polling loop: waits for setup, polls each enabled instance on its own repository, CLI and cursor, reports each
+ * instance's own health, and stops at once on abort.
  */
 async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the accounts; until then nothing is polled.
-  if (!ctx.configured()) { ctx.report('github', health('paused', 'setupPending')); return }
+  if (!ctx.configured()) {
+    for (const instance of ctx.instances<GithubConfig>(SOURCE)) ctx.report(instance.id, health('paused', 'setupPending'))
+    return
+  }
   const failures = new Map<string, { count: number; error: string }>()
   const intervals = new Map<string, number>()
   while (!signal.aborted) {
-    const active = ctx.instances<GithubConfig>(SOURCE).filter(instance => instance.enabled)
+    const instances = ctx.instances<GithubConfig>(SOURCE)
+    const active = instances.filter(instance => instance.enabled)
     let wait = 60
     // A deployment without a repository runs other Sources only: its GitHub Source reads nothing, whatever its switches say.
-    if (!active.length) ctx.report('github', health('paused', 'sourceOff'))
-    else if (!ctx.deployment.github) ctx.report('github', health('paused', 'githubUnset'))
+    if (!active.length) for (const instance of instances) ctx.report(instance.id, health('paused', 'sourceOff'))
+    else if (!ctx.deployment.github) for (const instance of active) ctx.report(instance.id, health('paused', 'githubUnset'))
     else {
-      const errors: string[] = []
       for (const instance of active) {
         if (signal.aborted) return
         try {
@@ -197,18 +200,10 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
           const count = (failures.get(instance.id)?.count ?? 0) + 1
           failures.set(instance.id, { count, error: String(error) })
           const failed = pollFailure(count, instance.config.failuresBeforeError, error)
-          if (!signal.aborted && failed) errors.push(`${instance.id}: ${String(error)}`)
+          if (!signal.aborted && failed) ctx.report(instance.id, failed)
         }
         wait = Math.max(wait, intervals.get(instance.id) ?? instance.config.pollSeconds)
       }
-      if (signal.aborted) return
-      if (errors.length) {
-        const count = active.reduce((sum, instance) => sum + (failures.get(instance.id)?.count ?? 0), 0)
-        ctx.report('github', health('error', 'pollFailures', { count: String(count), error: errors.join('; ') }))
-      }
-      // One instance's poll round names its own counts; several are summarized here so the last one does not hide the rest.
-      else if (active.length > 1) ctx.report('github', { state: 'ready', detail: `${active.length} repositories; next poll ≥ ${wait}s`,
-        at: new Date().toISOString() })
     }
     await pause(wait * 1000, signal)
   }
@@ -363,8 +358,8 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal, instan
   const dropped = (round.dropped.length ? `; deleted on GitHub: ${named(round.dropped)}` : '')
     + (round.abandoned.length ? `; dropped after their reads kept failing: ${named(round.abandoned)}` : '')
     + (round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : '')
-  // A named instance's round leaves the shared health summary to the watch loop, which polls every instance.
-  if (!instance || instance.id === SOURCE) ctx.report('github', { state: 'ready', detail: `${count} notifications; next poll ≥ ${interval}s${dropped}`, at: round.started })
+  // A named instance's round names its own health entry, so each instance's card says what it read.
+  ctx.report(instance?.id ?? SOURCE, { state: 'ready', detail: `${count} notifications; next poll ≥ ${interval}s${dropped}`, at: round.started })
   return interval
 }
 /** Reads notifications since the cursor and each Issue or PR they name, advancing the cursor atomically with the retry map for failed reads; deleted (410) Issues are dropped once their error is recorded. */

@@ -99,6 +99,30 @@ describe('Source registry', () => {
     context(githubKind).report('github', { state: 'ready', detail: 'again' })
     expect(board.all.github).toEqual({ state: 'ready', detail: 'again' })
   })
+  it('claims a health entry per instance, releases an instance\'s entry when the instance is gone, and refuses another kind\'s names', () => {
+    const board = new HealthBoard()
+    let current = SettingsSchema.parse({ sources: {
+      'probe:a': { kind: 'probe', enabled: true, config: { interval: 1 } },
+      'probe:b': { kind: 'probe', enabled: true, config: { interval: 2 } },
+    } })
+    const sources = new SourceRegistry(() => current, board)
+    const unregister = sources.register({ ...probe, health: ['probe'] })
+    // The kind's declared entry plus one entry per instance, claimed at registration.
+    expect(Object.keys(board.all).sort()).toEqual(['probe', 'probe:a', 'probe:b'])
+    const context = sourceContextOf({ sources } as unknown as SourceContextDeps, probe)
+    context.report('probe:a', { state: 'ready', detail: 'a is up' })
+    expect(board.all['probe:a']).toEqual({ state: 'ready', detail: 'a is up' })
+    expect(board.all['probe:b']).toEqual({ state: 'starting', detail: '' })
+    // A name that is neither declared nor one of this kind's instances is refused.
+    expect(() => context.report('github:acme-aps', { state: 'ready', detail: '' })).toThrow('has no health entry github:acme-aps')
+    // Removing an instance releases its entry on the next read of the instances; its sibling keeps its own.
+    current = SettingsSchema.parse({ sources: { 'probe:b': { kind: 'probe', enabled: true, config: { interval: 2 } } } })
+    expect(sources.instances().map(instance => instance.id)).toEqual(['probe:b'])
+    expect(board.all).not.toHaveProperty('probe:a')
+    expect(board.all['probe:b']).toBeDefined()
+    unregister()
+    expect(board.all).toEqual({})
+  })
   it('names the Trigger whose message a Trigger\'s message answers, where its kind can', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
     sources.register(feishuKind); sources.register(githubKind)

@@ -170,12 +170,12 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 
 | Request | Answer |
 | --- | --- |
-| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
+| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, `problems`, the setup problems of named GitHub and Feishu instances by instance id, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
 | `POST executor/pause` with `{"paused": true}` or `false` | Pauses or resumes processing: `paused` |
-| `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused when setup has nothing to fix |
+| `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused only when setup, Feishu and every named instance are already healthy |
 | `POST policy-sync/<source id>` | Syncs that Source's allowed list now: `policy`, the Source's part as saved |
 | `GET prompts`, `PUT prompts` with `{"config", "baseRevision"}` | Reads the prompt configuration: `current`, with its `revision` and `config`, `defaults`, `sections`, the team sections in the order Sessions read them, `skillName`, the pattern of a team skill's name, `builtin`, the names a team skill cannot take, and `skillPrefix`, which Sessions load a skill's name under. Or saves it: the new `revision` |
 | `POST tickets/<id>/retry`, `POST tickets/<id>/stop` | Retries or stops a Ticket, as the panel does |
@@ -189,7 +189,7 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
-| `github`, `feishu`, `history` | Source polling, events and history recovery |
+| `github`, `feishu`, `history` | Source polling, events and history recovery. Every instance also has its own entry named by its instance id: `<kind>` for the default instance, and `<kind>:<key>` for a named one, such as `github:acme-aps` |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -221,6 +221,8 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
 Setup verifies the GitHub repository and the agent's push access when the GitHub Source names a repository, writes the worker environment, and checks that git uses only the agent credentials for github.com. Without a repository it skips both GitHub checks: workers get a `gh` shim that fails for want of an account, and git gets no github.com credential helper. A Feishu setup failure disables only the Feishu Source.
+
+Setup also checks every enabled named GitHub or Feishu Source instance with that instance's own `cli` and `repository`, or its bot `cli`, using the same probes. Such an instance's failure is recorded for that instance alone (`setup.problems` in `GET state` and the problem on its Source card and page); the deployment keeps running, and **Check again** runs the checks again. The default instance (`github`, `feishu`) needs no separate check because setup already reads its configuration. Setup does not keep a separate account per instance: the deployment's own GitHub account and Feishu bot stay the ones workers and replies use.
 
 The process environment that setup writes:
 
@@ -255,6 +257,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | Symptom | Cause and fix |
 | --- | --- |
 | `The agent GitHub CLI is not set.` | Set the agent's CLI on the GitHub card |
+| A named Source's card shows a setup problem while the deployment runs | That instance's own CLI or repository failed its check: fix it on that Source's page and choose **Check again**. Its sibling instances and the deployment keep working |
 | `The agent GitHub CLI was not found.` | Set the wrapper's absolute path, or a command name on `PATH` |
 | `The agent GitHub CLI cannot read its account` | Sign the wrapper in with `auth login` |
 | `@… cannot read …` or `@… cannot push to …` | Give the agent account write access to the repository |

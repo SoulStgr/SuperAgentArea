@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, instanceProblems, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -107,5 +107,60 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+})
+
+describe('Source instance checks', () => {
+  /** A probe answering the GitHub account and repository reads and the Feishu bot reads, recording each command it ran. */
+  function answering(calls: string[]): Probe {
+    return async argv => {
+      const command = argv.join(' ')
+      calls.push(command)
+      if (command.includes(' api user')) return JSON.stringify({ login: 'agent-a', id: 7 })
+      if (command.includes(' api repos/')) return JSON.stringify({ name: 'acme/aps', push: true })
+      if (command.endsWith(' auth status')) return JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } })
+      if (command.endsWith(' config strict-mode')) return 'strict-mode: bot'
+      if (command.includes('/open-apis/bot/v3/info')) return '{"bot":{"open_id":"ou_bot","app_name":"Widgets Bot"}}'
+      throw new Error(`unexpected command: ${command}`)
+    }
+  }
+  it('checks only enabled named GitHub and Feishu instances, leaving the deployment\'s own accounts to its check', async () => {
+    const calls: string[] = []
+    const aps = program(join(dir, 'bin', 'gh-aps'), '')
+    const bot = program(join(dir, 'bin', 'lark-bot'), '')
+    const problems = await instanceProblems(machine(), {
+      github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: join(dir, 'bin', 'gh') } },
+      'github:acme-aps': { kind: 'github', enabled: true, config: { repository: 'acme/aps', cli: aps } },
+      'feishu:team': { kind: 'feishu', enabled: true, config: { cli: bot } },
+      'folder:ops': { kind: 'folder', enabled: true, config: {} },
+      'github:off': { kind: 'github', enabled: false, config: { repository: 'acme/off', cli: join(dir, 'bin', 'gh-off') } },
+    }, answering(calls))
+    expect(problems).toEqual({})
+    const env = 'env LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1'
+    expect(calls).toEqual([
+      `${aps} api user`,
+      `${aps} api repos/acme/aps --jq {name: .full_name, push: .permissions.push}`,
+      `${env} ${bot} auth status`, `${env} ${bot} config strict-mode`,
+      `${env} ${bot} api GET /open-apis/bot/v3/info --as bot --format ndjson`,
+    ])
+  })
+  it('records a named instance\'s failing check under its own id, leaving its siblings and setup itself unaffected', async () => {
+    const ok = program(join(dir, 'bin', 'gh-ok'), '')
+    const calls: string[] = []
+    const problems = await instanceProblems(machine(), {
+      'github:acme-aps': { kind: 'github', enabled: true, config: { repository: 'acme/aps', cli: join(dir, 'bin', 'missing-gh') } },
+      'github:acme-ok': { kind: 'github', enabled: true, config: { repository: 'acme/ok', cli: ok } },
+      'feishu:team': { kind: 'feishu', enabled: true, config: { cli: join(dir, 'bin', 'missing-lark') } },
+    }, answering(calls))
+    expect(problems['github:acme-aps']).toMatchObject({ place: 'github', code: 'agentCliMissing' })
+    expect(problems['feishu:team']).toMatchObject({ place: 'feishu', code: 'feishuCliFailed' })
+    expect(problems).not.toHaveProperty('github:acme-ok')
+    // The instance whose CLI is missing fails before its CLI runs, and its sibling is still checked.
+    expect(calls).toEqual([`${ok} api user`, `${ok} api repos/acme/ok --jq {name: .full_name, push: .permissions.push}`])
+    // A CLI that cannot read its account fails only that instance.
+    const signedOut = await instanceProblems(machine(), {
+      'github:acme-ok': { kind: 'github', enabled: true, config: { repository: 'acme/ok', cli: ok } },
+    }, async () => { throw new Error('gh: not logged in') })
+    expect(signedOut['github:acme-ok']).toMatchObject({ code: 'agentCliSignedOut', values: { output: 'gh: not logged in' } })
   })
 })

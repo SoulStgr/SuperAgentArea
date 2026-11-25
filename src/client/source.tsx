@@ -75,6 +75,11 @@ function SourceInstanceCard({ source, onOpen, onAnswer, onReload }: {
     catch (failure) { notify(errorText(failure)) } finally { setBusy(false) }
   }
   const title = localized(t, source.title)
+  // A named instance's health entry is its own id; the card names it by the instance's title instead of that id.
+  const partLabel = (name: string) => {
+    const label = valueLabel(t, 'health', name)
+    return label === name ? title : label
+  }
   return <section className="dt-card dt-source-card" data-state={dot} aria-label={title}>
     <div className="dt-card-head">
       <div className="dt-row-main">
@@ -91,9 +96,10 @@ function SourceInstanceCard({ source, onOpen, onAnswer, onReload }: {
     </div>
     {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
     {source.problem && <p className="dt-error"><SetupMessage problem={source.problem} lead /> <button type="button"
-      className="dt-textlink" onClick={() => navigate({ page: 'source', id: source.id })}>{t('sourceOpenSettings')}</button></p>}
+      className="dt-textlink" onClick={() => navigate({ page: 'source', id: source.id })}>{t('sourceOpenSettings')}</button>
+      <CheckSetupButton /></p>}
     {notes.map(item => <p key={item.name} className={item.state === 'error' ? 'dt-error dt-clamp' : 'dt-hint dt-clamp'}>
-      {valueLabel(t, 'health', item.name)}{t('labelSeparator')}<span className={item.code ? undefined : 'dt-mono'}>{healthText(t,
+      {partLabel(item.name)}{t('labelSeparator')}<span className={item.code ? undefined : 'dt-mono'}>{healthText(t,
         item)}</span>
     </p>)}
     <p className="dt-source-pending">{source.pending === 0 ? t('sourcePendingNone') : t('sourcePendingCount', { count: source.pending })}</p>

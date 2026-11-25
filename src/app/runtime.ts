@@ -194,7 +194,7 @@ export class Runtime extends Service implements SourceHost {
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
   get lifetime(): AbortSignal { return this.stopped.signal }
   context(source: { kind: string; health: readonly string[] } | SourceInstance): SourceContext {
-    // An instance names only its kind; its context reports through the health entries that kind's plugin declared.
+    // An instance names only its kind; its context reports through the kind's declared entries and the instance's own.
     const entries = 'health' in source ? source.health : this.sources.kind(source.kind)?.health ?? []
     return sourceContextOf(this.sourceDeps, { kind: source.kind, health: entries })
   }
@@ -204,6 +204,8 @@ export class Runtime extends Service implements SourceHost {
   get setupProblem(): SetupProblem | undefined { return this.setup.problem }
   /** Why the Feishu bot is unavailable even though the Feishu Source configures a CLI. */
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
+  /** Setup problems of named GitHub and Feishu Source instances, by instance id. */
+  get setupProblems(): Record<string, SetupProblem> { return this.setup.problems }
   links(): LinkTarget {
     const resolved = this.setup.configured() ? this.setup.deployment : undefined
     const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
@@ -247,6 +249,7 @@ export class Runtime extends Service implements SourceHost {
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, projects,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
+      get setupProblems() { return setup.problems },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }

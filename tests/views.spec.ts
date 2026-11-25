@@ -115,6 +115,30 @@ it('states each Source by the first state that holds', () => {
     .toEqual({ feishu: 'setup', github: 'setup' })
 })
 
+it('reads each Source instance\'s own health entry, and a named instance\'s setup problem on that instance alone', () => {
+  store.saveSettings(SettingsSchema.parse({ sources: {
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox: '/in/ops', outbox: '/out/ops' } },
+    'folder:dev': { kind: 'folder', enabled: true, config: { inbox: '/in/dev', outbox: '/out/dev' } },
+    'github:acme-aps': { kind: 'github', enabled: true, config: { repository: 'acme/aps' } },
+  } }))
+  const sources = new SourceRegistry(() => store.settings())
+  sources.register(folderKind); sources.register(githubKind)
+  const host = { store, sources, links }
+  // Two folder instances, one failing and one ready: neither state leaks to the other's entry.
+  const health = { 'folder:ops': { state: 'error' as const, detail: 'boom' }, 'folder:dev': { state: 'ready' as const, detail: 'ok' } }
+  const problem = { place: 'github' as const, code: 'agentCliMissing' as const, values: {}, detail: 'no cli' }
+  const rows = sourcesStatus(host, health, { problems: { 'github:acme-aps': problem } })
+  const row = (id: string) => rows.find(item => item.id === id)!
+  expect(row('folder:ops')).toMatchObject({ state: 'error', health: [{ name: 'folder:ops', state: 'error', detail: 'boom' }] })
+  expect(row('folder:ops')).not.toHaveProperty('problem')
+  expect(row('folder:dev')).toMatchObject({ state: 'ready', health: [{ name: 'folder:dev', state: 'ready', detail: 'ok' }] })
+  // The named GitHub instance's problem is its own: the deployment's problem would show on every instance of its kind.
+  expect(row('github:acme-aps')).toMatchObject({ state: 'error', problem })
+  expect(row('github:acme-aps').health).toEqual([{ name: 'github:acme-aps', state: 'starting', detail: '' }])
+  // No default GitHub instance is stored, so this kind has only the named one and no entry of its own.
+  expect(rows.some(item => item.id === 'github')).toBe(false)
+})
+
 it('follows the Ticket\'s stage: a blocked Ticket a person answered since is working, with no retry, note or turn end', () => {
   const host = views()
   const blocked = { state: 'blocked' as const, summary: 'Needs the design file', at: '2026-09-22T00:01:00Z' }

@@ -25,8 +25,8 @@ export function health(state: Health['state'], code: HealthCode, values: Record<
 export interface SourceHost {
   readonly sources: SourceRegistry
   /**
-   * Returns the context for one Source kind or instance; its health entries are the kind's, shared by its instances, and
-   * `report` writes only those entries.
+   * Returns the context for one Source kind or instance; it reports through the kind's declared health entries and through
+   * each of its instances' own entries, named by instance id.
    */
   context(source: { kind: string; health: readonly string[] } | SourceInstance): SourceContext
 }
@@ -68,7 +68,15 @@ export interface SourceContext {
   }
   triggers: { get(id: string): Trigger | undefined; /** The newest Trigger on a Thread. */ latest(thread: string): Trigger | undefined }
   notify(message: OutboundMessage): void
-  /** Reports the state of one of this kind's declared health entries; throws for undeclared entry names. */
+  /**
+   * Reports the state of one of this kind's declared health entries, or of one of its instances' entries named by instance
+   * id; throws for a name of neither.
+   */
   report(entry: string, health: Health): void
 }
 export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }): SourceContext => host.context(kind)
+/** Reports a failure that escaped a Source's loop on each instance it runs, so every instance's card shows it. */
+export function reportFailure(ctx: SourceContext, kind: string, error: unknown): void {
+  const ids = ctx.instances(kind).map(instance => instance.id)
+  for (const id of ids.length ? ids : [kind]) ctx.report(id, { state: 'error', detail: String(error) })
+}

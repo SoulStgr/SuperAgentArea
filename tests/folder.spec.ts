@@ -162,11 +162,11 @@ describe('the plugin loop', () => {
   it('waits for setup, reports ready rounds, and stops at once on abort', async () => {
     const waiting = host({ configured: () => false })
     await watchFolder(waiting.ctx, new AbortController().signal)
-    expect(waiting.health.folder).toMatchObject({ state: 'paused', code: 'setupPending' })
+    expect(waiting.health['folder:ops']).toMatchObject({ state: 'paused', code: 'setupPending' })
     const h = host()
     const controller = new AbortController()
     const running = watchFolder(h.ctx, controller.signal)
-    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'ready' }))
+    await vi.waitFor(() => expect(h.health['folder:ops']).toMatchObject({ state: 'ready' }))
     controller.abort()
     await running
   })
@@ -176,7 +176,7 @@ describe('the plugin loop', () => {
     rmSync(inbox, { recursive: true, force: true })
     const controller = new AbortController()
     const running = watchFolder(h.ctx, controller.signal)
-    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'error', code: 'pollFailures' }), { timeout: 12_000 })
+    await vi.waitFor(() => expect(h.health['folder:ops']).toMatchObject({ state: 'error', code: 'pollFailures' }), { timeout: 12_000 })
     controller.abort()
     await running
   }, 15_000)
@@ -192,7 +192,10 @@ describe('the plugin loop', () => {
     drop('two.txt', 'from dev', dev)
     const controller = new AbortController()
     const running = watchFolder(h.ctx, controller.signal)
-    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'ready', detail: '2 entries, 2 new drops' }), { timeout: 12_000 })
+    // Each instance reports its own round; the kind's shared entry stays unused.
+    await vi.waitFor(() => expect(h.health['folder:ops']).toMatchObject({ state: 'ready', detail: '1 entries, 1 new drops' }), { timeout: 12_000 })
+    await vi.waitFor(() => expect(h.health['folder:dev']).toMatchObject({ state: 'ready', detail: '1 entries, 1 new drops' }), { timeout: 12_000 })
+    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'starting' }))
     controller.abort()
     await running
     expect(h.receive.mock.calls.map(([trigger]) => [trigger.source, trigger.meta.rel]).sort())
@@ -201,13 +204,29 @@ describe('the plugin loop', () => {
     expect(Object.keys(h.store.get(KV.folder.seen('folder:dev'))!)).toEqual(['two.txt'])
     expect(existsSync(join(outbox, 'x'))).toBe(false)
   }, 15_000)
+  it('keeps a failing instance\'s error on its own entry while the other instance stays ready', async () => {
+    // The dev instance's inbox is missing, so only that instance's polls fail.
+    const lost = join(dir, 'inbox-lost'), lostOut = join(dir, 'outbox-lost')
+    mkdirSync(lostOut)
+    const h = host({}, {})
+    h.store.saveSettings(SettingsSchema.parse({ ...h.store.settings(), sources: {
+      'folder:ops': { kind: 'folder', enabled: true, config: { inbox, outbox, operator: 'alice', pollSeconds: 2 } },
+      'folder:dev': { kind: 'folder', enabled: true, config: { inbox: lost, outbox: lostOut, operator: 'bob', pollSeconds: 2 } },
+    } }))
+    const controller = new AbortController()
+    const running = watchFolder(h.ctx, controller.signal)
+    await vi.waitFor(() => expect(h.health['folder:dev']).toMatchObject({ state: 'error', code: 'pollFailures' }), { timeout: 12_000 })
+    expect(h.health['folder:ops']).toMatchObject({ state: 'ready' })
+    controller.abort()
+    await running
+  }, 15_000)
   it('polls an instance added while the Source runs, without a restart', async () => {
     const extra = join(dir, 'inbox-extra'), extraOut = join(dir, 'outbox-extra')
     mkdirSync(extra); mkdirSync(extraOut)
     const h = host({}, {})
     const controller = new AbortController()
     const running = watchFolder(h.ctx, controller.signal)
-    await vi.waitFor(() => expect(h.health.folder).toMatchObject({ state: 'ready' }), { timeout: 12_000 })
+    await vi.waitFor(() => expect(h.health['folder:ops']).toMatchObject({ state: 'ready' }), { timeout: 12_000 })
     // A Source added through the settings is polled from the next round, with its own inbox and cursor.
     const settings = h.store.settings()
     h.store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...settings.sources,
@@ -216,8 +235,10 @@ describe('the plugin loop', () => {
     drop('late.txt', 'from extra', extra)
     await vi.waitFor(() => expect(h.receive.mock.calls.map(([trigger]) => trigger.source)).toContain('folder:extra'),
       { timeout: 12_000 })
+    // The new instance got its own entry, reported on its first poll.
+    await vi.waitFor(() => expect(h.health['folder:extra']).toMatchObject({ state: 'ready' }), { timeout: 12_000 })
     controller.abort()
     await running
     expect(Object.keys(h.store.get(KV.folder.seen('folder:extra'))!)).toEqual(['late.txt'])
-  }, 15_000)
+  }, 20_000)
 })

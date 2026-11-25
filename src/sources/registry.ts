@@ -3,6 +3,7 @@ import type { ChannelRef, OutboundMessage, PersonRef, ProjectHint, ScopeResult, 
 import type { Commands } from '../infra/commands.ts'
 import { HealthBoard, type HealthEntry } from '../infra/health.ts'
 import { AdmissionTableSchema, type Settings } from '../policy.ts'
+import type { Health } from './host.ts'
 import type { ChannelLink, ChannelLinks, FieldSpec, Localized, SourceInstance, SourceKind, TriggerContext, VariableSpec } from './kind.ts'
 
 /** A stored Source instance: its kind, whether it runs, and its kind's single-instance configuration. */
@@ -11,40 +12,98 @@ type Stored = Settings['sources'][string]
 export type ResolvedInstance = SourceInstance & { installed: boolean }
 /** The per-row hint an old Trigger or Channel names (a folder row), used to find its instance after migration. */
 const rowHint = (meta: Record<string, unknown>): string | undefined => typeof meta.row === 'string' ? meta.row : undefined
+/** The health entries one registration owns: the kind's declared entries and one entry per instance of it. */
+interface HealthScope {
+  /** The kind's declared entries, by name; the one named after the kind also serves as its default instance's entry. */
+  readonly declared: Map<string, HealthEntry>
+  /** The kind's instances' own entries, by instance id. */
+  readonly instances: Map<string, HealthEntry>
+  released: boolean
+}
 
 /**
  * Manages registered SourceKind plugins, validates their instance and policy configurations, and implements SourceScope for the Engine.
- * Claims each registered kind's health entries on HealthBoard and mediates access to source channels, links, environment variables, and thread context readers for Runtime, Settings, Outbox, and MasterAssessor.
+ * Claims each registered kind's health entries, and one more per instance of it, on HealthBoard, and mediates access to source
+ * channels, links, environment variables, and thread context readers for Runtime, Settings, Outbox, and MasterAssessor.
  */
 export class SourceRegistry implements SourceScope {
   private readonly kinds = new Map<string, SourceKind>()
-  private readonly health = new Map<string, HealthEntry>()
+  private readonly health = new Map<string, HealthScope>()
   constructor(private readonly settings: () => Settings, private readonly board: Pick<HealthBoard, 'claim'> = new HealthBoard(),
     private readonly registered: (kind: SourceKind) => () => void = () => () => {}) {}
 
-  /** Registers a SourceKind, claims its health entries on HealthBoard (rejecting `sync:` prefixes owned by Settings), and returns an unregister disposer. */
+  /**
+   * Registers a SourceKind, claims its declared health entries and one entry per current instance on HealthBoard (rejecting
+   * `sync:` prefixes owned by Settings), and returns an unregister disposer that releases them all.
+   */
   register<C extends Record<string, unknown>>(kind: SourceKind<C>): () => void {
     if (this.kinds.has(kind.kind)) throw new Error(`Source kind already registered: ${kind.kind}`)
     const refused = (name: string) => new Error(`Source kind ${kind.kind} declares the health entry ${name}, which another part reports`)
     const synced = kind.health.find(name => name.startsWith('sync:'))
     if (synced) throw refused(synced)
-    const entries = new Map<string, HealthEntry>()
-    const release = () => { for (const [name, entry] of entries) { entry.release(); this.health.delete(name) } }
+    const scope: HealthScope = { declared: new Map(), instances: new Map(), released: false }
+    const release = () => {
+      if (scope.released) return
+      scope.released = true
+      for (const entry of new Set([...scope.declared.values(), ...scope.instances.values()])) entry.release()
+      scope.declared.clear(); scope.instances.clear()
+      this.health.delete(kind.kind)
+    }
     for (const name of kind.health) {
-      try { entries.set(name, this.board.claim(name, { state: 'starting', detail: '' })) }
+      try { scope.declared.set(name, this.board.claim(name, { state: 'starting', detail: '' })) }
       catch { release(); throw refused(name) }
     }
-    for (const [name, entry] of entries) this.health.set(name, entry)
+    this.health.set(kind.kind, scope)
     this.kinds.set(kind.kind, kind as unknown as SourceKind)
+    // Claim one entry per instance; reading the instances later claims new ones and releases the ones that went.
+    try { this.instancesOf(kind.kind) }
+    catch (error) { this.kinds.delete(kind.kind); release(); throw error }
     const unregistered = this.registered(kind as unknown as SourceKind)
-    return () => { this.kinds.delete(kind.kind); release(); unregistered() }
+    return () => { if (!this.kinds.delete(kind.kind)) return; release(); unregistered() }
+  }
+  /** Claims one entry per instance of `kind`, releasing the entries of instances it no longer has; the default instance keeps the declared entry named after the kind. */
+  private claimInstances(kind: string, ids: readonly string[]): void {
+    const scope = this.health.get(kind)
+    if (!scope || scope.released) return
+    const wanted = new Set(ids)
+    for (const [id, entry] of scope.instances) {
+      if (wanted.has(id) || scope.declared.get(id) === entry) continue
+      entry.release(); scope.instances.delete(id)
+    }
+    for (const id of ids) {
+      if (!scope.instances.has(id)) scope.instances.set(id, scope.declared.get(id) ?? this.board.claim(id, { state: 'starting', detail: '' }))
+    }
   }
   /**
-   * Returns the active health entries for `names`. A Source context writes through the entries it received when built,
-   * so reports sent after that registration ended do nothing even if the kind registers again.
+   * Returns the active health entries for `names`, declared or owned by an instance. A Source context writes through the
+   * entries it received when built, so reports sent after that registration ended do nothing even if the kind registers again.
    */
   healthEntries(names: readonly string[]): Map<string, HealthEntry> {
-    return new Map(names.flatMap(name => { const entry = this.health.get(name); return entry ? [[name, entry] as const] : [] }))
+    const entries = new Map<string, HealthEntry>()
+    for (const name of names) {
+      for (const scope of this.health.values()) {
+        const entry = scope.declared.get(name) ?? scope.instances.get(name)
+        if (entry) { entries.set(name, entry); break }
+      }
+    }
+    return entries
+  }
+  /**
+   * The reporter of one registration: an instance's own entry (named by instance id, claimed when the instance appeared
+   * after startup), or a declared entry of the kind. A report from a context whose registration ended writes nothing, and
+   * a name of neither the kind nor one of its instances is refused.
+   */
+  healthReporter(kind: string): (entry: string, health: Health) => void {
+    return (entry, health) => {
+      const scope = this.health.get(kind)
+      if (!scope || scope.released) return
+      const own = scope.instances.get(entry) ?? scope.declared.get(entry)
+      if (own) { own.set(health); return }
+      if (entry !== kind && this.settings().sources[entry]?.kind !== kind) throw new Error(`The ${kind} Source has no health entry ${entry}`)
+      const claimed = this.board.claim(entry, { state: 'starting', detail: '' })
+      scope.instances.set(entry, claimed)
+      claimed.set(health)
+    }
   }
   /** The installed kind `id` names: a kind id, a stored instance id, or an old bare kind id. */
   kind(id: string, settings = this.settings()): SourceKind | undefined {
@@ -79,6 +138,7 @@ export class SourceRegistry implements SourceScope {
     const plugin = this.kinds.get(kind)
     if (!plugin) return []
     const stored = Object.entries(settings.sources).filter(([, instance]) => instance.kind === kind).sort(([a], [b]) => a.localeCompare(b))
+    this.claimInstances(kind, stored.length ? stored.map(([id]) => id) : [kind])
     if (!stored.length) return [this.resolve(plugin, kind, undefined) as SourceInstance<C>]
     return stored.map(([id, instance]) => this.resolve(plugin, id, instance) as SourceInstance<C>)
   }

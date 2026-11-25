@@ -7,7 +7,7 @@ import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
-import { SetupError } from './setup.ts'
+import { SetupError, type SetupProblem } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 // Accept a POSIX absolute path and, on Windows, a drive or UNC absolute path.
@@ -134,4 +134,31 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
   return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+}
+
+/** One Source instance's stored settings, as the instance checks read them. */
+export interface SourceInstanceSetting { kind: string; enabled: boolean; config: unknown }
+/** The account check of each kind whose instances are checked one by one; the deployment's own check covers the default instance. */
+const INSTANCE_CHECKS: Record<string, (machine: Machine, config: unknown, probe: Probe, path: string) => Promise<unknown>> = {
+  github: (machine, config, probe, path) => resolveDeployment(machine, config, probe, path),
+  feishu: (machine, config, probe, path) => resolveFeishuBot(machine, config, probe, path),
+}
+/**
+ * Checks every enabled named GitHub and Feishu instance with the deployment's own probes against that instance's `cli` and
+ * `repository`, and returns each failure under its instance id. The default instance (`id` = kind) is left out because the
+ * deployment check covers it. A named instance's failure pauses only that instance, so the rest of setup still succeeds.
+ */
+export async function instanceProblems(machine: Machine, sources: Record<string, SourceInstanceSetting>, probe: Probe,
+  path = process.env.PATH ?? ''): Promise<Record<string, SetupProblem>> {
+  const problems: Record<string, SetupProblem> = {}
+  for (const [id, stored] of Object.entries(sources)) {
+    const check = INSTANCE_CHECKS[stored.kind]
+    if (id === stored.kind || !stored.enabled || !check) continue
+    try { await check(machine, stored.config, probe, path) }
+    catch (error) {
+      if (!(error instanceof SetupError)) throw error
+      problems[id] = error.problem
+    }
+  }
+  return problems
 }

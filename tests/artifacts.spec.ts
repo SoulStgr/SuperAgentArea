@@ -85,7 +85,8 @@ describe('delivery', () => {
     write('report.md', 'done')
     const h = host()
     expect(await deliverArtifacts(h, 't1')).toBe(1)
-    expect(h.store.set).toHaveBeenCalledWith(KV.artifacts('t1'), await collectDeliverables(work))
+    // The artifact table is the only index: the old `artifacts:<ticket id>` copy is not written any more.
+    expect(h.store.set).not.toHaveBeenCalled()
     expect(readFileSync(join(target, 'report.md'), 'utf8')).toBe('done')
     expect(readFileSync(join(outbox, 't1', 'artifacts', 'report.md'), 'utf8')).toBe('done')
     expect(h.rows).toEqual([{ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: 'prj_workspace', source: 'folder', name: 'report.md',
@@ -94,6 +95,18 @@ describe('delivery', () => {
     // The reply names the workspace, where people find the deliverables.
     expect(h.engine.reply).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'result', ticketId: 't1',
       text: artifactNotice(await collectDeliverables(work), target) }))
+  })
+  it('indexes a delivery in the artifact table and writes no `artifacts:<ticket id>` record', async () => {
+    const store = new Store(join(dir, 'delivery.sqlite'))
+    store.triggers.save(trigger(outbox))
+    store.tickets.save(ticket())
+    write('report.md', 'done')
+    expect(await deliverArtifacts({ store, engine: { reply: () => ({ id: 'reply-1', status: 'pending', reused: false }) },
+      targetRoot: target }, 't1')).toBe(1)
+    expect(store.artifacts.list({ ticket: 't1' }).map(record => record.name)).toEqual(['report.md'])
+    expect(store.keys(KV.artifacts)).toEqual([])
+    expect(store.get(KV.artifacts('t1'))).toBeUndefined()
+    store.close()
   })
   it('promotes and indexes a file whose name the workspace already holds under the ticket\'s short id, and replaces its row', async () => {
     write('report.md', 'done')

@@ -13,7 +13,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { key, readsChinese, threadKey, type OutboundMessage, type ProjectHint, type Trigger } from '../core/index.ts'
 import { KV } from '../kv.ts'
-import { health, sourceContext, type SourceContext } from './host.ts'
+import { health, reportFailure, sourceContext, type SourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
 
 const ConfigSchema = z.object({
@@ -277,44 +277,37 @@ export async function pollFolder(ctx: SourceContext, instance: FolderInstance, o
   return { read: entries.length, received }
 }
 
-/** What one instance's loop has done since startup, for the kind's shared health detail. */
+/** What one instance's loop has done since startup, for that instance's own health detail. */
 interface FolderRound { failures: number; read: number; received: number; error?: string }
-/** Reports the kind-level entry: a poll error once any instance failed three rounds, else the totals of the running instances. */
-function reportFolder(ctx: SourceContext, rounds: Map<string, FolderRound>, active: readonly { id: string }[]): void {
-  const failed = active.flatMap(({ id }) => {
-    const round = rounds.get(id)
-    return round && round.failures >= 3 ? [{ id, round }] : []
-  })
-  if (failed.length) {
-    const count = failed.reduce((sum, item) => sum + item.round.failures, 0)
-    const error = failed.map(item => `${item.id}: ${item.round.error ?? 'failed'}`).join('; ')
-    ctx.report('folder', health('error', 'pollFailures', { count: String(count), error }))
+/** Reports one instance's entry: a poll error once it failed three rounds in a row, else what its round read. */
+function reportRound(ctx: SourceContext, id: string, round: FolderRound): void {
+  if (round.failures >= 3) {
+    ctx.report(id, health('error', 'pollFailures', { count: String(round.failures), error: round.error ?? 'failed' }))
     return
   }
-  const totals = active.reduce((sum, { id }) => {
-    const round = rounds.get(id)
-    return { read: sum.read + (round?.read ?? 0), received: sum.received + (round?.received ?? 0) }
-  }, { read: 0, received: 0 })
-  ctx.report('folder', { state: 'ready', detail: `${totals.read} entries, ${totals.received} new drops`, at: new Date().toISOString() })
+  ctx.report(id, { state: 'ready', detail: `${round.read} entries, ${round.received} new drops`, at: new Date().toISOString() })
 }
 
 /**
- * The polling loop: waits for setup, follows the switch, polls each enabled instance on its own interval, reports the
- * shared health, and stops at once on abort.
+ * The polling loop: waits for setup, follows the switch, polls each enabled instance on its own interval, reports each
+ * instance's own health, and stops at once on abort.
  */
 export async function watchFolder(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
-  if (!ctx.configured()) { ctx.report('folder', health('paused', 'setupPending')); return }
+  if (!ctx.configured()) {
+    for (const instance of ctx.instances('folder')) ctx.report(instance.id, health('paused', 'setupPending'))
+    return
+  }
   const rounds = new Map<string, FolderRound>()
   const due = new Map<string, number>()
   while (!signal.aborted) {
     const instances = ctx.instances<FolderConfig>('folder')
     const enabled = instances.filter(instance => instance.enabled)
     const active = enabled.filter(instance => instance.config.inbox)
-    if (!enabled.length) ctx.report('folder', health('paused', 'sourceOff'))
+    if (!enabled.length) for (const instance of instances) ctx.report(instance.id, health('paused', 'sourceOff'))
     else if (!active.length) {
       // An instance with no inbox configured yet runs nothing; the Source is on, so it is not reported off.
-      ctx.report('folder', { state: 'ready', detail: '0 entries, 0 new drops', at: new Date().toISOString() })
+      for (const instance of enabled) ctx.report(instance.id, { state: 'ready', detail: '0 entries, 0 new drops', at: new Date().toISOString() })
     } else {
       const now = Date.now()
       for (const instance of active) {
@@ -331,8 +324,8 @@ export async function watchFolder(ctx: SourceContext, signal: AbortSignal): Prom
         } catch (error) {
           round.failures += 1; round.error = String(error)
         }
+        reportRound(ctx, instance.id, round)
       }
-      reportFolder(ctx, rounds, active)
     }
     const seconds = active.length ? Math.min(...active.map(instance => instance.config.pollSeconds)) : 10
     await delay(seconds * 1000, undefined, { signal }).catch(() => {})
@@ -348,7 +341,7 @@ export function apply(ctx: Context): void {
     const controller = new AbortController()
     // DSH ends its process on an unhandled rejection, so a failure that escapes the loop becomes the Source's health.
     const running = watchFolder(source, controller.signal)
-      .catch((error: unknown) => { source.report('folder', { state: 'error', detail: String(error) }) })
+      .catch((error: unknown) => { reportFailure(source, folderKind.kind, error) })
     return async () => { controller.abort(); await running }
   })
 }

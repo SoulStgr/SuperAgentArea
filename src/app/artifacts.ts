@@ -10,7 +10,6 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, relative } from 'node:path'
 import { artifactRecordId, WORKSPACE_PROJECT_ID, type ArtifactRecord, type Reply, type ReplyRequest, type Ticket, type Trigger }
   from '../core/index.ts'
-import { KV, type Key } from '../kv.ts'
 
 /** One deliverable file: its path relative to `deliver/` with forward slashes, content hash, size, and collection time. */
 export interface Artifact { name: string; hash: string; size: number; at: string }
@@ -88,7 +87,6 @@ export interface ArtifactHost {
     tickets: { get(id: string): Ticket | undefined }
     triggers: { get(id: string): Trigger | undefined }
     artifacts: { add(artifact: ArtifactRecord): void }
-    set<V>(key: Key<V>, value: V): void
   }
   readonly engine: { reply(request: ReplyRequest): Reply }
   /** The Project directory the deliverables are promoted into, such as `<stateDir>/area/workspace`. */
@@ -96,11 +94,12 @@ export interface ArtifactHost {
 }
 
 /**
- * Collects a ticket's deliverables once its worker reported ready: keeps the write-only `KV.artifacts` compatibility copy,
- * promotes them into `host.targetRoot`, keeps the folder Source's outbox copy when the origin Trigger names one, indexes each
- * file as an artifact row (with the id of the result reply that names them when one is queued), and posts that reply. A
- * refused reply keeps the already promoted files and their index rows, as it did before the message id was recorded, and is
- * thrown so the effect tries again. Returns the number of artifacts; zero when there is nothing.
+ * Collects a ticket's deliverables once its worker reported ready: promotes them into `host.targetRoot`, keeps the folder
+ * Source's outbox copy when the origin Trigger names one, indexes each file as an artifact row (with the id of the result
+ * reply that names them when one is queued), and posts that reply. The artifact table is the only index: no `KV.artifacts`
+ * record is written, and the schema 12 migration was its last reader. A refused reply keeps the already promoted files and
+ * their index rows, as it did before the message id was recorded, and is thrown so the effect tries again. Returns the
+ * number of artifacts; zero when there is nothing.
  */
 export async function deliverArtifacts(host: ArtifactHost, ticketId: string): Promise<number> {
   const ticket = host.store.tickets.get(ticketId)
@@ -108,7 +107,6 @@ export async function deliverArtifacts(host: ArtifactHost, ticketId: string): Pr
   if (!ticket || !directory) return 0
   const artifacts = await collectDeliverables(directory)
   if (!artifacts.length) return 0
-  host.store.set(KV.artifacts(ticketId), artifacts)
   const trigger = host.store.triggers.get(ticket.origin.triggerId)
   const outbox = typeof trigger?.meta.outbox === 'string' && trigger.meta.outbox ? join(trigger.meta.outbox, ticketId, 'artifacts') : undefined
   await promoteArtifacts(directory, artifacts, host.targetRoot, ticketId.slice(0, SUFFIX_CHARS))

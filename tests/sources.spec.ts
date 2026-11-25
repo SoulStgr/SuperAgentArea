@@ -1454,15 +1454,20 @@ describe('multiple Source instances', () => {
       if (String(args[1] ?? '').includes('notifications')) return 'HTTP/2.0 200 OK\r\nX-Poll-Interval: 90\r\n\r\n[]'
       return JSON.stringify([])
     })
+    const ctx = h.context(githubKind)
     const a = h.sources.instanceFor<GithubConfig>('github:acme-a')!, b = h.sources.instanceFor<GithubConfig>('github:acme-b')!
-    await pollRound(h, undefined, a)
-    await pollRound(h, undefined, b)
+    await pollRound(ctx, undefined, a)
+    await pollRound(ctx, undefined, b)
     expect(reads.map(([program, path]) => [program, path.replace(/^repos\/[^/]+\/[^/]+\//, '').split('?')[0]])).toEqual([
       ['gh-a', 'notifications'], ['gh-b', 'notifications']])
     // Each instance keeps its own notification cursor; the default instance's unsharded keys stay unused.
     expect(Date.parse(h.store.get<string>('github-since:github:acme-a')!)).toBeGreaterThan(0)
     expect(Date.parse(h.store.get('github-since:github:acme-b')!)).toBeGreaterThan(0)
     expect(h.store.get('github-since')).toBeUndefined()
+    // Each instance's round reports its own health; the default instance's entry stays unused.
+    expect(h.health['github:acme-a']).toMatchObject({ state: 'ready', detail: '0 notifications; next poll ≥ 90s' })
+    expect(h.health['github:acme-b']).toMatchObject({ state: 'ready', detail: '0 notifications; next poll ≥ 90s' })
+    expect(h.health.github).toMatchObject({ state: 'starting' })
     // The repository of each instance names its Threads and the Trigger's Channel.
     const trigger = commentTrigger({ id: 5, body: '@agent-bot fix', user: { login: 'alice', type: 'User' }, html_url: 'https://github.com/acme/a/pull/7#discussion_r5' },
       { number: 7, isPr: true }, 'inline', 'agent-bot', 'github:acme-a')
@@ -1471,7 +1476,7 @@ describe('multiple Source instances', () => {
     run.mockRestore()
     h.store.close()
   })
-  it('summarizes several GitHub instances on the shared kind health', async () => {
+  it('reports each GitHub instance on its own health entry', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const board = new HealthBoard()
@@ -1485,7 +1490,10 @@ describe('multiple Source instances', () => {
       const disposers: (() => unknown)[] = []
       const run = vi.spyOn(Commands.prototype, 'run').mockResolvedValue('HTTP/2.0 200 OK\r\nX-Poll-Interval: 90\r\n\r\n[]')
       applyGithub({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
-      await vi.waitFor(() => expect(value.health.github).toMatchObject({ state: 'ready', detail: '2 repositories; next poll ≥ 90s' }))
+      await vi.waitFor(() => expect(value.health['github:acme-a']).toMatchObject({ state: 'ready', detail: '0 notifications; next poll ≥ 90s' }))
+      await vi.waitFor(() => expect(value.health['github:acme-b']).toMatchObject({ state: 'ready', detail: '0 notifications; next poll ≥ 90s' }))
+      // No instance is summarized on the kind's own entry, which only the default instance reports.
+      expect(value.health.github).toEqual({ state: 'starting', detail: '' })
       for (const dispose of disposers) await dispose()
       run.mockRestore()
       value.store.close()

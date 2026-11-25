@@ -750,7 +750,7 @@ function personOf(actor: { source?: string; id?: string } | undefined): PersonRe
 /**
  * Index the deliverables earlier versions collected under `KV.artifacts`, keyed by Ticket, as artifact rows of the workspace
  * Project: their Source is the Ticket's origin, and the copies that went to a folder Source's outbox stay their `deliveredTo`.
- * `targetRoot` is empty because those versions promoted nothing; the records themselves stay for the stages that read them.
+ * `targetRoot` is empty because those versions promoted nothing; since P6c this migration is the only reader of those records.
  */
 function indexArtifacts(store: Store): void {
   for (const name of store.keys(KV.artifacts)) {

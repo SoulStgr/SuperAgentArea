@@ -1,11 +1,37 @@
 /** Runtime health reporting: per-component error states and recovery on subsequent success. */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
+import { folderKind } from '../src/sources/folder.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
 beforeEach(async () => { h = await startRuntime() })
 afterEach(async () => { await h.stop() })
+
+it('keeps a health entry per Source instance, releasing one when its instance or its kind goes', async () => {
+  const { store, sources } = h.runtime
+  const settings = store.settings()
+  store.saveSettings({ ...settings, sources: { ...settings.sources,
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox: '/in/ops', outbox: '/out/ops' } },
+    'folder:dev': { kind: 'folder', enabled: true, config: { inbox: '/in/dev', outbox: '/out/dev' } } } })
+  const unregister = sources.register(folderKind)
+  // A registration claims one entry per instance, so each reports and is read on its own.
+  expect(h.runtime.health).toMatchObject({ 'folder:ops': { state: 'starting' }, 'folder:dev': { state: 'starting' } })
+  const ops = sources.instance('folder:ops')!
+  h.runtime.context(ops).report(ops.id, { state: 'ready', detail: '1 entries, 0 new drops' })
+  expect(h.runtime.health['folder:ops']).toEqual({ state: 'ready', detail: '1 entries, 0 new drops' })
+  expect(h.runtime.health['folder:dev']).toEqual({ state: 'starting', detail: '' })
+  // Removing an instance releases its entry on the next read of the instances; its sibling stays reported.
+  const kept = Object.fromEntries(Object.entries(store.settings().sources).filter(([id]) => id !== 'folder:dev'))
+  store.saveSettings({ ...store.settings(), sources: kept })
+  expect(sources.instances().map(instance => instance.id)).not.toContain('folder:dev')
+  expect(h.runtime.health).not.toHaveProperty('folder:dev')
+  expect(h.runtime.health['folder:ops']).toEqual({ state: 'ready', detail: '1 entries, 0 new drops' })
+  // Unregistering the kind gives up every entry it held, its instances' own included.
+  unregister()
+  expect(h.runtime.health).not.toHaveProperty('folder')
+  expect(h.runtime.health).not.toHaveProperty('folder:ops')
+})
 
 /** Advance fake `Date.now()` by `ms` and pump due runtime work. */
 async function at(ms: number) {

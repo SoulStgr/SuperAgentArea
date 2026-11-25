@@ -1,7 +1,8 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, instanceProblems, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine }
+  from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -20,11 +21,14 @@ export const setupChanged = (before: Settings, after: Settings): boolean => setu
 /**
  * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
  * `Runtime` runs it at startup to gate orchestration readiness, while `Settings` uses it to validate account changes, update blocked command shims, and schedule restarts.
+ * Each enabled named GitHub or Feishu instance is checked with its own CLI and repository; a failure is that instance's problem and pauses only it.
  */
 export class Setup {
   private resolved?: Deployment
   problem?: SetupProblem
   feishuProblem?: SetupProblem
+  /** Setup problems of named GitHub and Feishu instances, by instance id; they stop that instance alone. */
+  problems: Record<string, SetupProblem> = {}
   /** PATH with the worker shim directory removed so the host's own CLI calls invoke the real binaries. */
   private readonly path: string
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
@@ -43,16 +47,20 @@ export class Setup {
   configured(): boolean { return this.resolved !== undefined }
   /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
-    try { this.resolved = await this.resolve(settings); return true }
-    catch (error) {
+    this.problems = {}
+    try {
+      this.resolved = await this.resolve(settings)
+      await this.checkInstances(settings)
+      return true
+    } catch (error) {
       if (!(error instanceof SetupError)) throw error
       this.problem = error.problem
       return false
     }
   }
-  /** Trigger a restart to re-run setup, refusing if setup and Feishu are already healthy so running assignments are not interrupted. */
+  /** Trigger a restart to re-run setup, refusing only while setup, Feishu and every named instance are already healthy. */
   check(): void {
-    if (this.configured() && !this.feishuProblem) throw new UserError('setupComplete')
+    if (this.configured() && !this.feishuProblem && !Object.keys(this.problems).length) throw new UserError('setupComplete')
     this.restart()
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
@@ -68,6 +76,16 @@ export class Setup {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
   }
   restore(): void { this.restoreEnvironment?.(); this.restoreEnvironment = undefined }
+  /**
+   * Checks each enabled named GitHub or Feishu instance against its own CLI; a failure is recorded for that instance and
+   * leaves setup itself running, so the rest of the deployment keeps working.
+   */
+  private async checkInstances(settings: Settings): Promise<void> {
+    this.problems = await instanceProblems(this.host.machine, settings.sources, this.probe()).catch((error: unknown) => {
+      this.host.context.logger.warn('dsh-superagent could not check its Source instances: %s', String(error))
+      return {}
+    })
+  }
   /** Probes CLIs the way worker shells run them, using `stateDir` as `cwd` since it exists even before the repository clone is valid. */
   private probe() {
     const { context, machine, lifetime } = this.host

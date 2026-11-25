@@ -97,7 +97,10 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   /** Validates stored and submitted configuration and fills defaults. */
   schema: z.ZodType<C>
   fields: FieldSpec[]
-  /** Health entry names owned by this kind under `health[...]`; no other kind or core loop may report them. */
+  /**
+   * Health entry names owned by this kind; no other kind or core loop may report them. The entry named after the kind is
+   * its default instance's, and each instance also reports an entry named by its own id; any other name is kind-wide.
+   */
   health: string[]
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */
   scope?(input: { meta: Record<string, unknown>; instance: string }, config: C): ScopeResult

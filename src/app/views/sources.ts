@@ -21,11 +21,16 @@ export function sourceTitle(kind: { title: Localized; kind: string } | undefined
   const key = instance.id.slice(kind.kind.length + 1)
   return { zh: `${kind.title.zh} · ${key}`, en: `${kind.title.en} · ${key}` }
 }
-/** Resolves health entries for a Source instance, treating stale `sourceOff` entries on an enabled Source as `starting`. */
+/**
+ * Resolves the health entries of a Source instance: its own entry (named by its instance id, which is the kind for the
+ * default instance) and the entries its kind declares beside it, treating stale `sourceOff` entries on an enabled Source as
+ * `starting`.
+ */
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
   const kind = sources.kind(instance.kind)
   const starting: Health = { state: 'starting', detail: '' }
-  const parts = (kind?.health ?? []).map(name => {
+  const names = [instance.id, ...(kind?.health ?? []).filter(name => name !== kind?.kind)]
+  const parts = names.map(name => {
     const entry = health[name]
     return { name, ...(!entry || (instance.enabled && entry.code === 'sourceOff') ? starting : entry) }
   })
@@ -38,8 +43,15 @@ export interface SetupState {
   problem?: SetupProblem | undefined
   /** Feishu bot check failure that pauses only the Feishu Source. */
   feishuProblem?: SetupProblem | undefined
+  /** Setup problems of named GitHub and Feishu instances, by instance id; each stops only its own instance. */
+  problems?: Record<string, SetupProblem> | undefined
 }
-export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
+/**
+ * The setup problem of one Source instance: its own, else one recorded where `place` names it (the deployment's problem, or
+ * the default instance's).
+ */
+export const problemOf = (id: string, setup: SetupState) =>
+  setup.problems?.[id] ?? [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
 /** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {
