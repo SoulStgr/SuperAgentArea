@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, all, at, find, tab, click, type, text, field } from './fixtures/panel.tsx'
 import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -11,8 +11,8 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   server.tickets.open = [ticketSummary(), ticketSummary({ id: 't2', title: '执行中的工单', threads: [{ key: 'github:7',
     source: 'github', title: '#7 x', facts: { number: { value: '#7' }, autoMerge: { label: { zh: '自动合并', en: 'Auto-merge' },
       value: { zh: '已开启', en: 'on' } } } }] })]
+  at({ page: 'execution' })
   await mount()
-  await click(zh['tab.execution'])
   expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
   expect(server.requests.some(request => request.path === 'tickets?state=open&limit=20')).toBe(true)
   expect(text()).toContain(zh.executorRunning)
@@ -25,17 +25,17 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(text()).toContain(zh['outcome.stopped'])
   expect(all('.dt-status-line .dt-lv').map(item => item.textContent)).toEqual(['执行中 2 / 3', '排队 0'])
   // The pause is its own action: an Execution settings draft started before it still saves.
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
-  expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])
+  await click(find(zh['tab.settings'], '.dt-head button'))
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
   await type(field<HTMLInputElement>(zh.maxWorkers), '4')
-  await click(tab(zh['tab.execution']))
+  at({ page: 'execution' })
+  await remount()
   await click(zh.pauseProcessing)
   await click(zh.confirm)
   expect(server.requests.find(request => request.path === 'executor/pause')).toMatchObject({ method: 'POST', body: { paused: true } })
   expect(text()).toContain(zh.processingPaused)
   expect(find(zh.resumeProcessing).textContent).toBe(zh.resumeProcessing)
-  await click(tab(zh['tab.settings']))
+  await click(find(zh['tab.settings'], '.dt-head button'))
   await click(zh.save)
   expect(server.settings).toMatchObject({ paused: true, executor: { maxWorkers: 4 } })
 })
@@ -72,7 +72,8 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   expect(all('.dt-disclosure-body .dt-table tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENT_DIR/w/t1',
     'DSH_SUPERAGENT_GITHUB_NUMBER—'])
   await click(document.querySelector<HTMLElement>('.dt-trigger-link')!)
-  expect(tab(zh['tab.trigger']).getAttribute('aria-selected')).toBe('true')
+  expect(server.requests.some(request => request.path.startsWith('threads/feishu:oc_1:om_root'))).toBe(true)
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('这个文案好奇怪')
 })
 
 it('reports a missing Ticket instead of rendering an empty page', async () => {
@@ -97,8 +98,8 @@ it('links a question to its Channel, folds consecutive automated messages among 
   expect(all('.dt-disclosure-body .dt-row-title').map(title => title.textContent)).toEqual(['自动通知：CI of PR #42 at abc1234: 10 checks, 1 failed, 0 running.'])
   await click('同一发送者之前还有 1 条自动消息')
   expect(text()).toContain('CI of PR #42 at abc1234: 10 checks, 0 failed, 0 running.')
-  await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(tab(zh['tab.policy']))
+  await click(find(zh['policySegment.eval'], '.dt-policy-segments [role="tab"]'))
   expect(text()).not.toContain('到期后记为未完成')
   const tip = field(zh.evalTimeout).closest('.dt-field')!.querySelector<HTMLElement>('.dt-info')!
   await act(async () => { tip.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
@@ -121,8 +122,7 @@ it('offers a Ticket awaiting review its review place and Session in the page hea
 
 it('keeps what a person types in the Execution settings, converting it once on save', async () => {
   await mount()
-  await click(zh['tab.execution'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-head button'))
   const blocked = () => field<HTMLInputElement>(zh.blockedCommands), root = () => field<HTMLInputElement>(zh.executionDirectory),
     workers = () => field<HTMLInputElement>(zh.maxWorkers)
   // A separator typed before the next command, a space inside a path and a cleared number stay as typed.
@@ -200,8 +200,8 @@ it('words an ended Ticket by its outcome, on its row and its page, with a person
     ended: { at: '2026-09-21T00:00:00Z', by: 'executor' as const, outcome: 'merged' as const } }
   server.tickets.ended = [ticketSummary(fields, { stage: 'ended' }), ...server.tickets.ended]
   server.ticketDetails.t3 = { ...server.ticketDetails.t1!, ...fields, stage: 'ended' }
+  at({ page: 'execution' })
   await mount()
-  await click(zh['tab.execution'])
   await click(zh['ticket.ended'])
   expect(all('.dt-ticket-stage').map(stage => stage.textContent)).toEqual([zh['outcome.merged'], zh['outcome.stopped']])
   await click('已合并的工单')

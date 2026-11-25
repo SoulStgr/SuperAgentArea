@@ -443,10 +443,13 @@ function projectFixture({ artifact = true }: { artifact?: boolean } = {}) {
 
 it('lists each Project as a card, the workspace first, counting the work each holds', () => {
   const host = projectFixture()
+  // An artifact saved before Projects existed has no Project column; the workspace counts it as its own.
+  host.store.artifacts.add({ id: 'a-legacy', ticket: 't-old', source: 'github', name: 'old.csv',
+    value: { hash: 'h-old', size: 1, at: '2026-09-20T00:00:00Z', targetRoot: '' }, at: '2026-09-20T00:00:00Z' })
   const rows = projectList(host)
   expect(rows.map(row => [row.id, row.status])).toEqual([['prj_workspace', 'active'], ['prj_aps', 'active']])
   const [workspace, aps] = [rows[0]!, rows[1]!]
-  expect(workspace).toMatchObject({ name: 'workspace', kind: 'workspace', openTickets: 1, tickets: 1, artifacts: 0,
+  expect(workspace).toMatchObject({ name: 'workspace', kind: 'workspace', openTickets: 1, tickets: 1, artifacts: 1,
     lastActivity: '2026-09-21T00:00:00Z' })
   expect(workspace.sources).toEqual([{ id: 'github', title: githubKind.title }])
   expect(aps).toMatchObject({ name: 'aps', kind: 'station', location: { type: 'folder', path: '/users/alice/aps' }, openTickets: 1,
@@ -462,6 +465,8 @@ it('lists each Project as a card, the workspace first, counting the work each ho
 
 it('opens a Project page with its counts, its Sources and the first page of each section', () => {
   const host = projectFixture()
+  host.store.artifacts.add({ id: 'a-legacy', ticket: 't-old', source: 'github', name: 'old.csv',
+    value: { hash: 'h-old', size: 1, at: '2026-09-20T00:00:00Z', targetRoot: '' }, at: '2026-09-20T00:00:00Z' })
   const detail = projectDetail(host, 'prj_aps', {}, {})!
   expect(detail.counts).toEqual({ openTickets: 1, tickets: 1, threads: 2, decisions: 1, artifacts: 1 })
   expect(detail.project).toMatchObject({ id: 'prj_aps', key: 'aps', status: 'active', value: { name: 'aps', aliases: [] } })
@@ -475,9 +480,11 @@ it('opens a Project page with its counts, its Sources and the first page of each
   expect(detail.sources.map(source => [source.id, source.linked, source.state, source.installed]))
     .toEqual([['feishu', true, 'starting', true], ['github', false, 'starting', true]])
   expect(detail.sources.map(source => source.title)).toEqual([feishuKind.title, githubKind.title])
-  // The workspace page counts the Tickets saved before Projects existed, under their own Triggers' Threads.
+  // The workspace page counts the Tickets saved before Projects existed, under their own Triggers' Threads, and the
+  // artifacts saved without a Project.
   const workspace = projectDetail(host, 'prj_workspace', {}, {})!
-  expect(workspace.counts).toMatchObject({ openTickets: 1, tickets: 1, threads: 1, decisions: 0, artifacts: 0 })
+  expect(workspace.counts).toMatchObject({ openTickets: 1, tickets: 1, threads: 1, decisions: 0, artifacts: 1 })
+  expect(workspace.artifacts.map(artifact => artifact.id)).toEqual(['a-legacy'])
   expect(workspace.threads.items.map(thread => thread.key)).toEqual(['github:9'])
   // Each section pages on its own, by the state the caller asks for.
   expect(projectTicketList(host, 'prj_aps', undefined, 0, 1)).toMatchObject({ total: 1, next_offset: null })
@@ -513,6 +520,9 @@ it('reads a Project\'s history newest first, keeping records saved before Projec
     value: { hash: 'h-old', size: 1, at: '2026-09-20T00:00:00Z', targetRoot: '/tmp/outbox' }, at: '2026-09-20T00:00:00Z' })
   expect(projectHistory(host, 'prj_workspace', 50)!.tickets.map(ticket => ticket.id)).toEqual(['t-old'])
   expect(projectHistory(host, 'prj_workspace', 50)!.artifacts.map(artifact => artifact.id)).toEqual(['a-old'])
+  // The workspace's card, its page and its history count that artifact the same way.
+  expect(projectList(host).find(row => row.id === 'prj_workspace')!.artifacts).toBe(1)
+  expect(projectDetail(host, 'prj_workspace', {}, {})!.counts.artifacts).toBe(1)
   expect(projectHistory(host, 'prj_aps', 50)!.tickets.map(ticket => ticket.id)).toEqual(['t1', 't2'])
   expect(projectHistory(host, 'prj_aps', 50)!.artifacts.map(artifact => artifact.id)).toEqual([artifactRecordId('t1', 'report.md')])
   // An empty station has empty lists, an unknown one has no history, and the limit stops every list.

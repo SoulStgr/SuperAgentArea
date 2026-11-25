@@ -1,74 +1,18 @@
-/** 工单源 page: one card per Source instance with its last day and execution state, adding Sources, an instance's page, and Project answer dialogs; plus the Sources settings cards. */
+/** 工单源 page: one card per Source instance with its last day and execution state, adding Sources, an instance's page with its configuration, and Project answer dialogs. */
 import { useEffect, useState } from 'react'
 import type { AnswerProject } from '../app/api.ts'
 import type { FieldSpec } from '../sources/kind.ts'
 import { usePoll, type DroppedReply, type PendingProject, type SourceDetailView, type SourceKindRow, type SourceStatusRow,
-  type SourceView, type TicketRow } from './api.ts'
+  type TicketRow } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { usePanel, usePanelData } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
-import { settingsRoute, setupPage, type Route } from './route.ts'
-import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
+import { setupPage, type Route } from './route.ts'
+import { ConfigHistory, Fields, SettingsProvider, SourceField } from './settings-kit.tsx'
 import { actorName, errorText, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { CheckSetupButton, Hint, LabelValue, LoadState, PageHead, Section, SetupMessage, StatusHead, When } from './widgets.tsx'
-
-function SourceCard({ source }: { source: SourceView }) {
-  const { t, call } = usePanel()
-  const { running } = usePanelData()
-  const { reload } = useSettings()
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-  const refreshLabels = async () => { const { added } = await call('POST sources/:id/labels',
-    { id: source.id }); await reload(); return added }
-  const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision)
-  const value = draft.value
-  const { problem, value: saved } = source
-  const changed = (key: string) => String(value.config[key] ?? '') !== String(saved.config[key] ?? '')
-  // Saving a modified setup-sensitive field restarts dsh-superagent, interrupting running Assignments.
-  const restarts = draft.dirty && source.restarts.some(changed)
-  const description = localized(t, source.description)
-  // Hide derived facts for unsaved field edits until the new value is saved.
-  const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]} saved={saved.config[spec.key]}
-    labels={source.labels}
-    refreshLabels={refreshLabels} fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
-    onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
-  const advanced = source.fields.filter(spec => spec.advanced)
-  return <form id={`dt-source-${source.id}`} className="dt-card" onSubmit={event => { void draft.submit(event) }}>
-    <Fields disabled={draft.busy}>
-      <div className="dt-card-head">
-        <div className="dt-row-main">
-          <div className="dt-row-title">
-            <span className="dt-card-title">{localized(t, source.title)}</span>{description && <InfoTip text={description} />}
-            {!source.installed && <Tag tone="warning">{t('sourceNotInstalled')}</Tag>}
-          </div>
-        </div>
-        {source.installed && <Switch checked={value.enabled} onChange={enabled => draft.edit({ ...value, enabled })}
-          label={t('sourceEnable', { name: localized(t, source.title) })} />}
-      </div>
-      {problem && <div className="dt-row-buttons">
-        <p className="dt-error" role="status"><SetupMessage problem={problem} lead /></p><CheckSetupButton />
-      </div>}
-      {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
-      {source.installed && source.fields.filter(spec => !spec.advanced).map(field)}
-      {source.installed && advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
-        onToggle={() => setAdvancedOpen(!advancedOpen)}>
-        <div className="dt-disclosure-body">{advanced.map(field)}</div>
-      </DisclosureRow>}
-    </Fields>
-    <SaveBar {...draft} status={restarts && running > 0 ? t('restartInterrupts', { count: running }) : undefined}
-      onDiscard={draft.discard} />
-  </form>
-}
-
-export function SourceSettings({ focus }: { focus?: string }) {
-  const { sources } = useSettings().settings
-  useEffect(() => { if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: 'start' }) }, [focus])
-  return <div className="dt-form">
-    {sources.map(source => <SourceCard key={source.id} source={source} />)}
-    <ConfigHistory blocks={['source:']} />
-  </div>
-}
 
 function DroppedReplies({ items }: { items: DroppedReply[] }) {
   const { t, navigate } = usePanel()
@@ -147,7 +91,7 @@ function SourceInstanceCard({ source, onOpen, onAnswer, onReload }: {
     </div>
     {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
     {source.problem && <p className="dt-error"><SetupMessage problem={source.problem} lead /> <button type="button"
-      className="dt-textlink" onClick={() => navigate(settingsRoute('source', { source: source.id }))}>{t('sourceOpenSettings')}</button></p>}
+      className="dt-textlink" onClick={() => navigate({ page: 'source', id: source.id })}>{t('sourceOpenSettings')}</button></p>}
     {notes.map(item => <p key={item.name} className={item.state === 'error' ? 'dt-error dt-clamp' : 'dt-hint dt-clamp'}>
       {valueLabel(t, 'health', item.name)}{t('labelSeparator')}<span className={item.code ? undefined : 'dt-mono'}>{healthText(t,
         item)}</span>
@@ -287,9 +231,11 @@ function SourceDetailPage({ id }: { id: string }) {
         ? <Switch checked={data.enabled} onChange={toggle} label={t('sourceEnable', { name: localized(t, data.title) })} />
         : <Tag tone="warning">{t('sourceNotInstalled')}</Tag>}
     </PageHead>
-    {data.problem && <p className="dt-error"><SetupMessage problem={data.problem} lead /> <button type="button" className="dt-textlink"
-      onClick={() => navigate(setupPage(data.problem!.place))}>{t('setupFixLink')}</button></p>}
+    {data.problem && <p className="dt-error"><SetupMessage problem={data.problem} lead /> {data.problem.place === 'deployment'
+      && <button type="button" className="dt-textlink" onClick={() => navigate(setupPage(data.problem!.place))}>{t('setupFixLink')}</button>}
+      <CheckSetupButton /></p>}
     {data.installed && <SourceConfigForm source={data} reload={reload} />}
+    {data.installed && <SettingsProvider><ConfigHistory blocks={[`source:${id}`]} /></SettingsProvider>}
     <Section title={t('sourceLastDay')}><SourceStats source={data} /></Section>
     <Section title={t('sourceExecTitle')}><SourceExec source={data} /></Section>
     <Section title={t('sourceTickets')} count={data.tickets.total}>
@@ -335,7 +281,8 @@ function SourceConfigForm({ source, reload }: { source: SourceDetailView; reload
   const restarts = draft.dirty && source.restarts.some(changed)
   const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
     saved={source.value.config[spec.key]} labels={source.labels} refreshLabels={refreshLabels}
-    fact={source.facts[spec.key]} onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
+    fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
+    onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
   const advanced = source.fields.filter(spec => spec.advanced)
   return <form className="dt-card" id={`dt-source-${source.id}`} onSubmit={event => { void draft.submit(event) }}>
     <Fields disabled={draft.busy}>
@@ -410,7 +357,7 @@ function SourceList() {
   const [question, setQuestion] = useState<PendingProject>()
   const add = <Button variant="primary" size="sm" icon={<Icon name="plus" />} onClick={() => setAdding(true)}>{t('sourceAdd')}</Button>
   return <div className="dt-form">
-    <StatusHead hint={t('sourceStatusIntro')} settings="source" action={add} />
+    <StatusHead hint={t('sourceStatusIntro')} action={add} />
     {data && data.length > 0 && <div className="dt-source-grid">
       {data.map(source => <SourceInstanceCard key={source.id} source={source} onOpen={() => navigate({ page: 'source', id: source.id })}
         onAnswer={setQuestion} onReload={reload} />)}

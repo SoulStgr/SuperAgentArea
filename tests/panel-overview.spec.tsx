@@ -9,7 +9,7 @@ usePanel()
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '工单源', '工作站', '产物', '触发', '评估', '执行', '设置'])
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '工单源', '工作站', '产物', '提示词', '策略'])
   expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
   expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
@@ -23,7 +23,8 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   expect(document.querySelector('.dt-chip-problem')?.textContent).toBe('CI 失败1')
   expect(document.querySelector<HTMLAnchorElement>('a.dt-chip-link')?.href).toBe('https://github.com/acme/widgets/pull/42')
   await click(all('.dt-more-link').at(-1)!)
-  expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('#dt-tab-execution')).toBeNull()
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
 })
 
 it('re-evaluates or dismisses an unjudged Eval from the problem list', async () => {
@@ -74,10 +75,12 @@ it('shows paused processing as a system problem with its resume action, and says
   server.settings = { ...server.settings, paused: true }
   await mount()
   expect(text()).toContain(zh.problemPaused)
-  await click(zh['tab.eval'])
+  await click(zh['tab.policy'])
+  await click(find(zh['policySegment.decisions'], '.dt-main [role="tab"]'))
   expect(text()).toContain(zh.evalRecordsPaused)
   await click(zh.resumeWhere)
-  expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
   await click(zh['tab.overview'])
   await click(find(zh.resumeProcessing, '.dt-att button'))
   await click(zh.confirm)
@@ -90,8 +93,8 @@ it('offers the step that fixes a settings problem as a button on the overview', 
   await mount()
   expect(text()).toContain(zh.problemNoAllowed)
   await click(zh.actionAddAllowed)
-  expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.eval'])
+  expect(tab(zh['tab.policy']).getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('.dt-policy-segments [aria-selected="true"]')?.textContent).toBe(zh['policySegment.rules'])
 })
 
 it('counts the messages not sent in the last day, linking to the Source status, and shows nothing when there are none', async () => {
@@ -152,7 +155,7 @@ it('says when no Source is on, an Eval is past its deadline or a message keeps f
   expect(titles()).toEqual([zh.problemNoSource, '评估超时未决定：#9 迟迟未决', '评估未完成：这个文案好奇怪', 'GitHub 回复发送失败（已重试 4 次）'])
   expect(text()).toContain('HTTP 502 from GitHub')
   await click(zh.actionOpenSources)
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.source'])
+  expect(tab(zh['tab.source']).getAttribute('aria-selected')).toBe('true')
   await click(tab(zh['tab.overview']))
   await click('评估超时未决定：#9 迟迟未决')
   expect(server.requests.some(request => request.path.startsWith('threads/github:9'))).toBe(true)

@@ -1,4 +1,4 @@
-/** Eval status view (Decision log) and Eval settings group (Policy rules, per-Source admission, and assessor settings). */
+/** The Policy page (rules and admission, Eval settings, latest Decisions) and the Eval settings blocks it composes. */
 import { useState } from 'react'
 import { ADMISSION_DEFAULTS, ADMISSION_OPTIONS, type Admission, type AdmissionCell } from '../admission.ts'
 import type { AdmissionRowView } from '../sources/kind.ts'
@@ -8,19 +8,21 @@ import { Button, DisclosureRow, Icon, InfoTip, Input, Pill, SegmentedControl, Sw
 import { SaveBar } from './draft.tsx'
 import { useAction, usePanel } from './provider.tsx'
 import { DecisionLine } from './rows.tsx'
-import { ConfigHistory, Field, Fields, ModelField, SourceField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
+import { policyRoute, type PolicySegment } from './route.ts'
+import { ConfigHistory, Field, Fields, ModelField, SourceField, SettingsProvider, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { localized, valueLabel, when } from './text.ts'
-import { Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
+import { Hint, LabelValue, LoadMore, LoadState, Section } from './widgets.tsx'
 
-export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter; window: '24h' | undefined; paused: boolean }) {
+/** The latest Decisions the Policy produced, filterable by kind and to the last day. */
+function DecisionLog({ filter, window, paused }: { filter: DecisionFilter; window: '24h' | undefined; paused: boolean }) {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(30)
   const { data, error } = usePoll(() => call('GET decisions', { query: { limit, kind: DECISION_KINDS[filter],
     ...window ? { window } : {} } }), [filter, limit, window])
-  const show = (key: DecisionFilter, last24h: boolean) => navigate({ page: 'eval', query: { ...key === 'work' ? {} : { filter: key },
-    ...last24h ? { window: '24h' } : {} } }, true)
+  const show = (key: DecisionFilter, last24h: boolean) => navigate(policyRoute({ segment: 'decisions',
+    ...key === 'work' ? {} : { filter: key }, ...last24h ? { window: '24h' } : {} }), true)
   return <>
-    <StatusHead hint={t('evalStatusIntro')} settings="eval" />
+    <p className="dt-hint">{t('evalStatusIntro')}</p>
     {paused && <p className="dt-banner">
       {t('evalRecordsPaused')} <button type="button" className="dt-textlink"
         onClick={() => navigate({ page: 'execution' })}>{t('resumeWhere')}</button>
@@ -36,6 +38,35 @@ export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter;
       decision={decision} />)}</ul> : <Hint>{t('none')}</Hint>)}
     {data?.next_offset != null && <LoadMore onMore={() => setLimit(limit + 30)} />}
   </>
+}
+
+/** The Policy page: segmented rules and admission, Eval settings, and the latest Decisions, without stacking tabs. */
+export function PolicyPage({ segment, filter, window, version, paused }: {
+  segment: PolicySegment; filter: DecisionFilter; window: '24h' | undefined; version: string | undefined; paused: boolean
+}) {
+  const { t, navigate } = usePanel()
+  const show = (next: PolicySegment) => navigate(policyRoute({ segment: next,
+    ...next === 'rules' && version ? { version } : {},
+    ...next === 'decisions' ? { ...filter === 'work' ? {} : { filter }, ...window ? { window } : {} } : {} }), true)
+  return <div className="dt-form">
+    <div className="dt-status-head">
+      <h2 className="dt-status-title">{t('tab.policy')}<InfoTip text={t('policyPageIntro')} /></h2>
+      <span className="dt-status-actions"><SegmentedControl className="dt-segmented dt-policy-segments" label={t('policySections')}
+        value={segment} options={(['rules', 'eval', 'decisions'] as const).map(value => ({ value,
+          label: t(`policySegment.${value}`) }))} onChange={show} /></span>
+    </div>
+    <SettingsProvider>
+      {segment === 'rules' && <>
+        <PolicyBlock />
+        <ConfigHistory blocks={['policy', 'eval']} versions {...version ? { focus: version } : {}} />
+      </>}
+      {segment === 'eval' && <>
+        <EvalBlock />
+        <ConfigHistory blocks={['eval']} />
+      </>}
+      {segment === 'decisions' && <DecisionLog filter={filter} window={window} paused={paused} />}
+    </SettingsProvider>
+  </div>
 }
 
 type Rule = Settings['policy']['rules'][number]
@@ -216,10 +247,3 @@ function EvalBlock() {
   </form>
 }
 
-export function EvalSettings({ version }: { version?: string | undefined }) {
-  return <div className="dt-form">
-    <PolicyBlock />
-    <EvalBlock />
-    <ConfigHistory blocks={['policy', 'eval']} versions {...version ? { focus: version } : {}} />
-  </div>
-}

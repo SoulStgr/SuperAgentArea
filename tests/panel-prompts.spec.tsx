@@ -9,7 +9,7 @@ import { server, promptVersion } from './fixtures/panel-server.ts'
 
 usePanel()
 it('lists the team sections, then the built-in parts, edits and saves them separately from settings, and resets one section', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   const names = all('.dt-prompt-nav .dt-nav-item > span').map(item => item.textContent)
   expect(names.slice(0, 3)).toEqual(['沟通方式', '工单范围', '交付要求'])
@@ -31,7 +31,7 @@ it('lists the team sections, then the built-in parts, edits and saves them separ
 })
 
 it('keeps a conflicting prompt draft, rebases it onto the newer version and saves on retry', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Mine')
   server.prompts.revision = 1; server.prompts.current = promptVersion(1, { ...defaultPrompts(), scope: 'Theirs' })
@@ -43,7 +43,7 @@ it('keeps a conflicting prompt draft, rebases it onto the newer version and save
 })
 
 it('shows a built-in skill with the CLI notes in the full prompt, editable as a built-in part, and adds a team skill but no skill under a built-in name', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(tab(zh.promptViewFull))
   await act(async () => { const select = field<HTMLSelectElement>(zh.promptPreviewTarget); select.value = 'skill/github'; select.dispatchEvent(new Event('change', { bubbles: true })) }); await settle()
@@ -62,7 +62,7 @@ it('shows a built-in skill with the CLI notes in the full prompt, editable as a 
 
 it('loads all defaults into the draft from the history without saving them', async () => {
   server.prompts.current = promptVersion(0, { ...defaultPrompts(), scope: 'Old scope' })
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(tab(zh.promptViewHistory))
   const first = `版本 0 · ${zh.promptHistoryInitial} · ${zh['historySource.defaults']}`
@@ -73,7 +73,7 @@ it('loads all defaults into the draft from the history without saving them', asy
 })
 
 it('keeps the Prompts save bar hidden while a preview loads for an unchanged draft', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   let shown = false
   const watch = new MutationObserver(() => { if (document.querySelector('.dt-savebar')) shown = true })
@@ -87,7 +87,7 @@ it('keeps the Prompts save bar hidden while a preview loads for an unchanged dra
 it('marks team sections that differ from the defaults, and shows a draft as a diff against the saved version or the defaults', async () => {
   server.prompts.current = promptVersion(1, { ...defaultPrompts(), delivery: `${defaultPrompts().delivery}\nCommit as the bot account.` })
   server.prompts.revision = 1
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   expect(all('.dt-prompt-nav .dt-nav-item').filter(item => item.querySelector('.dt-changed-tag')).map(item => item.querySelector('span')!.firstChild?.textContent)).toEqual(['交付要求'])
   await type(field<HTMLTextAreaElement>(zh.promptBody), `${defaultPrompts().communication}\nSign as the agent.`)
@@ -101,7 +101,7 @@ it('marks team sections that differ from the defaults, and shows a draft as a di
 })
 
 it('discards a prompt draft by reading the saved version again', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Mine')
   server.prompts.revision = 1; server.prompts.current = promptVersion(1, { ...defaultPrompts(), communication: 'Theirs' })
@@ -112,7 +112,7 @@ it('discards a prompt draft by reading the saved version again', async () => {
 
 const builtInItem = (name: string) => all('.dt-prompt-nav .dt-nav-item').find(item => item.querySelector('span')!.firstChild?.textContent === name)!
 it('edits a built-in part as an override of its built-in text, marks it changed, and resets it to the built-in text', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   const shared = builtInParts()['runtime/shared']!
   await click(builtInItem(zh['promptPart.runtime/shared']))
@@ -134,7 +134,7 @@ it('edits a built-in part as an override of its built-in text, marks it changed,
 })
 
 it('says which placeholders a template keeps', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(builtInItem(zh['promptPart.runtime/policy']))
   expect(text()).toContain('这是模板：保留占位符 {version}、{mode}、{rules}，由系统填入内容。')
@@ -146,7 +146,7 @@ it('marks an override whose built-in text an upgrade changed, shows how it chang
   const overrides = { 'runtime/dispatch': { text: '## dispatch\nOur routing.', base: builtInBase('## dispatch\nThe old routing.') } }
   server.prompts.revision = 1; server.prompts.current = promptVersion(1, { ...defaultPrompts(), overrides })
   server.prompts.defaultChanged = [{ part: 'runtime/dispatch', base: overrides['runtime/dispatch'].base, previous: '## dispatch\nThe old routing.' }]
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   expect(all('.dt-prompt-nav .dt-updated-tag').map(tag => tag.closest('.dt-nav-item')!.querySelector('span')!.firstChild?.textContent))
     .toEqual([zh['promptPart.runtime/dispatch']])
@@ -176,7 +176,7 @@ it('shows the team\'s text against the new default when the default it was edite
   const overrides = { 'runtime/dispatch': { text: '## dispatch\nOur routing.', base: 'restored' } }
   server.prompts.revision = 1; server.prompts.current = promptVersion(1, { ...defaultPrompts(), overrides })
   server.prompts.defaultChanged = [{ part: 'runtime/dispatch', base: 'another', previous: '## dispatch\nThe old routing.' }]
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(builtInItem(zh['promptPart.runtime/dispatch']))
   const box = document.querySelector(`section[aria-label="${zh.promptDefaultUpdated}"]`)!
@@ -188,7 +188,7 @@ it('shows the team\'s text against the new default when the default it was edite
 })
 
 it('keeps both sides\' first overrides when a draft moves onto a version saved meanwhile', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(builtInItem(zh['promptPart.runtime/shared']))
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Shared, ours.')
@@ -202,7 +202,7 @@ it('keeps both sides\' first overrides when a draft moves onto a version saved m
 })
 
 it('shows a draft\'s template of a generated part filled, and names a part by its label when a save is refused', async () => {
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(builtInItem(zh['promptPart.runtime/environment']))
   await type(field<HTMLTextAreaElement>(zh.promptBody), 'Where you work:\n{variables}')
@@ -218,14 +218,14 @@ it('shows a draft\'s template of a generated part filled, and names a part by it
 
 it('lists the overrides of parts this version no longer has, which the next save drops', async () => {
   server.prompts.defaultChanged = [{ part: 'runtime/retired', base: 'b', removed: true }]
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   expect(text()).toContain(zh.promptRemovedParts.replace('{parts}', 'runtime/retired'))
 })
 
 it('loads a version from the history without its overrides of parts this version no longer has, so it saves', async () => {
   const dispatch = { text: '## dispatch\nOurs.', base: builtInBase(builtInParts()['runtime/dispatch'].text) }
-  at({ page: 'settings', query: { group: 'prompts' } })
+  at({ page: 'prompts' })
   await mount()
   await click(tab(zh.promptViewHistory))
   // The version restored overrides a part a later version removed.

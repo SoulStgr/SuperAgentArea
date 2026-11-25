@@ -97,12 +97,13 @@ it('does nothing for a Project Session click that was superseded before it start
   expect(open).not.toHaveBeenCalled()
 })
 it('reopens the page this tab showed last, and the overview for a route that no longer exists', () => {
-  remember({ route: { page: 'eval', query: { filter: 'stop' } }, stack: [{ page: 'overview' }] })
-  expect(initialLocation()).toEqual({ route: { page: 'eval', query: { filter: 'stop' } }, stack: [{ page: 'overview' }] })
-  // The Eval tab was previously named Policy; a route saved under the old name falls back to overview.
-  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'policy' }, stack: [] }))
+  remember({ route: { page: 'policy', query: { segment: 'decisions', filter: 'stop' } }, stack: [{ page: 'overview' }] })
+  expect(initialLocation()).toEqual({ route: { page: 'policy', query: { segment: 'decisions', filter: 'stop' } },
+    stack: [{ page: 'overview' }] })
+  // A page this version does not have falls back to the overview.
+  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'gone' }, stack: [] }))
   expect(initialLocation()).toEqual({ route: { page: 'overview' }, stack: [] })
-  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'trigger', id: 'github:1' }, stack: [{ page: 'policy' }, { page: 'trigger' }] }))
+  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'trigger', id: 'github:1' }, stack: [{ page: 'gone' }, { page: 'trigger' }] }))
   expect(initialLocation().stack).toEqual([{ page: 'trigger' }])
   sessionStorage.setItem('dsh-superagent/route', '{')
   expect(initialLocation().route).toEqual({ page: 'overview' })
@@ -111,18 +112,24 @@ it('reads each page a tab remembered with the parameters it takes, and leaves ou
   expect(parseRoute({ page: 'trigger', query: { filter: 'nope', trigger: 'e1' } })).toEqual({ page: 'trigger' })
   expect(parseRoute({ page: 'trigger', id: 'github:1', query: { trigger: 'e1', filter: 'recent' } }))
     .toEqual({ page: 'trigger', id: 'github:1', query: { trigger: 'e1' } })
-  expect(parseRoute({ page: 'eval', query: { filter: 'stop', window: '7d' } })).toEqual({ page: 'eval', query: { filter: 'stop' } })
+  // The Eval tab's Decisions now live on the Policy page, and the removed tabs still open their own pages.
+  expect(parseRoute({ page: 'eval', query: { filter: 'stop', window: '7d' } }))
+    .toEqual({ page: 'policy', query: { segment: 'decisions', filter: 'stop' } })
+  expect(parseRoute({ page: 'policy', query: { segment: 'eval', version: 'abcdef12' } }))
+    .toEqual({ page: 'policy', query: { segment: 'eval', version: 'abcdef12' } })
   expect(parseRoute({ page: 'execution', id: 5, query: { filter: 'idle' } })).toEqual({ page: 'execution', query: { filter: 'idle' } })
   expect(parseRoute({ page: 'workstations', query: { segment: 'tickets' } })).toEqual({ page: 'workstations' })
   expect(parseRoute({ page: 'workstations', id: 'prj_aps', query: { segment: 'tickets' } }))
     .toEqual({ page: 'workstations', id: 'prj_aps', query: { segment: 'tickets' } })
   // A section the panel does not know is left out, opening the first one.
   expect(parseRoute({ page: 'workstations', id: 'prj_aps', query: { segment: 'gone' } })).toEqual({ page: 'workstations', id: 'prj_aps' })
-  expect(parseRoute({ page: 'settings', query: { group: 'policy', source: 'feishu' } }))
-    .toEqual({ page: 'settings', query: { group: 'source', source: 'feishu' } })
+  // The Settings page keeps Execution and Deployment; an old group opens Execution.
+  expect(parseRoute({ page: 'settings', query: { group: 'source', source: 'feishu' } }))
+    .toEqual({ page: 'settings', query: { group: 'execution' } })
+  expect(parseRoute({ page: 'settings', query: { group: 'deployment' } })).toEqual({ page: 'settings', query: { group: 'deployment' } })
   expect([parseRoute('overview'), parseRoute(null)]).toEqual([undefined, undefined])
 })
-it('opens the settings that fix each setup problem: the Deployment group, or the card of the Source it names', () => {
+it('opens the settings that fix each setup problem: the Deployment group, or the page of the Source it names', () => {
   expect(setupPage('deployment')).toEqual({ page: 'settings', query: { group: 'deployment' } })
-  for (const place of ['github', 'feishu'] as const) expect(setupPage(place)).toEqual({ page: 'settings', query: { group: 'source', source: place } })
+  for (const place of ['github', 'feishu'] as const) expect(setupPage(place)).toEqual({ page: 'source', id: place })
 })

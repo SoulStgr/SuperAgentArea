@@ -42,6 +42,23 @@ it('shows one card per workstation with its address, counts and latest reporter,
   expect(all('.dt-empty button').map(button => button.textContent)).toContain(zh.projectAddFirst)
 })
 
+it('counts the same artifacts on a workstation\'s card, its page and its agent history', async () => {
+  // An artifact saved before Projects existed has no Project column; the workspace counts it everywhere.
+  const workspace = server.projects.find(project => project.kind === 'workspace')!
+  workspace.artifacts = [{ id: 'a-old', name: 'old.csv', size: 3, at: '2026-09-20T00:00:00Z', ticket: 't0', source: 'github',
+    targetRoot: '/tmp/outbox', hash: 'h-old' }]
+  await mount()
+  await click(zh['tab.workstations'])
+  const countOf = (label: string, scope: Element) => [...scope.querySelectorAll('.dt-lv')]
+    .find(item => item.querySelector('.dt-lv-label')?.textContent === label)?.querySelector('.dt-lv-value')?.textContent
+  expect(countOf(zh.projectArtifacts, card('workspace'))).toBe('1')
+  await click(card('workspace').querySelector('.dt-project-title')!)
+  expect(countOf(zh.projectArtifacts, document.querySelector('.dt-main')!)).toBe('1')
+  await click(segment(zh['projectSegment.agent']))
+  expect(section(zh.projectAgentChanges).querySelector('.dt-count')?.textContent).toBe('1')
+  expect(section(zh.projectAgentChanges).textContent).toContain('old.csv')
+})
+
 it('keeps archived workstations out of the list until a person asks to see them', async () => {
   await mount()
   await click(zh['tab.workstations'])

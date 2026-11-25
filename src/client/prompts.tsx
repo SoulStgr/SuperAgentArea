@@ -1,4 +1,4 @@
-/** Prompts settings group: section/skill editor, full composed prompt preview with diffing, and revision history. */
+/** Prompts page: section/skill editor, full composed prompt preview with diffing, and revision history. */
 import { Fragment, useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import type { ApiResponse } from '../app/api.ts'
 import type { PromptConfig, PromptsView } from './api.ts'
@@ -8,7 +8,7 @@ import { changedSections, isPart, isSkill, lineDiff, partKey, partText, partWith
 import { useAction, usePanel } from './provider.tsx'
 import { errorText, valueLabel, when, type T } from './text.ts'
 import { Hint, LoadState } from './widgets.tsx'
-import { Button, Icon, Input, SegmentedControl } from './controls.tsx'
+import { Button, Icon, InfoTip, Input, SegmentedControl } from './controls.tsx'
 
 type Tab = 'edit' | 'full' | 'history'
 type Origin = { revision: number } | 'defaults' | { reset: string }
@@ -18,12 +18,17 @@ const originText = (t: T, view: PromptsView, from: Origin | undefined): string |
   : t('promptDraftSectionReset', { part: sectionLabel(t, view, from.reset) })
 
 export function PromptsPage() {
-  const { call } = usePanel()
+  const { t, call } = usePanel()
   const [view, setView] = useState<PromptsView>()
   const [error, setError] = useState<Error>()
   const reload = useCallback(async () => { setView(await call('GET prompts')) }, [call])
   useEffect(() => { reload().catch(setError) }, [reload])
-  return view ? <PromptsEditor view={view} reload={reload} /> : <LoadState loading error={error} />
+  return <div className="dt-form">
+    <div className="dt-status-head">
+      <h2 className="dt-status-title">{t('tab.prompts')}<InfoTip text={t('promptsPageIntro')} /></h2>
+    </div>
+    {view ? <PromptsEditor view={view} reload={reload} /> : <LoadState loading error={error} />}
+  </div>
 }
 
 function PromptsEditor({ view, reload }: { view: PromptsView; reload: () => Promise<void> }) {

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { usePoll, type Problem } from './api.ts'
 import { Button, Icon } from './controls.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
-import { setupPage, settingsRoute, type Route } from './route.ts'
+import { policyRoute, setupPage, type Route } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
 import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage, When } from './widgets.tsx'
@@ -28,10 +28,10 @@ function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () =
     case 'setup': return row(t(problem.place === 'feishu' ? 'problemSetupFeishu' : 'problemSetup'), <p className="dt-error"><SetupMessage
       problem={problem} /></p>,
       setupPage(problem.place), t(`problemSetupFix.${problem.place}`), <CheckSetupButton />)
-    case 'no-source': return row(t('problemNoSource'), undefined, settingsRoute('source'), undefined, go(t('actionOpenSources'),
-      settingsRoute('source')))
-    case 'no-allowed': return row(t('problemNoAllowed'), undefined, settingsRoute('eval'), undefined, go(t('actionAddAllowed'),
-      settingsRoute('eval')))
+    case 'no-source': return row(t('problemNoSource'), undefined, { page: 'source' }, undefined, go(t('actionOpenSources'),
+      { page: 'source' }))
+    case 'no-allowed': return row(t('problemNoAllowed'), undefined, policyRoute({ segment: 'rules' }), undefined,
+      go(t('actionAddAllowed'), policyRoute({ segment: 'rules' })))
     case 'executor-paused': return row(t('problemPaused'), undefined, { page: 'execution' }, undefined,
       <ConfirmButton variant="outline" icon="play" label={t('resumeProcessing')} title={t('resumeProcessing')}
         message={t('resumeProcessingConfirm')}
@@ -96,7 +96,7 @@ export function OverviewPage() {
         {stat(t('flowReceivedLabel'), data.flow.received)}
         {stat(t('flowFilteredLabel'), data.flow.filtered, data.flow.filtered ? { page: 'source' } : undefined)}
         {stat(t('flowJudgedLabel'), data.flow.judged)}
-        {stat(t('flowAcceptedLabel'), data.flow.accepted, { page: 'eval', query: { window: '24h' } })}
+        {stat(t('flowAcceptedLabel'), data.flow.accepted, policyRoute({ segment: 'decisions', window: '24h' }))}
         {data.flow.dropped > 0 && stat(t('flowDroppedLabel'), data.flow.dropped, { page: 'source' })}
       </div>
     </Section>

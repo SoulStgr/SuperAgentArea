@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, settle, all, click, type, text, field } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, settle, all, at, click, type, text, field, find, tab } from './fixtures/panel.tsx'
 import { server, found } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -43,6 +43,53 @@ it('returns to the exact page after a remount of the main panel', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
 })
 
+it('keeps six tabs, opens the Prompts and Policy pages from them, and reaches Settings through the header gear', async () => {
+  await mount()
+  expect(all('.dt-tabs [role="tab"]').map(item => item.textContent)).toEqual(['概览', '工单源', '工作站', '产物', '提示词', '策略'])
+  // The Trigger, Eval, Execution and Settings tabs are gone; their pages are reached from links or the gear.
+  expect(all('.dt-tabs [role="tab"]').map(item => item.getAttribute('id'))).toEqual(['dt-tab-overview', 'dt-tab-source', 'dt-tab-workstations',
+    'dt-tab-artifacts', 'dt-tab-prompts', 'dt-tab-policy'])
+  await click(tab(zh['tab.prompts']))
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh['tab.prompts'])
+  await click(tab(zh['tab.policy']))
+  expect(all('.dt-policy-segments [role="tab"]').map(item => item.textContent)).toEqual([zh['policySegment.rules'], zh['policySegment.eval'],
+    zh['policySegment.decisions']])
+  // The gear opens Settings with only the Executor/environment and Deployment groups.
+  const gear = find(zh['tab.settings'], '.dt-head button')
+  await click(gear)
+  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.execution'], zh['settingsGroup.deployment']])
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+})
+
+it('reopens the last Settings group from the gear, and falls back to Execution for a group that moved or no longer exists', async () => {
+  await mount()
+  await click(find(zh['tab.settings'], '.dt-head button'))
+  await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
+  await click(tab(zh['tab.overview']))
+  await click(find(zh['tab.settings'], '.dt-head button'))
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
+  // A route saved under a removed group opens Execution settings.
+  at({ page: 'settings', query: { group: 'prompts' } })
+  await remount()
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+})
+
+it('restores the removed tabs\' pages from an old route, and the Policy page for an old Eval route', async () => {
+  at({ page: 'trigger', id: 'feishu:oc_1:om_root' })
+  await mount()
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('这个文案好奇怪')
+  expect(document.querySelector('.dt-tabs [aria-selected="true"]')).toBeNull()
+  at({ page: 'eval', query: { filter: 'stop', window: '24h' } })
+  await remount()
+  expect(tab(zh['tab.policy']).getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('.dt-policy-segments [aria-selected="true"]')?.textContent).toBe(zh['policySegment.decisions'])
+  expect(server.requests.some(request => request.path === 'decisions?limit=30&kind=stop&window=24h')).toBe(true)
+  at({ page: 'settings', query: { group: 'source' } })
+  await remount()
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+})
+
 it('navigates to a workstation page from its card section, and remembers the section', async () => {
   await mount()
   await click(zh['tab.workstations'])
@@ -59,8 +106,7 @@ it('navigates to a workstation page from its card section, and remembers the sec
 
 it('shows domain terms in the interface language only and lists both languages in the (?) glossary', async () => {
   await mount(en)
-  expect(all('[role="tab"]').map(tab => tab.textContent))
-    .toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts', 'Trigger', 'Eval', 'Execution', 'Settings'])
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts', 'Prompts', 'Policy & Eval'])
   await click('Glossary')
   const dialog = document.querySelector('[role="dialog"]')!
   const row = [...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Ticket'))!

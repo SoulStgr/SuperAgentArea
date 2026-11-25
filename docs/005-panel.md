@@ -12,18 +12,20 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Sources**, **Workstations**, **Artifacts**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
+The tabs follow the workflow: **Overview**, **Sources**, **Workstations**, **Artifacts**, **Prompts**, and **Policy & Eval**. A gear in the header opens **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the page that fixes it.
 
-| Tab | Shows |
+Detail pages keep their own routes but take no tab: a Ticket, a Thread, and the Execution list are opened from links (and the Overview's Executor block), and Settings from the header gear. A saved route reopens the same page after a refresh, including the old Trigger, Eval, Execution and Settings routes.
+
+| Page | Shows |
 | --- | --- |
 | Overview | Tickets needing action, recent artifacts, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
-| Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. **Add Source** creates a named instance of an installed kind. A card opens the instance's own page with its configuration, statistics, Tickets, filtered and unsent messages and recent Triggers |
+| Sources | One card per Source instance: its state and switch, pending Tickets, the last 24 hours' arrivals, filtering, evaluations and acceptances, the Tickets' execution state (working, queued, waiting for a Trigger), and any requests still without a workstation. **Add Source** creates a named instance of an installed kind. A card opens the instance's own page with its configuration, statistics, Tickets, filtered and unsent messages, recent Triggers, and its configuration history |
 | Workstations | One card per Project: its name, its address kind (managed, folder or repository), its Sources, open Tickets, artifacts, latest activity and latest reporter. The built-in workspace comes first and is fixed: it cannot be archived or renamed. A card's six sections — Sources, Trigger, Eval, Execution, Settings and agent — open the project-level view; the agent section opens the Project's Session and the history it collects. **New workstation** creates a station, and **Show archived** lists the archived ones. On a Project's page, its artifact count opens the index filtered to that Project |
 | Artifacts | Delivered files newest collection first: name, Project, Source, Ticket, size and time, each with its download. Filters cover the Project (the workspace first) and Source instance, and a search matches a name or hash; the filters stay in the route. Each row opens the artifact's page, and a file that is no longer readable at its landing says so. Until a Ticket reports ready, the page explains that its delivered files will appear here |
-| Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
-| Eval | Decisions with their reason and matched rules |
-| Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions, Assignments and the artifacts the Ticket delivered |
-| Settings | Sources, Eval, Execution, Prompts and Deployment. Each group includes its save history |
+| Prompts | **Edit**, **Full prompt** and **History** as page sections: edit team sections, built-in parts and skills; read the assembled prompt and compare it with the saved text or defaults; list and restore versions. Saving uses one save bar with conflict handling |
+| Policy & Eval | Three page sections: **Rules and admission** (the Policy version, accept rules, each Source's Policy part and admission table, with configuration history), **Eval settings** (accept mode, timeout and assessment model), and **Recent decisions** (the Decision log with strength, reason and Policy version, filterable by kind and to the last day) |
+| Ticket, Thread, Execution | A Ticket's actions, authorization, waiting Inputs, Subscriptions, Assignments and artifacts; a Thread's timeline, Decisions and Subscriptions; and the Execution list filtered by Open, Pending, Working, Waiting for a Trigger or Ended, with the Executor state and **Pause processing** |
+| Settings (gear) | **Executor and environment** (worker model, concurrency, directory root, prepare command, blocked commands) and **Deployment** (startup problems with **Check again**, the state directory and machine limits). Each group includes its save |
 
 ### Reading individual records
 
@@ -47,15 +49,34 @@ A human follow-up still owned by an Executor is marked **Delivered to Ticket**, 
 
 Ticket details show the originating Trigger, Decision and reason, scope and Policy version. A Ticket that delivered files lists them under **Artifacts**, each opening its artifact page and offering its download. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
 
-## Settings groups
+## Settings
 
-- **Sources:** one card per Source instance with its switch, fields and verified account facts; **Add Source** on the Sources page creates another instance of an installed kind, under a key of its own. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced. An instance's page edits the same fields for that instance alone.
-- **Eval:** the Policy version and rules, followed by **On each Source** and the Eval settings. Each Source tab contains its allowed list, membership sync, admission table and bot list. Sync runs at startup and on **Sync now**. The admission table distinguishes receiving scope, sender membership and whether the message addresses the agent. Eval settings select the accept mode, timeout and assessment model.
-- **Execution:** worker model, concurrency, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
-- **Prompts:** **Edit** changes team sections, built-in parts and skills. **Full prompt** shows the assembled text and compares it with saved text or defaults. **History** lists versions. Edited built-in parts are marked changed and can be reset; templates list their required placeholders.
+The header gear opens Settings where it was left. Settings has two groups; the settings that belong to a Source, to Eval or to the prompts live on their own pages.
 
-  An upgrade that changes an overridden default marks it **Default updated** (默认内容已更新). The panel compares the old and new defaults above the team's text. If the old default was not recorded, it compares the team's text with the new default instead. Choose **Keep my text** or **Use the new default**. Overrides for removed parts are listed below the tab bar and dropped on the next save.
+- **Executor and environment:** worker model, concurrency, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
 - **Deployment:** startup problems with **Check again**, the state directory and machine limits. Saved limits apply without restart. The DeepSeek Harness Plugin Manager exposes the same page.
+
+Each Source instance's configuration is on its own Source page, saved as that instance's settings block and followed by its configuration history. The Policy page holds the accept rules, admission, Eval settings and recent Decisions; a Ticket's Policy version opens its save in the Policy history.
+
+## Prompts
+
+The Prompts page edits the team prompt configuration:
+
+- **Edit** changes team sections, built-in parts and skills.
+- **Full prompt** shows the assembled text and compares it with saved text or defaults.
+- **History** lists versions.
+
+Edited built-in parts are marked changed and can be reset; templates list their required placeholders. An upgrade that changes an overridden default marks it **Default updated** (默认内容已更新). The panel compares the old and new defaults above the team's text. If the old default was not recorded, it compares the team's text with the new default instead. Choose **Keep my text** or **Use the new default**. Overrides for removed parts are listed below the section bar and dropped on the next save.
+
+## Policy & Eval
+
+The Policy page combines what Eval follows and what it decided, as three sections instead of stacked tabs:
+
+- **Rules and admission:** the Policy version and its explanation, the accept rules with their enable switches, each Source's allowed people, bots, membership sync and admission table, and the configuration history. Each Source's part uses that Source's own identities, with no mapping between Sources.
+- **Eval settings:** the accept mode, the Eval timeout and the assessment model.
+- **Recent decisions:** the Decision log, filtered by kind (all work, accepted or continued, stopped, ignored, unavailable) and optionally to the last day. Each Decision shows its strength, reason, matched rules and Policy version.
+
+Saving a rule or admission change saves the Policy block; saving an Eval setting saves the Eval block. Each save uses its own revision and the same save bar as Settings.
 
 ## Search
 
@@ -67,7 +88,7 @@ Search also finds Threads by references such as `#12` or a GitHub URL, and Ticke
 
 1. **Focus on what matters.** Every element answers one of the three questions, or it is removed. A number appears only when it changes what the supervisor does.
 2. **Precise definitions.** Categories have checkable definitions, are mutually exclusive and cover every case, as the Ticket stages do. A label says whom a row waits for and what it needs, not an internal status code.
-3. **One place per concept.** Source state belongs in Sources; Project cards and their six sections in Workstations; Threads and Triggers in Trigger; Decisions in Eval; Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
+3. **One place per concept.** Source state and configuration belong to Sources; Project cards and their six sections in Workstations; Threads and Triggers in Trigger; Decisions in Policy & Eval; Tickets in Execution; prompts in Prompts; the machine's settings in Settings. Overview summarizes these pages and links to them instead of becoming another detailed view.
 4. **Domain structure.** The panel uses the domain terms. Internal identifiers appear only in folded details, and names replace identifiers where they can be resolved.
 5. **Honest state.** A count equals the length of the list it links to, and no state contradicts another fact.
 6. **Quiet by default.** Healthy states take no extra space. Problems must be actionable; a one-off network error is not enough. Rows needing a person offer their action directly. Keep page explanations to one sentence and put further detail in the (?) tooltip. Destructive actions require confirmation.

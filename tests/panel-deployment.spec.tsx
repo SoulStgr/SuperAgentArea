@@ -13,7 +13,7 @@ it('saves this machine\'s settings in the Deployment settings through DSH\'s con
   const { form: editable, mutations } = fakeForm()
   server.form = editable
   await mount()
-  await click(tab(zh['tab.settings']))
+  await click(find(zh['tab.settings'], '.dt-head button'))
   await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
   expect(text()).toContain('/srv/dsh-superagent')
   // Accounts are on the Source settings; the Plugin Manager page, where those are not at hand, shows them here.

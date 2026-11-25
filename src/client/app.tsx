@@ -4,11 +4,12 @@ import type { SearchView } from './api.ts'
 import { ArtifactsPage } from './artifacts.tsx'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
-import { EvalStatus } from './eval.tsx'
+import { PolicyPage } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
+import { PromptsPage } from './prompts.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { ProjectPage } from './project.tsx'
 import type { ProjectSession } from '../navigation.ts'
@@ -102,7 +103,7 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
   </div>
 }
 
-function Header({ masterId }: { masterId: string | undefined }) {
+function Header({ masterId, onSettings }: { masterId: string | undefined; onSettings: () => void }) {
   const { t, call, openSession, notify } = usePanel()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
@@ -137,17 +138,22 @@ function Header({ masterId }: { masterId: string | undefined }) {
         onClick={() => setGlossary(true)} />
       <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={!masterId}
         onClick={() => { if (masterId) openSession(masterId).catch(failure => notify(errorText(failure))) }}>{t('openMaster')}</Button>
+      <Button variant="ghost" size="sm" className="dt-settings-open" icon={<Icon name="settings" />} aria-label={t('tab.settings')}
+        title={t('tab.settings')} onClick={onSettings} />
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
   </header>
 }
 
-function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm }) {
+function Pages({ route, openTab, openSettings, deploymentForm }: { route: Route; openTab: (tab: Tab) => void
+  openSettings: () => void; deploymentForm: DeploymentForm }) {
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
   useEffect(() => { document.getElementById(`dt-tab-${route.page}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route.page])
   const waiting = error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>
+  // Detail and internal pages (a Ticket, a Thread, Execution and Settings) have no tab of their own; the strip stays.
+  const active = TABS.find(tab => tab === route.page)
   const page = (() => {
     switch (route.page) {
       case 'overview': return <OverviewPage />
@@ -155,23 +161,25 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
       case 'workstations': return route.id !== undefined ? <ProjectPage key={route.id} id={route.id} segment={route.query?.segment} />
         : <ProjectPage />
       case 'artifacts': return <ArtifactsPage key={route.id ?? 'index'} id={route.id} query={route.id === undefined ? route.query : undefined} />
+      case 'prompts': return <PromptsPage />
+      case 'policy': return <PolicyPage segment={route.query?.segment ?? 'rules'} filter={route.query?.filter ?? 'work'}
+        window={route.query?.window} version={route.query?.version} paused={!!state?.paused} />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
-      case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
-        paused={!!state?.paused} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />
         : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} /> : waiting
-      case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} query={route.query} state={state}
+      case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} state={state}
         deploymentForm={deploymentForm} /> : waiting
     }
   })()
   return <div className="dt-page">
     <div className="dt-column">
-      <Header masterId={state?.masterId} />
+      <Header masterId={state?.masterId} onSettings={openSettings} />
       {error && state && <p className="dt-error" role="status">{error.message}</p>}
-      <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
+      <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={active} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
-      <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
+      <main id="dt-page" role="tabpanel" aria-labelledby={active ? `dt-tab-${active}` : undefined}
+        aria-label={active ? undefined : routeLabel(t, route)} className="dt-main">{page}</main>
     </div>
   </div>
 }
@@ -180,17 +188,19 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
 export function App({ t, openSession, openProjectSession, deploymentForm }: AppProps) {
   const [location, setLocation] = useState(initialLocation)
   useEffect(() => { remember(location) }, [location])
-  // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
+  // Preserve the last opened settings group across navigation so the Settings gear reopens at it.
   const move = useCallback((next: (current: Location) => Pick<Location, 'route' | 'stack'>) =>
     setLocation(current => ({ ...next(current), group: lastSettingsGroup(current) })), [])
   /** Navigates to `route`; `replace` swaps the current entry (filters, paging) instead of pushing a back step. */
   const navigate = useCallback((route: Route, replace = false) => move(current => ({ route,
     stack: replace ? current.stack : [...current.stack, current.route].slice(-20) })), [move])
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
-  const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
-    ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
+  const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: { page: tab } as Route })), [move])
+  // The header gear opens Settings where it was left; clicking it there leaves the route as it is.
+  const openSettings = useCallback(() => move(current => current.route.page === 'settings' ? { route: current.route, stack: current.stack }
+    : { route: settingsRoute(lastSettingsGroup(current)), stack: [...current.stack, current.route].slice(-20) }), [move])
   return <PanelProvider t={t} openSession={openSession} openProjectSession={openProjectSession} navigate={navigate} back={back}
     backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
-    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
+    <Pages route={location.route} openTab={openTab} openSettings={openSettings} deploymentForm={deploymentForm} />
   </PanelProvider>
 }

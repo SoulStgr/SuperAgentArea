@@ -70,8 +70,8 @@ export function Pill({ active, onClick, children }: { active: boolean; onClick: 
     onClick={onClick}>{children}</button>
 }
 
-function walk<V extends string>(event: KeyboardEvent, values: readonly V[], value: V, onChange: (next: V) => void) {
-  const index = values.indexOf(value)
+function walk<V extends string>(event: KeyboardEvent, values: readonly V[], value: V | undefined, onChange: (next: V) => void) {
+  const index = value === undefined ? -1 : values.indexOf(value)
   const steps: Record<string, number> = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: values.length - 1 }
   const next = steps[event.key]
   if (next === undefined) return
@@ -82,9 +82,12 @@ function walk<V extends string>(event: KeyboardEvent, values: readonly V[], valu
   requestAnimationFrame(() => list.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus())
 }
 interface TabItem<V extends string> { value: V; label: string; id: string; panelId: string }
-/** Page-level tab bar that re-emits `onChange` when clicking the active tab so callers can reset to the tab root. */
+/**
+ * Page-level tab bar that re-emits `onChange` when clicking the active tab so callers can reset to the tab root. A page
+ * with no tab of its own (a Ticket, a Thread, Execution or Settings) passes no value, so no tab is selected.
+ */
 export function SegmentedTabs<V extends string>({ items, value, onChange, label, className }: {
-  items: readonly TabItem<V>[]; value: V; onChange: (next: V) => void; label: string; className?: string
+  items: readonly TabItem<V>[]; value: V | undefined; onChange: (next: V) => void; label: string; className?: string
 }) {
   const list = useRef<HTMLDivElement>(null)
   const [more, setMore] = useState<'start' | 'end' | 'both'>()

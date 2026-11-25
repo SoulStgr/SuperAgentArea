@@ -109,7 +109,8 @@ export function projectList(host: ViewHost, status: ProjectStatus = 'active') {
     ticketsOf.set(id, [...ticketsOf.get(id) ?? [], ticket])
   }
   for (const artifact of store.artifacts.list()) {
-    if (artifact.project) artifactsOf.set(artifact.project, [...artifactsOf.get(artifact.project) ?? [], artifact])
+    const id = artifactProject(artifact)
+    artifactsOf.set(id, [...artifactsOf.get(id) ?? [], artifact])
   }
   return store.projects.list(status).sort((one, two) => Number(isWorkspaceProject(two)) - Number(isWorkspaceProject(one)))
     .map(project => projectRow(host, view, project, ticketsOf.get(project.id) ?? [], artifactsOf.get(project.id) ?? []))
@@ -149,7 +150,8 @@ export function projectDetail(host: ViewHost, id: string, health: HealthMap, set
   if (!project) return undefined
   const view = snapshot(host)
   const { tickets, keys } = projectWork(host.store, id)
-  const artifacts = host.store.artifacts.list({ project: id })
+  // Rows saved before Projects existed have no Project column; they belong to the built-in workspace, as its history counts them.
+  const artifacts = host.store.artifacts.list().filter(artifact => artifactProject(artifact) === id)
   const linked = new Set(projectSourceIds(host, project, tickets))
   const statuses = new Map(sourcesStatus(host, health, setup).map(source => [source.id, source]))
   // Every configured Source is listed, so the page links and unlinks any of them; one a Project still names after its kind went

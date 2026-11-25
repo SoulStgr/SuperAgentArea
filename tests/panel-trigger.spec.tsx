@@ -8,8 +8,8 @@ import { server, trigger, threadSummary, ticketSummary } from './fixtures/panel-
 
 usePanel()
 it('walks a Thread timeline newest first with dispositions as tags and its Decisions, requeues a filtered Trigger, pages backwards and returns', async () => {
+  at({ page: 'trigger' })
   await mount()
-  await click(zh['tab.trigger'])
   expect(document.querySelector('.dt-ticket .dt-stage')?.textContent).toBe(zh.threadSubscribed)
   expect(text()).toContain('扇出给 修复回归')
   await click('这个文案好奇怪')
@@ -28,8 +28,8 @@ it('walks a Thread timeline newest first with dispositions as tags and its Decis
 })
 
 it('offers to send a person\'s message that reached a ticket to Eval, for one its worker neither did nor handed back', async () => {
+  at({ page: 'trigger' })
   await mount()
-  await click(zh['tab.trigger'])
   await click('这个文案好奇怪')
   const event = all('.dt-event').find(element => element.textContent?.includes('message e3'))!
   await click([...event.querySelectorAll<HTMLElement>('button')].find(button => button.textContent === zh.requeue)!)
@@ -37,8 +37,8 @@ it('offers to send a person\'s message that reached a ticket to Eval, for one it
 })
 
 it('filters the Thread list by activity, and unsubscribes from a Thread page after confirmation', async () => {
+  at({ page: 'trigger' })
   await mount()
-  await click(zh['tab.trigger'])
   expect(find(zh['threadFilter.subscribed'], '.dt-pill').getAttribute('aria-pressed')).toBe('true')
   await click(zh['threadFilter.recent'])
   expect(server.requests.some(request => request.path === 'threads?filter=recent&limit=20')).toBe(true)
@@ -55,8 +55,8 @@ it('folds consecutive automated messages from one sender on a Thread, showing th
   server.threadPages = () => ({ ...threadSummary(), tickets: [], correlated: [], decisions: [], earlier: null, context: [],
     timeline: [bot('b1', '2026-09-23T00:00:00Z'), bot('b2', '2026-09-23T00:01:00Z'), trigger('h1', '2026-09-23T00:02:00Z'), bot('b3',
       '2026-09-23T00:03:00Z'), bot('b4', '2026-09-23T00:04:00Z')] })
+  at({ page: 'trigger' })
   await mount()
-  await click(zh['tab.trigger'])
   await click('这个文案好奇怪')
   expect(all('.dt-event .dt-event-text').map(element => element.textContent)).toEqual(['CI of PR #42 at abc1234: 3 checks, 0 failed, 1 running.', 'message h1', 'CI of PR #42 at abc1234: 3 checks, 0 failed, 1 running.'])
   const folds = all('.dt-event').map(event => event.querySelector('button.dt-textlink[aria-expanded]')?.textContent ?? '')
