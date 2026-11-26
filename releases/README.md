@@ -1,6 +1,6 @@
 # Releases — SuperAgentArea（saa）
 
-本目录归档**每个已发布的构建包**，用于回退、复现或在某个版本上继续开发。包文件（`dsh-superagent-<version>.tgz`）保存在仓库根目录并随 git 跟踪，**不删除**。
+本目录归档**每个已发布的构建包**，用于回退、复现或在某个版本上继续开发。包文件（`dsh-superagent-<version>.tgz`）统一保存在 `history/` 目录并随 git 跟踪，**不删除**；仓库根目录不再放包。
 
 每个版本记录：包文件名、大小、SHA-256、源提交（git 仓库哈希）、功能主题、与上一版的对比。
 
@@ -38,7 +38,8 @@
 | 0.3.14 | 2026-11-26 | `history/dsh-superagent-0.3.14.tgz` | 510,789 | `3c8dfddb28ba8d2c` | `125103c` | 网页/地址来源（RSS/Atom/JSON）、钉钉扫码接入、微信二维码修复、QQ 双 Tab |
 | 0.3.15 | 2026-11-26 | `history/dsh-superagent-0.3.15.tgz` | 514,490 | `96f5bcb100fd12ac` | `2da92fe` | QQ 扫码接入（自实现绑定协议，不依赖 UNLICENSED 组件） |
 | 0.3.16 | 2026-11-26 | `history/dsh-superagent-0.3.16.tgz` | 516,181 | `16aa69f1f7c94443` | `8d74543` | 配置历史密钥脱敏、账号显示名称可改且全安装唯一 |
-| 0.3.17 | 2026-11-26 | `dsh-superagent-0.3.17.tgz` | 519,406 | `cc50e66eee549cb0` | `4c819a9` | 工作站 Agent 要求与规则、一键会话（不选工作区） |
+| 0.3.17 | 2026-11-26 | `history/dsh-superagent-0.3.17.tgz` | 519,406 | `cc50e66eee549cb0` | `4c819a9` | 工作站 Agent 要求与规则、一键会话（不选工作区） |
+| 0.3.18 | 2026-11-26 | `history/dsh-superagent-0.3.18.tgz` | 521,832 | `d03d4434ac195bcf` | `0057b6f` | 删除工作站、删除会话（会话代数）、规则编辑布局、发布包统一入 history |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -217,6 +218,16 @@
 
 对比 0.3.16：工作站从「项目会话入口 + 历史」升级为「Agent 要求与规则 + 一键会话」；会话不再要求选择工作区，且会话目录跟随工作站真实地址。
 
+### 0.3.18
+
+- **删除工作站**：新增 `DELETE projects/:id`。内置 workspace 固定不可删；仍有工单或产物的项目拒绝并返回数量（先归档/清理；归档不会清空计数），实际只能删除从未产生工单/产物的空站。卡片右上角与详情页头新增删除入口，成功后尽力归档其会话并刷新列表/返回工作站页。
+- **删除会话**：工作站记录 `conversationGeneration`，会话 id 为 `project-<id>`（第 0 代）与 `project-<id>-<n>`；agent 段「工作站会话」新增「删除会话」，重置代数并尽力把旧会话归档到 DSH 归档区，下次打开自动创建新一代会话（也让新改的 Agent 规则进入会话，无需重启）。
+- **Agent 规则编辑布局**：底部操作行左「新增要求」、右「保存」（仅改动可用），间距整理。
+- **发布包统一入 history/**：所有 `dsh-superagent-<version>.tgz`（含 0.3.17、0.3.18）都归档在 `history/`，仓库根不再放包；发版流程改为 `pnpm pack --pack-destination history`，manifest 与本文件路径同步；桌面 profile 依赖也从 `history/` 安装。
+- 测试：`pnpm check` 全绿（77 个测试文件 / 1602 项：1588 passed / 14 skipped + build）；新增删除工作站、删除会话、代数命名与布局用例。
+
+对比 0.3.17：工作站获得删除与「删除会话」生命周期操作；Agent 规则编辑更整洁；发布包不再放仓库根。
+
 ## 3. 回退与复现
 
 ### 3.1 安装某个已归档的包
@@ -230,7 +241,7 @@ Copy-Item .\history\dsh-superagent-0.3.2.tgz "$env:USERPROFILE\.dsh\profiles\des
 校验包完整性：
 
 ```powershell
-Get-FileHash .\dsh-superagent-0.3.2.tgz -Algorithm SHA256
+Get-FileHash .\history\dsh-superagent-0.3.2.tgz -Algorithm SHA256
 # 与 manifest.json / 上表比对
 ```
 
@@ -242,7 +253,7 @@ git worktree add ..\saa-at-0.2.3 90d8f6f   # 换成目标版本的源提交
 cd ..\saa-at-0.2.3
 pnpm install
 pnpm check
-pnpm pack                                   # 产出 dsh-superagent-<version>.tgz
+pnpm pack --pack-destination history        # 产出 history/dsh-superagent-<version>.tgz
 ```
 
 - 0.1.x 无法用当前历史重建（见上），只能用归档 tgz 回退。
@@ -264,5 +275,5 @@ node -e "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync('
 ## 4. 版本号约定
 
 - **0.x.y**：`x` 为架构/里程碑阶段（P1–P6 为 0.2.x/0.3.0；P7 为 0.3.3+），`y` 为阶段内构建或修复。
-- 每次发版：`pnpm check` 全绿 → `pnpm pack` → 放入仓库根 → 更新本文件与 `manifest.json` → 提交。
+- 每次发版：`pnpm check` 全绿 → `pnpm pack --pack-destination history` → 更新本文件与 `manifest.json` → 提交（包统一放 `history/`，仓库根不再放包）。
 - 包文件不覆盖、不删除；`manifest.json` 是机器可读索引。

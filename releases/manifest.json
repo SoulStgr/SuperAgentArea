@@ -325,7 +325,7 @@
     },
     {
       "version": "0.3.17",
-      "tgz": "dsh-superagent-0.3.17.tgz",
+      "tgz": "history/dsh-superagent-0.3.17.tgz",
       "bytes": 519406,
       "sha256": "cc50e66eee549cb00f574e8e1e327bd2957c3c11b14f3c7c462dd2fada3d0be3",
       "date": "2026-11-26",
@@ -334,6 +334,19 @@
       "stateSchema": 12,
       "architecture": "workstation agent requirements and a one-click conversation in the station directory",
       "comparison": "A workstation records the operator requirements and rules its agent conversation and its Tickets follow, and opens its deterministic project-<id> conversation directly in its own directory without asking for a workspace",
+      "note": "superseded by 0.3.18"
+    },
+    {
+      "version": "0.3.18",
+      "tgz": "history/dsh-superagent-0.3.18.tgz",
+      "bytes": 521832,
+      "sha256": "d03d4434ac195bcfbad97e974b8a57cd28a2a06d6d52d875f2fd2dfbdb0ae114",
+      "date": "2026-11-26",
+      "sourceCommit": "0057b6f3e2c395630404ce713255941ca720bafe",
+      "recordedCommit": "0057b6f3e2c395630404ce713255941ca720bafe",
+      "stateSchema": 12,
+      "architecture": "workstation lifecycle: deletable stations, resettable conversations, and release packages archived under history/",
+      "comparison": "A workstation can be deleted when it owns no work, its conversation can be deleted and started over under a new deterministic Session id, the Agent requirements editor lays out add and save cleanly, and every release package lives under history/ instead of the repository root",
       "note": "current latest"
     }
   ]
