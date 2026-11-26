@@ -10,7 +10,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { openKnownSession, openOrCreateSession, projectSessionId, SessionNavigationError, type ProjectSession } from '../navigation.ts'
+import { openKnownSession, openProjectConversation as openConversation, SessionNavigationError,
+  type ProjectConversation, type WorkspaceController } from '../navigation.ts'
 import { App } from './app.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { en, zh } from './locales.ts'
@@ -41,17 +42,20 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
       await openKnownSession(ctx.sessions, id as SessionId, target => { ctx.uiWorkspace.openSession(target) }, request.signal)
     } catch (error) { throw navigationFailure(t, error) }
   }, [ctx, t])
-  // A Project's Session is created on its first click and opened as it is afterwards; its directory is the Project's working copies.
-  const openProjectSession = useCallback(async (project: ProjectSession) => {
+  // A Project's conversation opens in its own directory without asking for a workspace: its Workspace is created for it first.
+  const openProjectConversation = useCallback(async (project: ProjectConversation) => {
     pending.current?.abort()
     const request = new AbortController(); pending.current = request
     try {
-      await openOrCreateSession(ctx.sessions, { sessionId: projectSessionId(project.id), cwd: project.scratchDir },
-        target => { ctx.uiWorkspace.openSession(target) }, request.signal)
+      await openConversation({
+        sessions: ctx.sessions,
+        workspaces: ctx.get('workspaces') as Pick<WorkspaceController, 'create'> | undefined,
+        open: target => { ctx.uiWorkspace.openSession(target) },
+      }, project, request.signal)
     } catch (error) { throw navigationFailure(t, error) }
   }, [ctx, t])
   const form = usePageForm(ctx.get('configForms')?.get<Record<string, unknown>>(ENTRY))
-  return <App t={t} openSession={openSession} openProjectSession={openProjectSession} deploymentForm={form} />
+  return <App t={t} openSession={openSession} openProjectConversation={openProjectConversation} deploymentForm={form} />
 }
 
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']

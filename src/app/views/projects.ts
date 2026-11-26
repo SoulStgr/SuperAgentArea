@@ -3,8 +3,8 @@
  * one Project's page with the first page of each of its sections. A Project's Threads are the ones its Tickets came from,
  * the ones they follow, and the ones a person answered a Project question on; its Decisions are those Threads' Decisions.
  */
-import { isWorkspaceProject, liveTicket, threadKey, ticketStage, WORKSPACE_PROJECT_ID, type ArtifactRecord, type Decision,
-  type ProjectRecord, type ProjectStatus, type Ticket, type Trigger } from '../../core/index.ts'
+import { conversationDirectory, isWorkspaceProject, liveTicket, threadKey, ticketStage, WORKSPACE_PROJECT_ID, type ArtifactRecord,
+  type Decision, type ProjectRecord, type ProjectStatus, type Ticket, type Trigger } from '../../core/index.ts'
 import { KV } from '../../kv.ts'
 import type { Localized } from '../../sources/kind.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
@@ -47,6 +47,8 @@ export interface ProjectRowView {
   location: ProjectRecord['value']['location']; status: ProjectStatus
   archivedAt?: string; openTickets: number; tickets: number; artifacts: number
   sources: ProjectSourceRef[]; lastActivity: string; reporter?: ActorView
+  /** The directory the Project's conversation Session works in. */
+  conversationDir: string
 }
 /** The work of one Project: its Tickets, and the Threads those Tickets came from, follow, or had answered into it. */
 function projectWork(store: Store, projectId: string) {
@@ -94,7 +96,7 @@ function projectRow(host: ViewHost, view: Snapshot, project: ProjectRecord, tick
     location: project.value.location, status: project.status, ...project.value.archivedAt ? { archivedAt: project.value.archivedAt } : {},
     openTickets: tickets.filter(liveTicket).length, tickets: tickets.length, artifacts: artifacts.length,
     sources: projectSourceIds(host, project, tickets).map(id => ({ id, title: sourceTitleOf(host.sources, id) })),
-    lastActivity: lastActivityOf(tickets, artifacts), ...reporter ? { reporter } : {} }
+    lastActivity: lastActivityOf(tickets, artifacts), ...reporter ? { reporter } : {}, conversationDir: conversationDirectory(project) }
 }
 /**
  * Every Project's card, the built-in workspace first and the others by their latest change: the active ones by default,
@@ -162,7 +164,7 @@ export function projectDetail(host: ViewHost, id: string, health: HealthMap, set
     installed: false, state: 'missing', lastAt: '', linked: true })
   const decisions = projectDecisions(host.store, keys)
   const threads = threadList(host, 'all', 0, PROJECT_PAGE, keys)
-  return { project, counts: { openTickets: tickets.filter(liveTicket).length, tickets: tickets.length, threads: threads.total,
+  return { project, conversationDir: conversationDirectory(project), counts: { openTickets: tickets.filter(liveTicket).length, tickets: tickets.length, threads: threads.total,
     decisions: decisions.length, artifacts: artifacts.length }, sources,
     tickets: ticketPage(host, tickets, undefined, 0, PROJECT_PAGE), threads,
     decisions: decisionPage(host, decisions, 0, PROJECT_PAGE),

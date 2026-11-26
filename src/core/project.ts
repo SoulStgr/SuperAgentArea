@@ -44,6 +44,11 @@ export interface ProjectValue {
   rulesDir: string
   sourceIds: string[]
   aliases: string[]
+  /**
+   * The operator's requirements and rules for this workstation's agent: the persona or forced direction its conversations
+   * and the work in it follow. Empty or absent means the operator set none.
+   */
+  agentRules?: string[]
   specifiedBy?: PersonRef
   /** The person who confirmed an address an assessment proposed, rather than named themselves. */
   confirmedBy?: PersonRef
@@ -100,3 +105,22 @@ export const isWorkspaceProject = (project: Pick<ProjectRecord, 'id' | 'key'>): 
 /** The id of a delivered file's artifact row: a hash of its Ticket and name, so re-delivering a name updates that row. */
 export const artifactRecordId = (ticket: string, name: string): string =>
   createHash('sha1').update(`${ticket}:${name}`).digest('hex').slice(0, 16)
+
+/** The deterministic id of a Project's conversation Session: opening the conversation again opens the same Session. */
+export const projectSessionId = (projectId: string): string => `project-${projectId}`
+/** The Project id a Session id names, when the Session is a Project's conversation Session. */
+export const projectIdOfSession = (sessionId: string): string | undefined =>
+  sessionId.startsWith('project-') ? sessionId.slice('project-'.length) || undefined : undefined
+/**
+ * The directory a Project's conversation works in: the folder a person named for the station, a repository's local checkout
+ * when it has one, and otherwise the Project's working-copy directory. A remote folder or a repository without a local
+ * checkout needs a checkout first (see plan/23); until then it works in the working-copy directory.
+ */
+export function conversationDirectory(project: Pick<ProjectRecord, 'value'>): string {
+  const { kind, location, scratchDir } = project.value
+  if (kind !== 'workspace') {
+    if (location.type === 'folder') return location.path
+    if (location.type === 'repo' && location.path) return location.path
+  }
+  return scratchDir
+}

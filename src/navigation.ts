@@ -1,4 +1,4 @@
-/** Open a DSH Session in the workspace after ensuring the session catalog is loaded, and create a Project's one on first use. */
+/** Open a DSH Session in the workspace after ensuring the session catalog is loaded, and a Project's conversation without a picker. */
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
@@ -22,28 +22,53 @@ export async function openKnownSession(sessions: Pick<ISessions, 'list' | 'refre
   return true
 }
 
-/** The deterministic id of a Project's agent Session: clicking again opens the same one. */
+/** The deterministic id of a Project's conversation Session: opening the conversation again opens the same one. */
 export const projectSessionId = (projectId: string): SessionId => `project-${projectId}` as SessionId
-/** A Project as its agent section opens its Session: the id the Session is named after, and the directory it works in. */
-export interface ProjectSession { id: string; scratchDir: string }
+/** A Project as its conversation opens: the id its Session is named after, and the directory the conversation works in. */
+export interface ProjectConversation { id: string; conversationDir: string }
 /**
- * Open a Project's Session, creating it the first time: one the catalog already lists opens directly, and one an earlier
- * click created — so creating it again is refused as a conflict — is opened after refreshing the catalog. A creation
- * failure the catalog does not explain is reported as it happened. The caller words the open error.
+ * The client Workspace Controller as the panel reaches it through `ctx.get('workspaces')`: creating a Workspace for an
+ * existing directory registers it and merges it into the local snapshot at once, so a Session filed under it shows up
+ * without opening the Workspace picker.
  */
-export async function openOrCreateSession(sessions: Pick<ISessions, 'create' | 'list' | 'refresh'>,
-  target: { sessionId: SessionId; cwd: string }, open: (id: SessionId) => void, signal: AbortSignal): Promise<boolean> {
+export interface WorkspaceController { create(input: { path: string }): Promise<{ workspaceId: string }> }
+/** What opening a Project's conversation needs: the Session controller, the Workspace controller when provided, and the UI open call. */
+export interface ConversationHost {
+  sessions: Pick<ISessions, 'create' | 'list' | 'refresh'>
+  workspaces?: Pick<WorkspaceController, 'create'> | undefined
+  open: (id: SessionId) => void
+}
+/**
+ * Open a Project's conversation Session in the DSH workspace UI without asking for a workspace: a Workspace is created for
+ * the Project's conversation directory, the Session is created under it (or with that directory as its cwd when no Workspace
+ * controller is at hand, or its creation failed), a Session that already exists opens after refreshing the catalog, and the
+ * refreshed catalog is opened in the UI. A creation the catalog does not explain is reported as it happened.
+ */
+export async function openProjectConversation(host: ConversationHost, project: ProjectConversation,
+  signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false
-  if (sessions.list.getSnapshot().byId[target.sessionId] === undefined) {
+  const sessionId = projectSessionId(project.id)
+  // The Workspace files the conversation under the Project's directory at once; without one its cwd carries the directory.
+  type WorkspaceId = NonNullable<Parameters<ISessions['create']>[0]>['workspaceId']
+  let workspaceId: WorkspaceId
+  if (host.workspaces) {
+    try { workspaceId = (await host.workspaces.create({ path: project.conversationDir })).workspaceId as WorkspaceId }
+    catch { workspaceId = undefined }
+  }
+  if (signal.aborted) return false
+  if (host.sessions.list.getSnapshot().byId[sessionId] === undefined) {
     try {
-      await sessions.create({ sessionId: target.sessionId, cwd: target.cwd })
+      await host.sessions.create(workspaceId === undefined ? { sessionId, cwd: project.conversationDir }
+        : { sessionId, workspaceId })
     } catch (creation) {
       if (signal.aborted) return false
       // The Session may have existed before this click: the refreshed catalog tells that case from one that failed outright.
-      try { await sessions.refresh() } catch { throw creation }
+      try { await host.sessions.refresh() } catch { throw creation }
       if (signal.aborted) return false
-      if (sessions.list.getSnapshot().byId[target.sessionId] === undefined) throw creation
+      if (host.sessions.list.getSnapshot().byId[sessionId] === undefined) throw creation
     }
   }
-  return openKnownSession(sessions, target.sessionId, open, signal)
+  // The catalog and the Workspace tree list the Session before the UI shows it, so opening never falls back to a picker.
+  await host.sessions.refresh()
+  return openKnownSession(host.sessions, sessionId, host.open, signal)
 }

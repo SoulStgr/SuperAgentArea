@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { WORKSPACE_PROJECT_ID, artifactRecordId, type ProjectRecord } from '../src/core/index.ts'
+import { WORKSPACE_PROJECT_ID, artifactRecordId, conversationDirectory, type ProjectRecord } from '../src/core/index.ts'
 import { workspaceDirectories, workspaceProject, workspaceTicketDirectory } from '../src/app/projects.ts'
 import { Store } from '../src/app/store.ts'
 import { SettingsSchema } from '../src/policy.ts'
@@ -18,6 +18,17 @@ const station = (id: string, key: string, fields: Partial<ProjectRecord> = {}): 
   value: { name: key, kind: 'station', location: { type: 'folder', path: `/users/alice/${key}` }, outputDir: `/users/alice/${key}`,
     scratchDir: join(directory, 'area', `${key}.work`), rulesDir: join(directory, 'area', `${key}.work`, 'rules'), sourceIds: [], aliases: [] },
   ...fields })
+
+it('works a Project conversation in its named folder, its local checkout, or its working copies', () => {
+  const base = station('prj_aps', 'aps')
+  expect(conversationDirectory(base)).toBe('/users/alice/aps')
+  const repo = (path?: string): ProjectRecord => ({ ...base, value: { ...base.value,
+    location: { type: 'repo', ...path ? { path } : {}, url: 'https://github.com/acme/aps.git' } } })
+  expect(conversationDirectory(repo('/users/alice/aps-repo'))).toBe('/users/alice/aps-repo')
+  expect(conversationDirectory(repo())).toBe(base.value.scratchDir)
+  // The built-in workspace has no folder of its own: its conversation stays in its working copies.
+  expect(conversationDirectory({ ...base, value: { ...base.value, kind: 'workspace', location: { type: 'managed' } } })).toBe(base.value.scratchDir)
+})
 
 it('describes the built-in workspace Project with the area layout under the state directory', () => {
   expect(workspaceProject('/state', at)).toEqual({ id: WORKSPACE_PROJECT_ID, key: 'workspace', status: 'active', createdAt: at, updatedAt: at,

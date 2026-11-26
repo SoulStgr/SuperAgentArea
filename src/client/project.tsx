@@ -25,9 +25,10 @@ function LocationTag({ location }: { location: ProjectLocation }) {
 /** Whether the Project is the built-in workspace, which is fixed in place: it can be neither archived nor renamed. */
 const fixedProject = (project: Pick<ProjectRecord, 'value'>): boolean => project.value.kind === 'workspace'
 
-/** One Project's card: its name and address, its counts and latest activity, and its six sections. */
+/** One Project's card: its name and address, its counts and latest activity, its sections, and its conversation. */
 function ProjectCard({ project }: { project: ProjectRow }) {
-  const { t, navigate } = usePanel()
+  const { t, navigate, openProjectConversation } = usePanel()
+  const conversation = useAction(() => openProjectConversation({ id: project.id, conversationDir: project.conversationDir }))
   const open = (segment?: ProjectSegment) => navigate({ page: 'workstations', id: project.id, ...segment ? { query: { segment } } : {} })
   return <section className="dt-card dt-project-card" aria-label={project.name}>
     <div className="dt-card-head">
@@ -50,6 +51,8 @@ function ProjectCard({ project }: { project: ProjectRow }) {
     <div className="dt-project-segments">
       {PROJECT_SEGMENTS.map(segment => <Button key={segment} variant="outline" size="sm"
         onClick={() => open(segment)}>{t(`projectSegment.${segment}`)}</Button>)}
+      <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={conversation.busy}
+        onClick={() => { void conversation.run() }}>{t('projectConversation')}</Button>
     </div>
   </section>
 }
@@ -315,20 +318,68 @@ function HistoryReportLine({ report }: { report: ProjectHistoryView['reports'][n
   </li>
 }
 
-/** The agent section of a Project: its Session, created on first use, and the Ticket, change and report history it collects. */
-function ProjectAgent({ project }: { project: ProjectRecord }) {
-  const { t, call, openProjectSession } = usePanel()
-  const open = useAction(() => openProjectSession({ id: project.id, scratchDir: project.value.scratchDir }))
-  const { data, error } = usePoll(() => call('GET projects/:id/history', { id: project.id }), [project.id])
+/** Most rules a Project's agent may be given, and the most one may say; the host refuses more. */
+const AGENT_RULES_MAX = 50
+const AGENT_RULE_MAX_LENGTH = 2000
+/**
+ * The agent section of a Project: the requirements and rules its conversations and its Tickets' workers follow, edited as
+ * a list and saved together, the button that opens its conversation, and the Ticket, change and report history it collects.
+ */
+function ProjectAgent({ project, conversationDir, reload }: { project: ProjectRecord; conversationDir: string
+  reload: () => Promise<unknown> }) {
+  const { t, call, notify, openProjectConversation } = usePanel()
+  const open = useAction(() => openProjectConversation({ id: project.id, conversationDir }))
+  const saved = project.value.agentRules ?? []
+  const [rules, setRules] = useState<string[]>(saved)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  // The host trims and drops repetitions too; the page compares what it would save with what it read.
+  const normalized = [...new Set(rules.map(rule => rule.trim()).filter(Boolean))]
+  const dirty = JSON.stringify(normalized) !== JSON.stringify(saved)
+  const set = (index: number, text: string) => setRules(rules.map((rule, position) => position === index ? text : rule))
+  const save = async () => {
+    setBusy(true); setError(undefined)
+    try {
+      await call('PATCH projects/:id', { id: project.id, body: { agentRules: normalized } })
+      setRules(normalized)
+      notify(t('saved'))
+      await reload()
+    } catch (failure) { setError(errorText(failure)) } finally { setBusy(false) }
+  }
+  const { data, error: historyError } = usePoll(() => call('GET projects/:id/history', { id: project.id }), [project.id])
   return <>
-    <Section title={t('projectAgentTitle')} hint={t('projectAgentHint')}>
-      <p className="dt-hint">{t('projectAgentIntro')}</p>
+    <Section title={t('projectAgentRulesTitle')} hint={t('projectAgentRulesHint')}>
+      <p className="dt-hint">{t('projectAgentRulesIntro')}</p>
+      {rules.length === 0 ? <Hint>{t('projectAgentRulesNone')}</Hint> : <div className="dt-form" role="list">
+        {rules.map((rule, index) => {
+          const number = index + 1
+          return <div className="dt-field" role="listitem" key={index}>
+            <span className="dt-field-head">{t('projectAgentRuleItem', { number })}</span>
+            <textarea className="dt-textarea" rows={2} maxLength={AGENT_RULE_MAX_LENGTH} spellCheck={false}
+              aria-label={t('projectAgentRuleItem', { number })} value={rule}
+              onChange={event => set(index, event.target.value)} />
+            <div className="dt-row-buttons">
+              <Button variant="ghost" size="sm" icon={<Icon name="trash" />} aria-label={t('projectAgentRuleRemove', { number })}
+                onClick={() => setRules(rules.filter((_, position) => position !== index))}>{t('remove')}</Button>
+            </div>
+          </div>
+        })}
+      </div>}
+      {error && <p className="dt-error" role="alert">{error}</p>}
       <div className="dt-row-buttons">
-        <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={open.busy}
-          onClick={() => { void open.run() }}>{t('projectAgentOpen')}</Button>
+        <Button variant="outline" size="sm" icon={<Icon name="plus" />} disabled={rules.length >= AGENT_RULES_MAX}
+          onClick={() => setRules([...rules, ''])}>{t('projectAgentRulesAdd')}</Button>
+        <Button variant="primary" size="sm" disabled={busy || !dirty} onClick={() => { void save() }}>{t('save')}</Button>
       </div>
     </Section>
-    <LoadState error={error} loading={!data} />
+    <Section title={t('projectConversationTitle')} hint={t('projectConversationHint')}>
+      <p className="dt-hint">{t('projectConversationIntro')}</p>
+      <div className="dt-row-buttons">
+        <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={open.busy}
+          onClick={() => { void open.run() }}>{t('projectConversationOpen')}</Button>
+      </div>
+    </Section>
+    <LoadState error={historyError} loading={!data} />
     {data && <>
       <Section title={t('projectAgentTickets')} count={data.tickets.length}>
         {data.tickets.length ? <ul className="dt-list">{data.tickets.map(ticket => <HistoryTicketLine key={ticket.id}
@@ -346,10 +397,12 @@ function ProjectAgent({ project }: { project: ProjectRecord }) {
   </>
 }
 
-/** One Project's page: its counts and archive state, then the section the route names. */
+/** One Project's page: its counts and archive state, the button that opens its conversation, then the section the route names. */
 function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: ProjectSegment }) {
-  const { t, call, navigate, notify } = usePanel()
+  const { t, call, navigate, notify, openProjectConversation } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET projects/:id', { id }), [id])
+  const openConversation = useAction(() => data ? openProjectConversation({ id: data.project.id,
+    conversationDir: data.conversationDir }) : Promise.resolve(), { reload })
   if (!data) return <div className="dt-form"><PageHead title={id} /><LoadState error={error} loading={!error} /></div>
   const { project, counts } = data
   const fixed = fixedProject(project)
@@ -367,6 +420,8 @@ function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: 
     <PageHead title={project.value.name}>
       <LocationTag location={project.value.location} />
       {project.status === 'archived' && <Tag tone="neutral">{t('projectArchived')}</Tag>}
+      <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={openConversation.busy}
+        onClick={() => { void openConversation.run() }}>{t('projectConversationOpen')}</Button>
       {!fixed && (project.status === 'archived'
         ? <Button variant="outline" size="sm" icon={<Icon name="refresh" size={14} />}
           onClick={() => { void setArchived(false).catch(failure => notify(errorText(failure))) }}>{t('projectRestore')}</Button>
@@ -386,7 +441,7 @@ function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: 
     {segment === 'decisions' && <ProjectDecisions id={id} first={data.decisions} />}
     {segment === 'tickets' && <ProjectTickets id={id} first={data.tickets} />}
     {segment === 'settings' && <ProjectSettings project={project} reload={reload} />}
-    {segment === 'agent' && <ProjectAgent project={project} />}
+    {segment === 'agent' && <ProjectAgent project={project} conversationDir={data.conversationDir} reload={reload} />}
   </div>
 }
 

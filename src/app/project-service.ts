@@ -52,8 +52,9 @@ export interface PendingProject {
 /** A new Project a person named: its name, its address, and (for `adhoc`) its kind. */
 export interface NewProject { name: string; location: ProjectLocation; kind?: Extract<ProjectKind, 'station' | 'adhoc'>; sourceIds?: string[]
   specifiedBy?: PersonRef; confirmedBy?: PersonRef }
-/** What a person changes on a Project's page: its name, aliases, whether it is archived, and the Sources it names. */
-export interface ProjectChanges { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[] }
+/** What a person changes on a Project's page: its name, aliases, whether it is archived, the Sources it names, and the
+ * requirements its agent follows. */
+export interface ProjectChanges { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[]; agentRules?: string[] }
 /** A person's answer to a Project question: an existing Project, a new one, or the assessment's proposal confirmed. */
 export type ProjectAnswer = { projectId: string } | { new: NewProject } | { confirmProposal: true }
 /** A list of names with its repetitions and blanks dropped, keeping the first spelling of each. */
@@ -274,11 +275,16 @@ export class ProjectService {
     if (unknown) throw new UserError('unknownSource', { source: unknown })
     const aliases = changes.aliases === undefined ? project.value.aliases : unique(
       changes.aliases.map(alias => alias.trim()).filter(Boolean))
+    // The workstation agent's requirements: a person wrote the direction; a blank list means it sets none.
+    const agentRules = changes.agentRules === undefined ? project.value.agentRules
+      : unique(changes.agentRules.map(rule => rule.trim()).filter(Boolean))
     const status: ProjectRecord['status'] = changes.archived === undefined ? project.status
       : changes.archived ? 'archived' : 'active'
     const archivedAt = changes.archived === undefined ? project.value.archivedAt
       : changes.archived ? project.value.archivedAt ?? this.now() : undefined
     const value: ProjectValue = { ...project.value, name, sourceIds, aliases }
+    if (agentRules?.length) value.agentRules = agentRules
+    else delete value.agentRules
     if (archivedAt) value.archivedAt = archivedAt
     else delete value.archivedAt
     const updated: ProjectRecord = { ...project, value, status, updatedAt: this.now() }

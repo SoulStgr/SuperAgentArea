@@ -83,7 +83,7 @@ export interface SourcePatch { enabled?: boolean; label?: string; config?: Recor
 /** The panel's new-workstation form: a name, an address, and the Project kind it makes. */
 export interface NewProject { name: string; location: ProjectLocation; kind?: 'station' | 'adhoc' }
 /** What a Project's settings page changes; its directories were fixed when it was created. */
-export interface ProjectPatch { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[] }
+export interface ProjectPatch { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[]; agentRules?: string[] }
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'

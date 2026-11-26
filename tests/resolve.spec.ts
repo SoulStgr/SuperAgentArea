@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { HealthBoard } from '../src/infra/health.ts'
-import { key, threadKey, WORKSPACE_PROJECT_ID, type Decision, type Trigger } from '../src/core/index.ts'
+import { conversationDirectory, key, threadKey, WORKSPACE_PROJECT_ID, type Decision, type Trigger } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { Store } from '../src/app/store.ts'
@@ -246,6 +246,10 @@ it('creates, renames, aliases and archives a Project from the panel, refusing a 
   const restored = projects.update(aps.id, { archived: false })
   expect(restored).toMatchObject({ id: aps.id, status: 'active' })
   expect(restored.value).not.toHaveProperty('archivedAt')
+  // The workstation agent's requirements are trimmed and deduplicated, and an empty list clears them.
+  const withRules = projects.update(aps.id, { agentRules: [' 先读 AGENTS.md ', '先读 AGENTS.md', '', ' 用中文回复 '] })
+  expect(withRules.value.agentRules).toEqual(['先读 AGENTS.md', '用中文回复'])
+  expect(projects.update(aps.id, { agentRules: [] }).value).not.toHaveProperty('agentRules')
   // The built-in workspace is fixed: it is never archived and never renamed, though its aliases may change.
   expect(() => projects.update(WORKSPACE_PROJECT_ID, { archived: true })).toThrow('built-in workspace is fixed')
   expect(() => projects.update(WORKSPACE_PROJECT_ID, { name: 'main' })).toThrow('built-in workspace is fixed')

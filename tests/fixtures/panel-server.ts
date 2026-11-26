@@ -124,6 +124,17 @@ export interface ProjectFixture {
   tickets?: string[]; threads?: string[]; decisions?: DecisionRow[]
   /** The artifacts its page lists; the history also states each file's hash, which the page's rows do not carry. */
   artifacts?: (ProjectDetailView['artifacts'][number] & { hash?: string })[]; reporter?: Actor
+  /** The requirements and rules its agent reads, as a saved Project holds them. */
+  agentRules?: string[]
+}
+/** The directory a Project's conversation works in, as the host derives it: the station's folder, a repository's local
+ * checkout, and otherwise its working-copy directory. */
+const conversationDirectoryOf = (project: ProjectFixture): string => {
+  if (project.kind !== 'workspace') {
+    if (project.location.type === 'folder') return project.location.path
+    if (project.location.type === 'repo' && project.location.path) return project.location.path
+  }
+  return project.scratchDir
 }
 /** The key a Project's name gives it, as the host's `projectKey` does. */
 const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
@@ -174,8 +185,16 @@ export interface PanelServer {
   /** Session ids the fake host holds, which creating again refuses, and the ids its client catalog lists. */
   hostSessions: Set<string>
   sessions: Set<string>
-  /** The Project Sessions the panel asked to create, in order. */
-  created: { sessionId: string; cwd: string }[]
+  /** The Project Sessions the panel asked to create, in order, with the Workspace or directory they were filed under. */
+  created: { sessionId: string; cwd?: string; workspaceId?: string }[]
+  /** The directories the panel asked the Workspace Controller to create, in order. */
+  workspaces: string[]
+  /** When set, the Workspace Controller's create fails with this message, as a directory that cannot be owned does. */
+  workspaceError?: string
+  /** When set, the Workspace Controller's create waits for it, letting a test watch the conversation button while it is busy. */
+  conversationWait?: () => Promise<void>
+  /** When set, creating a Session fails with this message before the host records it. */
+  sessionCreateError?: string
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
   /** The delivered artifacts the 产物 pages list, the page served for one of them, and the file each download answers with. */
@@ -387,7 +406,7 @@ function projectRowOf(project: ProjectFixture): ProjectRow {
     ...project.archivedAt ? { archivedAt: project.archivedAt } : {},
     openTickets: tickets.filter(ticket => ticket.state === 'open').length, tickets: tickets.length, artifacts: artifacts.length,
     sources: projectLinkedIds(project, tickets).map(id => ({ id, title: projectSourceTitle(id) })),
-    lastActivity, ...project.reporter ? { reporter: project.reporter } : {} }
+    lastActivity, ...project.reporter ? { reporter: project.reporter } : {}, conversationDir: conversationDirectoryOf(project) }
 }
 /** The Project cards of one status, the built-in workspace first. */
 function projectRows(status: ProjectRow['status']): ProjectRow[] {
@@ -399,6 +418,7 @@ const projectRecordOf = (project: ProjectFixture): ProjectDetailView['project'] 
   id: project.id, key: project.key, status: project.status, createdAt: project.createdAt, updatedAt: project.updatedAt,
   value: { name: project.name, kind: project.kind, location: project.location, outputDir: project.outputDir,
     scratchDir: project.scratchDir, rulesDir: project.rulesDir, sourceIds: project.sourceIds, aliases: project.aliases,
+    ...project.agentRules?.length ? { agentRules: project.agentRules } : {},
     ...project.archivedAt ? { archivedAt: project.archivedAt } : {} } })
 /** One Project's page: its record, its counts, its Sources and the first page of each section. */
 function projectDetailOf(id: string): ProjectDetailView | undefined {
@@ -406,7 +426,7 @@ function projectDetailOf(id: string): ProjectDetailView | undefined {
   if (!project) return undefined
   const tickets = projectTicketsOf(project), threads = projectThreadsOf(project)
   const decisions = project.decisions ?? [], artifacts = project.artifacts ?? []
-  return { project: projectRecordOf(project),
+  return { project: projectRecordOf(project), conversationDir: conversationDirectoryOf(project),
     counts: { openTickets: tickets.filter(ticket => ticket.state === 'open').length, tickets: tickets.length, threads: threads.length,
       decisions: decisions.length, artifacts: artifacts.length },
     sources: projectSourceRows(project, tickets), tickets: page(tickets), threads: page(threads),
@@ -531,7 +551,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], hostSessions: new Set(), sessions: new Set(), created: [],
+    health: {}, down: false, pending: 0, opened: [], hostSessions: new Set(), sessions: new Set(), created: [], workspaces: [],
     requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
     projects: [
       { id: 'prj_workspace', key: 'workspace', name: 'workspace', kind: 'workspace', location: { type: 'managed' },
@@ -767,7 +787,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'PATCH projects/:id': { body: true, answer: ({ params, body }) => {
     const project = server.projects.find(item => item.id === params.id)
     if (!project) return refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
-    const patch = body as { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[] }
+    const patch = body as { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[]; agentRules?: string[] }
     const fixed = project.kind === 'workspace'
     if (fixed && (patch.archived === true || patch.name !== undefined && patch.name !== project.name)) {
       return refuse(400, 'The built-in workspace is fixed', { code: 'projectFixed' })
@@ -775,6 +795,17 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     if (patch.name !== undefined && patch.name !== project.name && server.projects.some(item => item.id !== project.id
       && item.key === projectKeyOf(patch.name!))) {
       return refuse(400, 'A Project is already called that', { code: 'projectExists', values: { project: projectKeyOf(patch.name!) } })
+    }
+    if (patch.agentRules !== undefined) {
+      // As the host validates them: at most 50 entries of 1 to 2000 characters, trimmed, with repetitions dropped.
+      const rules = patch.agentRules.map(rule => rule.trim())
+      if (rules.length > 50 || rules.some(rule => !rule || rule.length > 2000)) {
+        return refuse(400, 'Invalid settings: agentRules', { issues: rules.flatMap((rule, index) => !rule
+          || rule.length > 2000 ? [{ path: `agentRules.${index}`, message: rule ? 'at most 2000 characters' : 'a requirement must be written' }] : []) })
+      }
+      const unique = [...new Set(rules)]
+      if (unique.length) project.agentRules = unique
+      else delete project.agentRules
     }
     if (patch.sourceIds) {
       const unknown = patch.sourceIds.find(id => !instancesOf().some(instance => instance.id === id))

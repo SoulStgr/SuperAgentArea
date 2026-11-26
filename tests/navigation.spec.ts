@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { openKnownSession, openOrCreateSession, projectSessionId } from '../src/navigation.ts'
+import { openKnownSession, openProjectConversation, projectSessionId } from '../src/navigation.ts'
 import { initialLocation, lastSettingsGroup, parseRoute, remember, setupPage } from '../src/client/route.ts'
 const id = 'orchestrator-test' as SessionId
 function fixture(ready = false) {
@@ -40,59 +40,74 @@ it('does not navigate after the panel unmounts or a newer request supersedes it'
   await expect(navigation).resolves.toBe(false); expect(open).not.toHaveBeenCalled()
 })
 /** A sessions service whose create fills the host and catalog, refusing an id it already holds, as the host resumes one. */
-function projectFixture() {
+function conversationFixture(workspace?: { workspaceId: string } | 'fail') {
   const catalog: { phase: string; byId: Record<string, object> } = { phase: 'ready', byId: {} }
   const host = new Set<string>()
   const sessions = {
     list: { getSnapshot: () => catalog },
     refresh: vi.fn(async () => { for (const sessionId of host) catalog.byId[sessionId] = {} }),
-    create: vi.fn(async (options: { sessionId?: SessionId; cwd?: string }) => {
+    create: vi.fn(async (options: { sessionId?: SessionId; cwd?: string; workspaceId?: string }) => {
       if (host.has(options.sessionId!)) throw new Error(`session create failed: session/conflict: ${options.sessionId}`)
       host.add(options.sessionId!); catalog.byId[options.sessionId!] = {}
       return options.sessionId
     }),
   } as unknown as Pick<ISessions, 'create' | 'list' | 'refresh'>
-  return { sessions, catalog, host }
+  const workspaces = workspace === undefined ? undefined : {
+    create: vi.fn(async () => {
+      if (workspace === 'fail') throw new Error('the directory cannot be owned')
+      return workspace
+    }),
+  }
+  return { sessions, workspaces, catalog, host }
 }
-it('creates a Project Session on its first click and opens it, and opens a listed one without creating it again', async () => {
-  const { sessions } = projectFixture()
+const project = { id: 'prj_aps', conversationDir: '/srv/aps' }
+it('opens a Project conversation under a Workspace it creates for the Project directory, and never asks for a workspace', async () => {
+  const { sessions, workspaces, catalog } = conversationFixture({ workspaceId: 'ws-aps' })
   const open = vi.fn()
-  const target = { sessionId: projectSessionId('prj_aps'), cwd: '/tmp/aps.work' }
-  await expect(openOrCreateSession(sessions, target, open, new AbortController().signal)).resolves.toBe(true)
-  expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: target.sessionId, cwd: '/tmp/aps.work' })
-  expect(open).toHaveBeenCalledExactlyOnceWith(target.sessionId)
-  await expect(openOrCreateSession(sessions, target, open, new AbortController().signal)).resolves.toBe(true)
+  await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
+  expect(workspaces!.create).toHaveBeenCalledExactlyOnceWith({ path: '/srv/aps' })
+  expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: projectSessionId('prj_aps'), workspaceId: 'ws-aps' })
+  // The catalog is refreshed before the UI opens it, so its tree lists the Session.
+  expect(sessions.refresh).toHaveBeenCalled()
+  expect(catalog.byId[projectSessionId('prj_aps')]).toEqual({})
+  expect(open).toHaveBeenCalledExactlyOnceWith(projectSessionId('prj_aps'))
+  // Opening it again lists it and creates nothing.
+  await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
   expect(sessions.create).toHaveBeenCalledOnce()
   expect(open).toHaveBeenCalledTimes(2)
-  expect(sessions.refresh).not.toHaveBeenCalled()
+})
+it('creates the Project Session with its directory when no Workspace Controller is at hand or it refuses', async () => {
+  for (const workspaces of [undefined, conversationFixture('fail').workspaces]) {
+    const { sessions } = conversationFixture()
+    const open = vi.fn()
+    await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
+    expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: projectSessionId('prj_aps'), cwd: '/srv/aps' })
+    expect(open).toHaveBeenCalledExactlyOnceWith(projectSessionId('prj_aps'))
+  }
 })
 it('opens a Project Session whose catalog row had not arrived when creating it was refused, and reports an unexplained failure', async () => {
-  const { sessions, catalog, host } = projectFixture()
+  const { sessions, catalog, host } = conversationFixture()
   const open = vi.fn()
-  const target = { sessionId: projectSessionId('prj_aps'), cwd: '/tmp/aps.work' }
-  host.add(target.sessionId)
-  await expect(openOrCreateSession(sessions, target, open, new AbortController().signal)).resolves.toBe(true)
+  const sessionId = projectSessionId('prj_aps')
+  host.add(sessionId)
+  await expect(openProjectConversation({ sessions, open }, project, new AbortController().signal)).resolves.toBe(true)
   expect(sessions.create).toHaveBeenCalledOnce()
-  expect(sessions.refresh).toHaveBeenCalledOnce()
-  expect(open).toHaveBeenCalledExactlyOnceWith(target.sessionId)
-  // The catalog now lists it, so a further click opens it directly.
-  expect(catalog.byId[target.sessionId]).toEqual({})
-  await openOrCreateSession(sessions, target, open, new AbortController().signal)
-  expect(sessions.create).toHaveBeenCalledOnce()
+  expect(open).toHaveBeenCalledExactlyOnceWith(sessionId)
+  expect(catalog.byId[sessionId]).toEqual({})
   // A creation failure the refreshed catalog does not explain is the failure the click reports.
   const failure = new Error('cwd unusable')
-  const refused = projectFixture()
+  const refused = conversationFixture()
   vi.spyOn(refused.sessions, 'create').mockRejectedValueOnce(failure)
-  await expect(openOrCreateSession(refused.sessions, { sessionId: projectSessionId('prj_new'), cwd: '/tmp/new.work' }, open,
+  await expect(openProjectConversation({ sessions: refused.sessions, open }, { id: 'prj_new', conversationDir: '/srv/new' },
     new AbortController().signal)).rejects.toBe(failure)
   expect(refused.sessions.refresh).toHaveBeenCalledOnce()
 })
-it('does nothing for a Project Session click that was superseded before it started', async () => {
-  const { sessions } = projectFixture()
+it('does nothing for a Project conversation click that was superseded before it started', async () => {
+  const { sessions, workspaces } = conversationFixture({ workspaceId: 'ws-aps' })
   const controller = new AbortController(); controller.abort()
   const open = vi.fn()
-  await expect(openOrCreateSession(sessions, { sessionId: projectSessionId('prj_aps'), cwd: '/tmp/aps.work' }, open,
-    controller.signal)).resolves.toBe(false)
+  await expect(openProjectConversation({ sessions, workspaces, open }, project, controller.signal)).resolves.toBe(false)
+  expect(workspaces!.create).not.toHaveBeenCalled()
   expect(sessions.create).not.toHaveBeenCalled()
   expect(open).not.toHaveBeenCalled()
 })

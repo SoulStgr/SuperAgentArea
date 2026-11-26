@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // The 工作站 page: one card per Project with six sections, the new-workstation dialog, a Project's own page, and its settings.
+import { act } from 'react'
 import { expect, it } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, click, type, text, field } from './fixtures/panel.tsx'
@@ -29,10 +30,10 @@ it('shows one card per workstation with its address, counts and latest reporter,
   expect(card('aps').textContent).toContain(zh['projectLocation.folder'])
   expect(labels(card('aps'))).toEqual([zh.projectSources, zh.projectOpenTickets, zh.projectArtifacts, zh.projectActivity, zh.projectReporter])
   expect(card('aps').textContent).toContain('Alice')
-  // A workstation's card opens its sections as well as its page.
+  // A workstation's card opens its sections, and its own button opens its conversation.
   expect([...card('aps').querySelectorAll('.dt-project-segments button')].map(button => button.textContent))
     .toEqual([zh['projectSegment.sources'], zh['projectSegment.triggers'], zh['projectSegment.decisions'], zh['projectSegment.tickets'],
-      zh['projectSegment.settings'], zh['projectSegment.agent']])
+      zh['projectSegment.settings'], zh['projectSegment.agent'], zh.projectConversation])
   // Only the workspace is left: the page says so and offers the action that creates one.
   server.projects = server.projects.filter(project => project.kind === 'workspace')
   await remount()
@@ -132,12 +133,13 @@ it('opens a workstation page with its six sections: Sources, Threads, Decisions,
   expect(field<HTMLInputElement>(zh.projectName).value).toBe('aps')
   expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagent/area/aps.work',
     '/srv/dsh-superagent/area/aps.work/rules'])
-  // agent: its project Session, and the history of its Tickets, artifacts and Assignment reports.
+  // agent: its agent's requirements and rules, its conversation, and the history of its Tickets, artifacts and reports.
   await click(segment(zh['projectSegment.agent']))
-  expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentTitle,
-    `${zh.projectAgentTickets}1`, `${zh.projectAgentChanges}1`, `${zh.projectAgentReports}1`])
-  expect(text()).toContain(zh.projectAgentIntro)
-  expect(find(zh.projectAgentOpen, '.dt-section button').matches(':disabled')).toBe(false)
+  expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentRulesTitle,
+    zh.projectConversationTitle, `${zh.projectAgentTickets}1`, `${zh.projectAgentChanges}1`, `${zh.projectAgentReports}1`])
+  expect(text()).toContain(zh.projectAgentRulesIntro)
+  expect(text()).toContain(zh.projectAgentRulesNone)
+  expect(find(zh.projectConversationOpen, '.dt-section button').matches(':disabled')).toBe(false)
   expect(section(zh.projectAgentTickets).textContent).toContain('修复回归')
   expect(section(zh.projectAgentTickets).textContent).toContain(zh['stage.working'])
   expect(section(zh.projectAgentTickets).textContent).toContain(zh.projectReporter)
@@ -204,21 +206,94 @@ it('opens the Source page a workstation\'s Source names', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('飞书')
 })
 
-it('opens a workstation\'s project Session, creating it first and opening a Session that already exists', async () => {
-  await openProject('aps', zh['projectSegment.agent'])
-  await click(find(zh.projectAgentOpen, '.dt-section button'))
-  expect(server.created).toEqual([{ sessionId: 'project-prj_aps', cwd: '/srv/dsh-superagent/area/aps.work' }])
+it('opens a workstation\'s conversation from its card and its page head, creating its Workspace once', async () => {
+  await mount()
+  await click(zh['tab.workstations'])
+  const apsConversation = () => [...card('aps').querySelectorAll<HTMLButtonElement>('.dt-project-segments button')]
+    .find(button => button.textContent === zh.projectConversation)!
+  // The card's own button creates the Workspace for the station's folder and the Session under it, then opens it.
+  await click(apsConversation())
+  expect(server.workspaces).toEqual(['/srv/aps'])
+  expect(server.created).toEqual([{ sessionId: 'project-prj_aps', workspaceId: 'ws:/srv/aps' }])
   expect(server.opened).toEqual(['project-prj_aps'])
-  // A Session the catalog lists opens directly, without creating it again.
-  await click(find(zh.projectAgentOpen, '.dt-section button'))
+  // The page head opens the same conversation; the listed Session is not created again.
+  await click(card('aps').querySelector('.dt-project-title')!)
+  await click(find(zh.projectConversationOpen, '.dt-page-title button'))
   expect(server.created).toHaveLength(1)
   expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps'])
+  expect(server.workspaces).toEqual(['/srv/aps'])
+})
+
+it('opens a workstation conversation without a Workspace when it cannot be created, and reopens one the catalog had not listed',
+  async () => {
+  server.workspaceError = 'the directory cannot be owned'
+  await openProject('aps', zh['projectSegment.agent'])
+  await click(find(zh.projectConversationOpen, '.dt-section button'))
+  // The Session falls back to the Project's conversation directory as its cwd, and still opens.
+  expect(server.created).toEqual([{ sessionId: 'project-prj_aps', cwd: '/srv/aps' }])
+  expect(server.opened).toEqual(['project-prj_aps'])
   // A Session the host holds but the catalog has not listed yet is refused by create and still opens after the refresh.
+  server.workspaceError = undefined
   server.sessions.delete('project-prj_aps')
-  await click(find(zh.projectAgentOpen, '.dt-section button'))
+  await click(find(zh.projectConversationOpen, '.dt-section button'))
   expect(server.created).toHaveLength(2)
-  expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps', 'project-prj_aps'])
+  expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps'])
   expect(server.sessions.has('project-prj_aps')).toBe(true)
+})
+
+it('shows the conversation button busy while it opens, and reports a failure it cannot recover from', async () => {
+  await openProject('aps', zh['projectSegment.agent'])
+  const button = () => find(zh.projectConversationOpen, '.dt-section button')
+  // A slow Workspace creation keeps the button disabled until the conversation opens.
+  const waiting = Promise.withResolvers<void>()
+  server.conversationWait = () => waiting.promise
+  await act(async () => { button().click() })
+  expect(button().matches(':disabled')).toBe(true)
+  waiting.resolve()
+  await settle()
+  expect(button().matches(':disabled')).toBe(false)
+  expect(server.opened).toEqual(['project-prj_aps'])
+  // A creation the refreshed catalog does not explain is reported, and the button is usable again.
+  server.conversationWait = undefined
+  server.hostSessions.delete('project-prj_aps')
+  server.sessions.delete('project-prj_aps')
+  server.sessionCreateError = 'the session cannot be created'
+  await click(button())
+  expect(document.querySelector('.dt-toast')?.textContent).toBe('the session cannot be created')
+  expect(button().matches(':disabled')).toBe(false)
+})
+
+it('edits a workstation agent\'s requirements and rules, saving them trimmed and without repetitions', async () => {
+  await openProject('aps', zh['projectSegment.agent'])
+  const ruleField = (number: number) => field<HTMLTextAreaElement>(zh.projectAgentRuleItem.replace('{number}', String(number)))
+  const add = () => find(zh.projectAgentRulesAdd, '.dt-section button')
+  const save = () => find(zh.save, '.dt-section button')
+  expect(text()).toContain(zh.projectAgentRulesNone)
+  // Adding without writing anything keeps the save disabled: there is nothing new to save.
+  await click(add())
+  expect(save().matches(':disabled')).toBe(true)
+  await type(ruleField(1), '  回答前先读 README  ')
+  await click(add())
+  await type(ruleField(2), '回答前先读 README')
+  await click(save())
+  // The host trims entries and drops repetitions; the page saves what it writes and reloads it.
+  expect(server.requests.filter(request => request.path === 'projects/prj_aps' && request.method === 'PATCH').at(-1))
+    .toMatchObject({ body: { agentRules: ['回答前先读 README'] } })
+  expect(server.projects.find(project => project.id === 'prj_aps')!.agentRules).toEqual(['回答前先读 README'])
+  expect(all('.dt-section textarea').length).toBe(1)
+  expect(field<HTMLTextAreaElement>(zh.projectAgentRuleItem.replace('{number}', '1')).value).toBe('回答前先读 README')
+  // A refused save is reported where the rules are edited, and the draft stays.
+  await type(ruleField(1), 'x'.repeat(2001))
+  await click(save())
+  expect(section(zh.projectAgentRulesTitle).querySelector('[role="alert"]')).not.toBeNull()
+  expect(section(zh.projectAgentRulesTitle).textContent).toContain('agentRules')
+  // A deleted rule saves as none, which clears the Project's own rules.
+  await type(ruleField(1), '简短要求')
+  await click(save())
+  await click(find(zh.projectAgentRuleRemove.replace('{number}', '1'), '.dt-section button'))
+  await click(save())
+  expect(server.projects.find(project => project.id === 'prj_aps')!.agentRules).toBeUndefined()
+  expect(text()).toContain(zh.projectAgentRulesNone)
 })
 
 it('opens the Ticket a workstation\'s agent history names', async () => {
@@ -243,7 +318,7 @@ it('says the agent history is empty for a workstation without work', async () =>
   expect(text()).toContain(zh.projectTicketsNone)
   expect(text()).toContain(zh.projectArtifactsNone)
   expect(text()).toContain(zh.projectAgentNoReports)
-  expect(find(zh.projectAgentOpen, '.dt-section button').matches(':disabled')).toBe(false)
+  expect(find(zh.projectConversationOpen, '.dt-section button').matches(':disabled')).toBe(false)
 })
 
 it('keeps a workstation page and its section after the panel is remounted', async () => {

@@ -7,7 +7,7 @@ import { App } from '../../src/client/app.tsx'
 import { usePageForm } from '../../src/client/deployment.tsx'
 import { zh } from '../../src/client/locales.ts'
 import type { T } from '../../src/client/text.ts'
-import { openOrCreateSession, projectSessionId } from '../../src/navigation.ts'
+import { openProjectConversation, type ProjectConversation, type WorkspaceController } from '../../src/navigation.ts'
 import { server, usePanelServer } from './panel-server.ts'
 
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -22,9 +22,11 @@ function projectSessions(): Pick<ISessions, 'create' | 'list' | 'refresh'> {
   return {
     list: { getSnapshot: () => ({ phase: 'ready' as const, byId: Object.fromEntries([...server.sessions].map(id => [id, {}])) }) },
     refresh: async () => { server.sessions = new Set(server.hostSessions) },
-    create: async (options: { sessionId?: string; cwd?: string } = {}) => {
+    create: async (options: { sessionId?: string; cwd?: string; workspaceId?: string } = {}) => {
       const sessionId = options.sessionId!
-      server.created.push({ sessionId, cwd: options.cwd ?? '' })
+      if (server.sessionCreateError) throw new Error(server.sessionCreateError)
+      server.created.push({ sessionId, ...options.cwd === undefined ? {} : { cwd: options.cwd },
+        ...options.workspaceId === undefined ? {} : { workspaceId: String(options.workspaceId) } })
       if (server.hostSessions.has(sessionId)) throw new Error(`session create failed: session/conflict: ${sessionId}`)
       server.hostSessions.add(sessionId)
       server.sessions.add(sessionId)
@@ -32,12 +34,23 @@ function projectSessions(): Pick<ISessions, 'create' | 'list' | 'refresh'> {
     },
   } as unknown as Pick<ISessions, 'create' | 'list' | 'refresh'>
 }
+/** The fake Client Workspace Controller: creating records a new directory and answers its Workspace id, reusing one already owned. */
+function projectWorkspaces(): Pick<WorkspaceController, 'create'> {
+  return {
+    create: async (input: { path: string }) => {
+      await server.conversationWait?.()
+      if (server.workspaceError) throw new Error(server.workspaceError)
+      if (!server.workspaces.includes(input.path)) server.workspaces.push(input.path)
+      return { workspaceId: `ws:${input.path}` }
+    },
+  }
+}
 function Panel({ t }: { t: T }) {
   const sessions = projectSessions()
   return <App t={t} openSession={async id => { server.opened.push(id) }}
-    openProjectSession={async project => {
-      await openOrCreateSession(sessions, { sessionId: projectSessionId(project.id), cwd: project.scratchDir },
-        target => { server.opened.push(target) }, new AbortController().signal)
+    openProjectConversation={async (project: ProjectConversation) => {
+      await openProjectConversation({ sessions, workspaces: projectWorkspaces(), open: target => { server.opened.push(target) } },
+        project, new AbortController().signal)
     }} deploymentForm={usePageForm(server.form)} />
 }
 let root: Root | undefined

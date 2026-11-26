@@ -226,7 +226,8 @@ const NewProjectRequest = z.object({ name: z.string().trim().min(1).max(100), lo
 /** What a Project's settings page changes; the directories are fixed when the Project is created. */
 const ProjectPatchRequest = z.object({ name: z.string().trim().min(1).max(100).optional(),
   aliases: z.array(z.string().trim().max(100)).max(50).optional(), archived: z.boolean().optional(),
-  sourceIds: z.array(z.string().trim().min(1).max(200)).max(100).optional() }).strict()
+  sourceIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+  agentRules: z.array(z.string().trim().min(1).max(2000)).max(50).optional() }).strict()
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime

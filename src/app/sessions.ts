@@ -6,7 +6,7 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { key, liveTicket, type Ticket } from '../core/index.ts'
+import { conversationDirectory, key, liveTicket, projectIdOfSession, type ProjectRecord, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { rulesFor } from '../policy.ts'
@@ -25,7 +25,7 @@ import type { RegisterTool, Tool } from './tools/tool.ts'
 export interface SessionsHost {
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
-  readonly store: Pick<Store, 'tickets' | 'settings' | 'get' | 'set' | 'keys'>
+  readonly store: Pick<Store, 'tickets' | 'projects' | 'settings' | 'get' | 'set' | 'keys'>
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'compose' | 'skills'>
   readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'idle' | 'pending'>
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
@@ -57,6 +57,21 @@ const parsePromptBinding = (entry: string | number): { scope?: string; revision:
 }
 /** The stored form of a Session's prompt binding: the scope it read and the revision of that scope. */
 const promptBinding = (scope: string | undefined, revision: number): string => `${scope ?? ''}#${revision}`
+/** The workstation agent's requirements, one per line, as the operator wrote them. */
+const workstationRules = (project: ProjectRecord): string =>
+  (project.value.agentRules ?? []).map(rule => `- ${rule.replace(/\s*\n\s*/g, ' ')}`).join('\n')
+/** The section a Project's conversation reads: its agent requirements and the directory it works in. */
+const workstationSection = (project: ProjectRecord): string => {
+  const rules = workstationRules(project)
+  if (!rules) return ''
+  return `## Workstation requirements (${project.value.name})\nThe operator of this workstation set these requirements for this conversation and the work here; follow them, and report a conflict with them instead of bypassing one.\n- Workstation directory: ${conversationDirectory(project)}\n${rules}`
+}
+/** The section a Ticket's worker reads: the same requirements, without the conversation's directory line. */
+const workRules = (project: ProjectRecord | undefined): string => {
+  const rules = project ? workstationRules(project) : ''
+  if (!rules) return ''
+  return `## Workstation requirements (${project!.value.name})\nThe operator of this workstation set these requirements for the work here; follow them, and report a conflict with them instead of bypassing one.\n${rules}`
+}
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
@@ -261,17 +276,30 @@ export class Sessions {
     const ticketId = ticketOfSession(agent.id)
     return ticketId === undefined ? undefined : this.host.store.tickets.get(ticketId)
   }
+  /** The Project whose conversation Session `agent` is, by the deterministic id the panel creates it under. */
+  private projectOf(agent: Agent): ProjectRecord | undefined {
+    const projectId = projectIdOfSession(agent.id)
+    return projectId === undefined ? undefined : this.host.store.projects.get(projectId)
+  }
   private async decorate(agent: Agent): Promise<void> {
     if (this.bindings.has(agent)) return
     const host = this.host
     const master = agent.id === host.masterId
     const ticket = master ? undefined : this.ticketOf(agent)
-    if (!master && !ticket) { this.limitSubagent(agent); return }
+    // A Project's conversation Session is a plain DSH Session of the station's directory; the plugin only adds its agent
+    // requirements to it, so it is neither the main Session, a Ticket's worker, nor a worker's subagent.
+    const project = master || ticket ? undefined : this.projectOf(agent)
+    if (!master && !ticket && !project) { this.limitSubagent(agent); return }
     const binding: SessionBinding = { disposers: [] }
     this.bindings.set(agent, binding)
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
     if (agent.status === 'idle') this.retryHealth.clear(agent.id)
     this.updateModelHealth()
+    if (project) {
+      const text = workstationSection(project)
+      if (text) binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-workstation', order: 9000, interpolate: false, text }))
+      return
+    }
     // Disable variable interpolation so literal ${{ ... }} expressions in team prompts are preserved.
     binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
       const version = this.promptFor(agent, context.signal !== undefined)
@@ -279,7 +307,9 @@ export class Sessions {
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
       // An inferred ticket is told the rules it was accepted under, as the settings hold that Source's rules now.
       const mandate = current ? mandateInstructions(current.mandate, rulesFor(host.store.settings(), current.sourceId)) : ''
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${mandate}`
+      // The station a Ticket belongs to may state requirements for the work in it.
+      const rules = current?.projectId === undefined ? '' : workRules(host.store.projects.get(current.projectId))
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${mandate}${rules ? `\n\n${rules}` : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {

@@ -104,7 +104,7 @@ it('navigates to a workstation page from its card section, and remembers the sec
   await click(zh['tab.workstations'])
   const aps = all('.dt-project-card').find(card => card.querySelector('.dt-project-title')?.textContent === 'aps')!
   const sections = [...aps.querySelectorAll<HTMLElement>('.dt-project-segments button')]
-  expect(sections.map(button => button.textContent)).toEqual(['来源', '触发', '评估', '执行', '设置', 'agent'])
+  expect(sections.map(button => button.textContent)).toEqual(['来源', '触发', '评估', '执行', '设置', 'agent', '会话'])
   await click(sections[3]!)
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('aps')
   expect(document.querySelector('.dt-main [role="tablist"] [role="tab"][aria-selected="true"]')?.textContent).toBe('执行 1')
