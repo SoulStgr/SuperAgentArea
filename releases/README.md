@@ -31,6 +31,7 @@
 | 0.3.7 | 2026-11-26 | `dsh-superagent-0.3.7.tgz` | 435,560 | `efcc3b0a7f7ba01b` | `1c6d61c` | 钉钉 Stream 来源（真实收发、token/@、每实例健康；不依赖 dsh-im） |
 | 0.3.8 | 2026-11-26 | `dsh-superagent-0.3.8.tgz` | 451,819 | `135773948bf91092` | `9450a36` | QQ 机器人网关来源（私聊/群 @、被动回复、健康） |
 | 0.3.9 | 2026-11-26 | `dsh-superagent-0.3.9.tgz` | 469,236 | `d4af66c82d52d1eb` | `047437c` | 微信 iLink 来源（扫码登录、白名单私聊、token 本地存储） |
+| 0.3.10 | 2026-11-26 | `dsh-superagent-0.3.10.tgz` | 474,980 | `7b270de4db7e7848` | `c292ecd` | 钉钉入站图片/文件附件（下载落盘、随 Trigger 交给 Worker） |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -141,6 +142,14 @@
 - 协议层从 dsh-im 移植（MIT 署名），不引入 dsh-im 依赖；新增公共依赖 `qrcode` 用于渲染二维码。
 
 对比 0.3.8：本地文件夹、远程文件夹、QQ、钉钉、微信五类可用；企业微信应用、邮箱、Gitee、Telegram 仍为占位。
+
+### 0.3.10
+
+- **钉钉入站图片/文件**：识别 `picture`/`file`/`richtext` 附件，经 `robot/messageFiles/download` 取受信 HTTPS 下载地址，落盘到 `<stateDir>/area/attachments/dingtalk/<instance>/<messageId>/`；Trigger 文本附绝对路径，`meta.attachments` 带 kind/mime/bytes，Worker 可直接读取。
+- 限额 20 MiB/文件、5 个/消息；非法/失败/超限只记健康计数、不建空单；文件名白名单与路径校验防穿越；下载不跟随任意重定向。
+- 出站附件仍只文本；QQ/微信附件为后续。
+
+对比 0.3.9：钉钉从纯文本收发升级为文本 + 入站图片/文件。
 
 ## 3. 回退与复现
 
