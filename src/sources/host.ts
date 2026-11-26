@@ -16,6 +16,7 @@ export const HEALTH_TEXT = {
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
   pollFailures: '{count} consecutive failed polls; last: {error}',
+  placeholder: 'Coming soon',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT
 export type Health = { state: 'starting' | 'ready' | 'paused' | 'error'; detail: string; at?: string; code?: HealthCode; values?: Record<string, string> }
@@ -43,7 +44,7 @@ export interface SourceContext {
   readonly problem?: SetupProblem | undefined
   /** Returns a Source instance's configuration while enabled, or undefined while disabled or uninstalled; `instanceId` names the instance, not its kind. */
   config<C extends Record<string, unknown>>(instanceId: string): C | undefined
-  /** Every configured instance of one kind (its kind's default instance when none is stored), each with its resolved configuration. */
+  /** Every stored instance of one kind; a kind with no stored instance has none (an old bare kind is not an instance). */
   instances<C extends Record<string, unknown>>(kind: string): SourceInstance<C>[]
   /** Ingests a trigger into the Engine and schedules the next evaluation pass; callers should await completion before advancing read cursors. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>

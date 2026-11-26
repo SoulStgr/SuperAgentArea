@@ -9,7 +9,7 @@ import type { Store } from './store.ts'
 export interface OutboxHost {
   readonly store: Pick<Store, 'atomic' | 'receipts'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
-  readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
+  readonly sources: Pick<SourceRegistry, 'instanceFor' | 'channelAllowed' | 'send'>
   readonly commands: Commands
   paused(): boolean
 }
@@ -40,7 +40,8 @@ export class Outbox implements OutboxPort {
     const { store, sources, commands } = this.host
     const receipt = store.receipts.get(id)
     if (receipt?.status !== 'pending') return
-    if (!sources.instance(receipt.channel.source)?.enabled) throw new Later('The Source is off or not installed')
+    // A stored instance resolves by id; an old bare kind resolves the kind's defaults, as it did when defaults were synthesized.
+    if (!sources.instanceFor(receipt.channel.source, receipt.channel.address.row)?.enabled) throw new Later('The Source is off or not installed')
     // Hold later messages for the same ticket and conversation behind an earlier pending message until it exceeds the failure threshold.
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')
     if (!sources.channelAllowed(receipt.channel)) { store.receipts.settle(receipt, 'channelIgnored'); return }

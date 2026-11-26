@@ -40,7 +40,7 @@ export interface HttpHost {
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged' | 'defaultSkills'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
-  readonly settings: Pick<Settings, 'view' | 'save' | 'add' | 'pause' | 'sync' | 'refreshLabels'>
+  readonly settings: Pick<Settings, 'view' | 'save' | 'add' | 'remove' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   /** Project ownership answers: the pending question of a Trigger, the Project a person answered with, and the panel's own workstations. */
@@ -113,7 +113,11 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   }
   if (error instanceof SetupError) return [400, { error: error.message, setup: error.problem }]
   if (error instanceof RouteError) return [error.status, { error: error.message }]
-  if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
+  if (error instanceof UserError) {
+    // A Source whose work is still open is a conflict, not a malformed request; every other refusal is a bad request.
+    const status = error.code === 'sourceInUse' ? 409 : error.missing ? 404 : 400
+    return [status, { error: error.message, code: error.code, values: error.values }]
+  }
   if (error instanceof SettingsConflict || error instanceof PromptConflict) return [409, { error: error.message }]
   return [500, { error: error instanceof Error ? error.message : String(error) }]
 }
@@ -270,6 +274,8 @@ function routes(runtime: HttpHost): Routes {
       }, store.blockRevision(`source:${params.id}`), 'panel')
       return { revision: saved.revision, restarting: saved.restarting }
     },
+    // A person deletes a Source instance's configuration; its historical Tickets stay readable, and a live Ticket refuses.
+    'DELETE sources/:id': ({ params }) => runtime.settings.remove(params.id),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {

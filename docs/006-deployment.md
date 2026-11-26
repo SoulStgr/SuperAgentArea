@@ -5,8 +5,9 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 ## What runs
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
+- **A local folder Source, on by default.** A new installation seeds one `folder` instance: drop a file or a task folder into its inbox and it becomes an explicit request from the operator; replies and artifacts land in its outbox. See [Default local folder](#default-local-folder).
 - **An agent GitHub account (optional).** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account. An installation whose GitHub Source names no repository runs without GitHub: its `gh` fails, and its other Sources work as they do with one.
-- **Optional:** a Feishu bot for chat requests.
+- **Optional:** a Feishu bot for chat requests. The ten-kind Source catalog also lists Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email, whose accounts can be saved now while their connections are still being developed.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for each instance's repository, account, allowed list, rules and prompts, and Settings for the installation-wide Eval, Executor and deployment settings.
 
@@ -146,7 +147,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Each Source instance's page edits its own configuration. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. **Add Source** creates a named instance of an installed kind.
+1. **Sources.** Each Source instance's page edits its own configuration. A new installation starts with one **local folder** instance and nothing else; GitHub, Feishu and the other kinds are added with **Add Source**, which creates a named instance of an installed kind. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. The catalog also offers Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email as **coming soon**: an account saves, but the kind receives and sends nothing yet and its card stays paused. An instance with no open Ticket can be deleted from its page; its historical Tickets stay readable.
 2. **Policy and prompts, per Source.** An installed instance's page has a **Policy and prompts** section (策略提示配置). Its **Policy** holds the accept rules the instance's work is assessed by — the installation's default rules until the instance saves its own — plus the allowed GitHub accounts and Feishu users who may ask for work, the bot list and the admission table. Until a list has someone, no request through that instance can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**. Its **Prompts** holds the prompt configuration its Tickets' workers read; a default skill of the instance's kind is shown read-only. The installation default rules and configuration, which the main Session reads, are not edited from the panel: change them through the main Session's settings and prompt tools or the management API.
 3. **Routing and Eval.** The header gear's Routing and Eval group sets the accept mode, the Eval timeout and the assessment model, and shows the history of Policy and Eval saves. A rule or admission change on a Source page saves that Source's Policy block; saving an Eval setting saves the Eval block. Each save uses its own revision.
 4. **Executor and environment.** The header gear's Executor and environment group sets the directory root and a prepare command. To give each Ticket a checkout of the repository:
@@ -157,6 +158,19 @@ Setup must succeed before polling or work starts. Overview lists missing require
    ```
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
+
+### Default local folder
+
+The first start of a new installation seeds one local folder Source, so dropping a file needs no setup:
+
+- Instance `folder`, label **本地文件夹**, enabled, polling every 10 seconds.
+- Inbox `<stateDir>/area/local/inbox` and outbox `<stateDir>/area/local/outbox`, separate from the workspace and its Tickets. Both directories are created with the instance; change them on the instance's page.
+- `operator`: the OS user name that runs dsh-superagent; drops are attributed to it.
+- Policy part `sources.folder`: `allowed` names that operator, and the admission table keeps its defaults, so only the operator's direct drops start work.
+
+The seed runs once, after startup, and its one-time record is the KV entry `saa.defaults.seeded`. Deleting the instance later does not bring it back; an installation that already has a folder instance (such as `folder:ops`) keeps it as configured and only gets the record. A failed seed writes no record, so the next start tries again.
+
+A drop is a file (its name and content are the request) or a task folder with `TASK.md`; both are delivered back to the outbox, under the Ticket's id. Deleting the outbox makes later replies undeliverable until the directory is made again.
 
 ### Management API
 
@@ -172,7 +186,9 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 | --- | --- |
 | `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, `problems`, the setup problems of named GitHub and Feishu instances by instance id, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, `revision`, its kind's form, and its setup `problem` when it has one; each installed instance's `policy`: its kind's `fields`, the `explicit` wording, its admission `rows` and `sync` when the kind has them, the block `revision` of `policy:<id>`, the `rules` that apply to its work, `inherited` — whether they are the installation's defaults rather than its own — and its Policy `value`; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
+| `GET source-kinds` | The installed Source kinds the add-Source form offers: `kind`, `title`, `description`, `fields`, `defaults` and `placeholder`, which is true for a kind whose connection is still being developed (an account saves but receives nothing) |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
+| `DELETE sources/<id>` | Deletes a Source instance's configuration, and its Policy part with it: `deleted: true`. An unknown id is 404 `unknownSource`; an instance still owning an open Ticket is 409 `sourceInUse` with the Ticket `count`. Its historical Tickets stay stored and readable |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `<block>` is `policy`, `eval`, `executor`, `source:<instance id>` or `policy:<instance id>`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
 | `POST executor/pause` with `{"paused": true}` or `false` | Pauses or resumes processing: `paused` |
 | `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused only when setup, Feishu and every named instance are already healthy |
@@ -190,20 +206,20 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
-| `github`, `feishu`, `history` | Source polling, events and history recovery. Every instance also has its own entry named by its instance id: `<kind>` for the default instance, and `<kind>:<key>` for a named one, such as `github:acme-aps` |
+| `github`, `feishu`, `folder`, `history` | Source polling, events and history recovery. Every instance also has its own entry named by its instance id: `<kind>` for a stored instance named after its kind (such as `folder` or `github`), and `<kind>:<key>` for a named one, such as `github:acme-aps`. A placeholder kind's instances report `paused` with the code `placeholder` |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
 
 - 400: an invalid value (`issues`, each with its `path`), a failed account check (`setup`), a fixed refusal (`code` and `values`), or a body that is not JSON or is too large.
 - 404: something that does not exist.
-- 409: a stale revision.
+- 409: a stale revision, or a Source still owning open Tickets (`sourceInUse`).
 - 500: anything else.
 
 The blocks:
 
 - `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
-- `source:<instance id>`: the id is the kind for a Source stored before instances, else `<kind>:<key>`. A folder Source is one inbox per instance and its config has `inbox`, `outbox`, `operator` and `pollSeconds`; the upgrade turns each old row into `source:folder:<row id>`.
+- `source:<instance id>`: the id is the kind for a Source stored before instances, else `<kind>:<key>`. A folder Source is one inbox per instance and its config has `inbox`, `outbox`, `operator` and `pollSeconds`; the upgrade turns each old row into `source:folder:<row id>`, and the seeded default is `source:folder`.
 - `policy`: the installation's Policy: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `policy:<instance id>`: that Source instance's own Policy part: its kind's fields (such as `allowed`, `bots` and `syncChat`), its `admission` table, and optionally its own `rules` — the same rule shape as the installation's `rules`. Absent `rules` inherits the installation's default rules; a saved list replaces them for that instance only.
 - `eval`: `mode`, `timeoutSeconds` and `model`.

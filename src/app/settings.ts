@@ -1,7 +1,7 @@
 /** Block-scoped settings validation, optimistic concurrency saves, processing pause control, and source policy synchronization. */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { UserError, type EngineForSettings } from '../core/index.ts'
+import { UserError, type EngineForSettings, type PolicyEffect } from '../core/index.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, SourcePolicySchema, policyEffects, policyVersion, rulesFor } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
@@ -267,6 +267,33 @@ export class Settings {
     if (restarting) this.host.setup.restart()
     else this.host.requestPass()
     return { revision: store.blockRevision(block), restarting }
+  }
+  /**
+   * Deletes a Source instance's configuration, and its Policy part with it, so an instance later added under the same id
+   * starts from the default Policy rather than inheriting the deleted one. Historical Tickets stay stored and readable; a
+   * live Ticket of the instance keeps it from being deleted.
+   * @throws UserError `unknownSource` for an id no configured instance has, or `sourceInUse` while one of its Tickets is open.
+   */
+  async remove(id: string): Promise<{ deleted: true }> {
+    const { store, sources, sessions } = this.host
+    if (!sources.instances().some(instance => instance.id === id)) throw new UserError('unknownSource', { source: id })
+    const live = store.tickets.open().filter(ticket => ticket.sourceId === id)
+    if (live.length) throw new UserError('sourceInUse', { source: id, count: String(live.length) })
+    const current = store.settings()
+    const { [id]: _source, ...sourceEntries } = current.sources
+    const { [id]: _policy, ...policyEntries } = current.policy.sources
+    const next = SettingsSchema.parse({ ...current, sources: sourceEntries, policy: { ...current.policy, sources: policyEntries } })
+    const before = policyVersion(current), after = policyVersion(next)
+    const scope = (version: SettingsValue) => ({ scope: (input: { source: string; meta: Record<string, unknown> }) =>
+      this.host.sources.scope(input, version) })
+    const effects = before === after ? new Map<string, PolicyEffect>() : policyEffects(store.tickets.open(), current, next, scope)
+    const notified = [...effects.keys()]
+    store.atomic(() => {
+      store.saveSettings(next, { source: 'panel', block: `source:${id}`, policyVersion: after, policyChanged: before !== after, notified })
+      sessions.notify(...settingsNotice(`source:${id}`, changedPaths(current, next)))
+      if (before !== after) this.host.engine.policyChanged(before, after, effects)
+    })
+    return { deleted: true }
   }
   /**
    * Pauses or resumes processing (new evaluations, worker dispatch, and channel delivery, while Sources continue recording

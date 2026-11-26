@@ -47,6 +47,8 @@ export interface Api {
   'GET sources/:id': { query?: Paged; response: SourceDetailView }
   'POST sources': { body: NewSource; response: { id: string; revision: number; restarting: boolean } }
   'PATCH sources/:id': { body: SourcePatch; response: { revision: number; restarting: boolean } }
+  /** Removes a Source instance's configuration; its historical Tickets stay readable. */
+  'DELETE sources/:id': { response: { deleted: true } }
   'GET projects': { query?: { status?: ProjectStatus }; response: ProjectListView }
   'GET projects/:id': { response: ProjectDetailView }
   'GET projects/:id/tickets': { query?: Paged & { state?: TicketFilter }; response: ProjectTicketListView }

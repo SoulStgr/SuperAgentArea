@@ -21,16 +21,21 @@ const probe: SourceKind<{ interval: number }> = {
 }
 
 describe('Source registry', () => {
-  it('lists every installed kind with defaults, in id order, followed by stored instances whose kind is not installed', () => {
+  it('lists every stored instance in kind order, followed by stored instances whose kind is not installed, and no synthesized one', () => {
     const settings = SettingsSchema.parse({ sources: { probe: { kind: 'probe', enabled: false, config: { interval: 9 } }, retired: { kind: 'retired', enabled: true, config: { x: 1 } } } })
     const sources = new SourceRegistry(() => settings)
     sources.register(probe); sources.register(githubKind)
+    // GitHub is installed but stores no instance, so it has no row; only a stored instance appears.
     expect(sources.instances()).toEqual([
-      { id: 'github', kind: 'github', enabled: true, config: { repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3,
-        observeIssues: false, observePulls: false, observeComments: false, observeCi: false }, installed: true },
       { id: 'probe', kind: 'probe', enabled: false, config: { interval: 9 }, installed: true },
       { id: 'retired', kind: 'retired', enabled: true, config: { x: 1 }, installed: false },
     ])
+  })
+  it('offers each installed kind with its defaults and whether it is a placeholder', () => {
+    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    sources.register(probe)
+    expect(sources.catalog()).toEqual([{ kind: 'probe', title: probe.title, description: probe.description, fields: probe.fields,
+      defaults: { interval: 5 }, placeholder: false }])
   })
   it('validates submitted instances with the kind schema and refuses kinds that are not installed', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
@@ -186,7 +191,7 @@ describe('Source registry', () => {
   })
 })
 describe('Source instances', () => {
-  it('lists each configured instance of a kind in id order, resolves it by id, and keeps a default instance for a kind with none', () => {
+  it('lists each configured instance of a kind in id order, resolves it by id, and synthesizes none for a kind with none', () => {
     const settings = SettingsSchema.parse({ sources: {
       'probe:b': { kind: 'probe', enabled: true, config: { interval: 2 } },
       'probe:a': { kind: 'probe', enabled: false, config: { interval: 3 } },
@@ -195,13 +200,15 @@ describe('Source instances', () => {
     const sources = new SourceRegistry(() => settings)
     sources.register(probe); sources.register(githubKind)
     expect(sources.instances().map(({ id, kind, enabled, installed }) => [id, kind, enabled, installed])).toEqual([
-      ['github', 'github', true, true],
       ['probe:a', 'probe', false, true],
       ['probe:b', 'probe', true, true],
       ['retired:x', 'retired', true, false],
     ])
     expect(sources.instance('probe:b')).toMatchObject({ id: 'probe:b', kind: 'probe', enabled: true, config: { interval: 2 } })
-    expect(sources.instance('github')).toMatchObject({ id: 'github', kind: 'github', enabled: true })
+    expect(sources.instancesOf('github')).toEqual([])
+    expect(sources.instance('github')).toBeUndefined()
+    // Old data that names the bare kind still resolves to the kind's schema-default configuration.
+    expect(sources.instanceFor('github')).toMatchObject({ id: 'github', kind: 'github', enabled: true, installed: true })
     expect(sources.instance('retired:x')).toBeUndefined()
     // One instance whose stored configuration fails validation is disabled alone; its sibling keeps running.
     const invalid = new SourceRegistry(() => SettingsSchema.parse({ sources: {
@@ -244,6 +251,22 @@ describe('Source instances', () => {
     // The instance's policy part and admission row are keyed by the instance id.
     expect(sources.policyPart('folder:ops')).toEqual({ allowed: [{ id: 'alice' }], admission: {} })
     expect(folderKind.policy!.rows!({}, 'folder:ops').map(row => row.id)).toEqual(['folder:ops'])
+  })
+  it('resolves an old bare-kind Trigger to its kind defaults when no instance is stored, and to none once that kind is gone', () => {
+    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    sources.register(folderKind)
+    expect(sources.instances()).toEqual([])
+    expect(sources.instanceFor('folder')?.id).toBe('folder')
+    const legacy = { id: 't', source: 'folder', threads: [{ source: 'folder', id: 'demo.txt' }], actor: { source: 'folder', id: 'alice' },
+      human: true, at: '', text: 'do it', meta: { row: 'old' } }
+    // The old Trigger reads the kind's schema-default environment values, as before defaults stopped being synthesized.
+    const [entry] = sources.environments(undefined, legacy)
+    expect([entry?.kind.kind, entry?.instance, entry?.config]).toEqual(['folder', 'folder', folderKind.schema.parse({})])
+    expect(sources.scope(legacy)).toEqual({ listened: false, reason: 'folder_not_listed' })
+    sources.register(probe)
+    expect(sources.instanceFor('probe')?.config).toEqual({ interval: 5 })
+    // A bare kind nobody registered resolves to nothing.
+    expect(sources.instanceFor('slack')).toBeUndefined()
   })
   it('finds each instance\'s Thread key and reads a Trigger through the instance its Source string names', async () => {
     const settings = SettingsSchema.parse({ sources: {

@@ -37,8 +37,8 @@ export const KV = {
     scopeVersion: family<PromptVersion, [scope: string, revision: number]>('prompt-version:', (scope, revision) => `${scope}:${revision}`),
     /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
     builtIn: family<string, [base: string]>('prompt-built-in:') },
-  /** Runtime: the main Session's ID. */
-  runtime: { masterId: record<string>('master-id') },
+  /** Runtime: the main Session's ID, and whether the default Sources have been seeded (written once, after a successful seed). */
+  runtime: { masterId: record<string>('master-id'), defaultsSeeded: record<string>('saa.defaults.seeded') },
   /**
    * Sessions: the prompt revisions each Session has worked under, ordered oldest first, as `<scope>#<revision>` where `scope`
    * is the Source instance whose prompt configuration a worker read (empty for the installation's default, the main Session);

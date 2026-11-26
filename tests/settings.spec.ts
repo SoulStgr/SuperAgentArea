@@ -107,6 +107,25 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
 
+it('deletes a Source instance and its Policy part, refusing while one of its Tickets is still open', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  await expect(settings.remove('missing')).rejects.toThrow(new UserError('unknownSource', { source: 'missing' }))
+  const now = new Date().toISOString()
+  const live = { id: 't1', title: 't1', decisionId: 'd', channels: [], undelivered: [], createdAt: now, updatedAt: now, sourceId: 'feishu',
+    mandate: { strength: 'explicit' as const, policyVersion: '', basis: { via: 'listed' as const }, actor: { source: 'feishu', id: MEMBER },
+      scope: '' }, origin: { triggerId: 'e1', triggerIds: ['e1'] }, assignments: [], inputs: [] }
+  store.tickets.save(live)
+  await expect(settings.remove('feishu')).rejects.toThrow(new UserError('sourceInUse', { source: 'feishu', count: '1' }))
+  expect(store.settings().sources.feishu).toBeDefined()
+  store.tickets.save({ ...live, ended: { at: now, by: 'human', outcome: 'stopped' } })
+  expect(await settings.remove('feishu')).toEqual({ deleted: true })
+  expect(store.settings().sources.feishu).toBeUndefined()
+  expect(store.settings().policy.sources.feishu).toBeUndefined()
+  // The deleted block no longer exists, while another instance's blocks stay saveable.
+  expect(() => settings.block('source:feishu')).toThrow(new UserError('unknownBlock', { block: 'source:feishu' }))
+  expect(settings.block('source:github')).toMatchObject({ block: 'source:github' })
+})
 it('saves one Source instance\'s own Policy part under its own block revision, keeping the kind fields and admission table', async () => {
   h = await startRuntime()
   await settled(h)

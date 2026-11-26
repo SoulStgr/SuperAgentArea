@@ -75,6 +75,25 @@ it('adds and patches Source instances through their own routes', async () => {
     .toMatchObject({ status: 404, body: { code: 'projectUnknown' } })
 })
 
+it('deletes a Source instance and answers its refusals with their own status', async () => {
+  const removed: string[] = []
+  const call = serve({
+    store: { settings: () => SettingsSchema.parse({}) },
+    sources: { instances: () => [{ id: 'folder:ops' }] },
+    settings: { remove: async (id: string) => {
+      removed.push(id)
+      if (id === 'folder:gone') throw new UserError('unknownSource', { source: id })
+      if (id === 'folder:used') throw new UserError('sourceInUse', { source: id, count: '1' })
+      return { deleted: true }
+    } },
+  })
+  expect(await call('DELETE', 'sources/folder:gone')).toMatchObject({ status: 404, body: { code: 'unknownSource' } })
+  // A Source with open work is a conflict; the panel words the code from the body.
+  expect(await call('DELETE', 'sources/folder:used')).toMatchObject({ status: 409, body: { code: 'sourceInUse',
+    values: { source: 'folder:used', count: '1' } } })
+  expect(await call('DELETE', 'sources/folder:ops')).toEqual({ status: 200, body: { deleted: true } })
+  expect(removed).toEqual(['folder:gone', 'folder:used', 'folder:ops'])
+})
 it('answers each kind of failure with its own status', async () => {
   const saves: unknown[] = []
   const call = serve({

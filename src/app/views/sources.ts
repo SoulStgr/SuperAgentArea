@@ -3,7 +3,7 @@ import { threadKey, ticketStage, type ProjectCandidate, type ProjectProposal, ty
 import { SETUP_FIELDS } from '../../deployment.ts'
 import { KV } from '../../kv.ts'
 import type { Deployment } from '../../deployment.ts'
-import type { Health } from '../../sources/host.ts'
+import { health as healthEntry, type Health } from '../../sources/host.ts'
 import type { Localized, SourceInstance } from '../../sources/kind.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
 import type { SetupProblem } from '../../setup.ts'
@@ -22,13 +22,17 @@ export function sourceTitle(kind: { title: Localized; kind: string } | undefined
   return { zh: `${kind.title.zh} · ${key}`, en: `${kind.title.en} · ${key}` }
 }
 /**
- * Resolves the health entries of a Source instance: its own entry (named by its instance id, which is the kind for the
- * default instance) and the entries its kind declares beside it, treating stale `sourceOff` entries on an enabled Source as
- * `starting`.
+ * Resolves the health entries of a Source instance: its own entry (named by its instance id, which is the kind when the
+ * instance is named after its kind) and the entries its kind declares beside it, treating stale `sourceOff` entries on an
+ * enabled Source as `starting`. A placeholder kind's instance reports the fixed paused coming-soon state instead.
  */
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
   const kind = sources.kind(instance.kind)
   const starting: Health = { state: 'starting', detail: '' }
+  // A placeholder kind runs nothing yet: its instance shows the fixed coming-soon state instead of a claimed entry.
+  if (kind?.placeholder) {
+    return { id: instance.id, title: sourceTitle(kind, instance), health: [{ name: instance.id, ...healthEntry('paused', 'placeholder') }] }
+  }
   const names = [instance.id, ...(kind?.health ?? []).filter(name => name !== kind?.kind)]
   const parts = names.map(name => {
     const entry = health[name]
@@ -52,11 +56,14 @@ export interface SetupState {
  */
 export const problemOf = (id: string, setup: SetupState) =>
   setup.problems?.[id] ?? [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
-/** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
+/** Source lifecycle state in priority order: missing kind, disabled, placeholder, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
-function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {
+function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState,
+  placeholder = false): SourceState {
   if (!instance.installed) return 'missing'
   if (!instance.enabled) return 'off'
+  // A placeholder kind receives nothing yet, so it stays paused whatever setup and its claimed entries say.
+  if (placeholder) return 'paused'
   if (problemOf(instance.id, setup) || parts.some(part => part.state === 'error')) return 'error'
   if (setup.problem) return 'setup'
   if (parts.some(part => part.state === 'starting')) return 'starting'
@@ -152,7 +159,8 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
     const flow = judged.get(instance.id)
     return { id: instance.id, kind: instance.kind, ...instance.label ? { label: instance.label } : {},
       title: sourceTitle(sources.kind(instance.kind), instance),
-      installed: instance.installed, enabled: instance.enabled, state: sourceState(instance, parts, setup), health: parts,
+      installed: instance.installed, enabled: instance.enabled,
+      state: sourceState(instance, parts, setup, sources.kind(instance.kind)?.placeholder === true), health: parts,
       ...problem ? { problem } : {}, pending: pending.get(instance.id) ?? 0,
       stats24h: { arrived: stats?.arrived ?? 0, filtered: stats?.filtered ?? 0, judged: flow?.judged ?? 0, accepted: flow?.accepted ?? 0 },
       exec: exec.get(instance.id) ?? { working: 0, queued: 0, waiting: 0 },

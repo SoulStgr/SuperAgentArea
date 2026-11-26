@@ -584,7 +584,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   'GET sources': { answer: sourceStatuses },
   'GET source-kinds': { answer: () => KINDS.map(kind => ({ kind: kind.kind, title: kind.title, description: kind.description,
-    fields: kind.fields, defaults: kind.schema.parse({}) })) },
+    fields: kind.fields, defaults: kind.schema.parse({}), placeholder: kind.placeholder === true })) },
   'GET sources/:id': { query: ['offset', 'limit'], answer: ({ params }) => sourceDetailOf(params.id) ?? refuse(404, 'Unknown Source', {
     code: 'unknownSource', values: { source: params.id } }) },
   'POST sources': { body: true, answer: ({ body }) => {
@@ -609,6 +609,17 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       ...'label' in patch ? { label: patch.label } : {}, ...'defaultProjectId' in patch ? { defaultProjectId: patch.defaultProjectId } : {} } } }
     server.revisions[`source:${params.id}`] = (server.revisions[`source:${params.id}`] ?? 0) + 1
     return { revision: server.revisions[`source:${params.id}`]!, restarting: false }
+  } },
+  // A Source with an open Ticket of its own is refused; deleting keeps its historical Tickets and drops its Policy part.
+  'DELETE sources/:id': { answer: ({ params }) => {
+    if (!server.settings.sources[params.id]) return refuse(404, 'Unknown Source', { code: 'unknownSource', values: { source: params.id } })
+    const live = server.tickets.open.filter(ticket => server.ticketSources[ticket.id] === params.id)
+    if (live.length) return refuse(409, 'The Source still has open tickets', { code: 'sourceInUse',
+      values: { source: params.id, count: String(live.length) } })
+    const { [params.id]: _removed, ...sources } = server.settings.sources
+    const { [params.id]: _policy, ...policies } = server.settings.policy.sources
+    server.settings = { ...server.settings, sources, policy: { ...server.settings.policy, sources: policies } }
+    return { deleted: true }
   } },
   'GET projects': { query: ['status'], answer: ({ query }) => projectRows(query.status === 'archived' ? 'archived' : 'active') },
   'GET projects/:id': { answer: ({ params }) => projectDetailOf(params.id) ?? refuse(404, 'Unknown Project',

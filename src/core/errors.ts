@@ -44,6 +44,7 @@ export const USER_ERRORS = {
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
   unknownSource: ['missing', 'Unknown Source: {source}'],
   sourceExists: ['refused', 'A Source instance with that id already exists: {source}'],
+  sourceInUse: ['refused', 'The {source} Source still has {count} open ticket(s); stop or end them before deleting it'],
   sourceKeyInvalid: ['refused', 'The Source key is not usable: {reason}'],
   noLabels: ['refused', 'This Source has no names to refresh'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],

@@ -900,6 +900,7 @@ const TEXT = {
   'userError.sourceNotInstalled': ['{source} 来源的插件没有安装。', USER_ERRORS.sourceNotInstalled[1]],
   'userError.unknownSource': ['找不到来源 {source}。', USER_ERRORS.unknownSource[1]],
   'userError.sourceExists': ['已经有这个来源实例：{source}', USER_ERRORS.sourceExists[1]],
+  'userError.sourceInUse': ['{source} 来源还有 {count} 个未结束的工单；请先停止或结束它们，再删除这个来源。', USER_ERRORS.sourceInUse[1]],
   'userError.sourceKeyInvalid': ['来源标识不可用：{reason}', USER_ERRORS.sourceKeyInvalid[1]],
   'userError.noLabels': ['这个来源没有可以刷新的名称。', USER_ERRORS.noLabels[1]],
   'userError.nothingToSync': ['{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。', USER_ERRORS.nothingToSync[1]],
@@ -931,6 +932,7 @@ const TEXT = {
   'healthCode.feishuCliUnset': ['来源已打开，还没有设置机器人的 lark-cli', HEALTH_TEXT.feishuCliUnset],
   'healthCode.feishuBotMissing': ['等待飞书机器人', HEALTH_TEXT.feishuBotMissing],
   'healthCode.pollFailures': ['连续 {count} 次轮询失败，最近一次：{error}', HEALTH_TEXT.pollFailures],
+  'healthCode.placeholder': ['接入开发中', HEALTH_TEXT.placeholder],
 } as const satisfies Record<string, readonly [string, string]>
 export type DshSuperagentKey = keyof typeof TEXT
 const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>

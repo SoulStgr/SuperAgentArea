@@ -10,10 +10,14 @@
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch
       disabled: true
-    # Optional local folder Source (fusion phase 1); enable and configure inbox/outbox rows to use.
+    # The default local folder Source; dsh-superagent seeds one `folder` instance (its inbox and outbox under the state
+    # directory) on a new installation, so this plugin is on by default. Configure more instances from the panel.
     - id: dsh-superagent-folder
       name: dsh-superagent/folder-watch
-      disabled: true
+    # Placeholder Source kinds (Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app, Email) in the ten-kind catalog: accounts
+    # may be created and saved, while the connection itself is still being developed.
+    - id: dsh-superagent-connectors
+      name: dsh-superagent/connectors
     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.
     # It is DSH's `standard` preset with only what a worker needs, and a shell whose foreground command moves to a background job
     # after 5 seconds, so a long command does not hold back a person's message, which the Session takes at its next step. Left

@@ -3,9 +3,10 @@ import { Config, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
-const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
+const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void; ensureDefaults: ReturnType<typeof vi.fn> }[])
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
   ready = Promise.resolve()
+  ensureDefaults = vi.fn()
   constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
   configured() { return true }
   async stop() {}
@@ -28,11 +29,12 @@ function context() {
   return { ctx, handlers, configure, describe }
 }
 
-it('reads a limit DSH commits a new value of without a restart, and asks DSH to generate no settings page', async () => {
+it('reads a limit DSH commits a new value of without a restart, asks DSH to generate no settings page, and seeds once ready', async () => {
   const { ctx, handlers, configure } = context()
   const config = Config({ stateDir: '/srv/state', promptMaxChars: 5000 })
   await apply(ctx as never, config)
   expect(configure).toHaveBeenCalledExactlyOnceWith({ auto: false }, ctx.fiber)
+  expect(runtimes.at(-1)!.ensureDefaults).toHaveBeenCalledOnce()
   const { machine } = runtimes.at(-1)!
   expect(machine.promptMaxChars.get()).toBe(5000)
   commit(config.promptMaxChars, 8000)

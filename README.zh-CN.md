@@ -8,13 +8,14 @@
 >
 > 为公开发布，我们做过适配，因此它与我们的内部版本、也与《Exploring Super-agent Design: Towards a More Autonomous Agent System》描述的实现在若干处并不相同。文中讨论的某些设计属于后续方向，本原型尚未实现。
 
-SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，以 [DeepSeek Harness](https://www.deepseek.com/en/harness/) 的 bundle 形式交付。它监听 GitHub、飞书与本地文件夹——每一种来源（Source kind）都可以开多个具名实例，每个实例各有自己的策略（Policy）与提示词——按版本化的策略判断请求是否准入，把获准的请求变成工单（Ticket），让每个工单在自己的智能体会话与目录里执行，再把结果与文件送回它来自的那个会话。Web 面板只展示需要人处理的事。
+SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，以 [DeepSeek Harness](https://www.deepseek.com/en/harness/) 的 bundle 形式交付。新安装默认只带一个本地文件夹来源，GitHub 与飞书按需添加——每一种来源（Source kind）都可以开多个具名实例，每个实例各有自己的策略（Policy）与提示词——按版本化的策略判断请求是否准入，把获准的请求变成工单（Ticket），让每个工单在自己的智能体会话与目录里执行，再把结果与文件送回它来自的那个会话。Web 面板只展示需要人处理的事。
 
 它也是一种与智能体协作的方式：**占用尽量少的人类注意力，产出尽量多的价值。** 一个能替整个团队行动的智能体，也可能浪费整个团队的注意力，所以它只在被请求、或团队写下的规则允许时才行动，只在需要人做决定、或有人能用上结果时才发言。[docs/000-philosophy.md](docs/000-philosophy.md) 说明了这条原则以及对运维者的要求。
 
 ## 它能做什么
 
-- **监听** GitHub（issue、评论、pull request）、飞书群聊与本地文件夹投件。来源 *kind* 是可复用的实现，来源 *实例* 是它的一个具体监听配置，例如 `github:owner/name`、`folder:ops`。
+- **监听** 默认监听本地文件夹投件；GitHub（issue、评论、pull request）与飞书群聊在添加账号后监听。来源 *kind* 是可复用的实现，来源 *实例* 是它的一个具体监听配置，例如 `github:owner/name`、`folder:ops`。来源目录共十类：本地文件夹、GitHub、飞书已实现；Gitee、微信、钉钉、QQ、Telegram、企业微信应用、邮箱为「接入开发中」，账号可先保存。
+- **默认从本地文件夹开始。** 新安装会播种一个 `folder` 实例：收件目录与交付目录在状态目录下（`<stateDir>/area/local/`），操作系统用户名即允许投件的操作者。只播种一次，删除后不会再出现。
 - **先判断再行动。** 不调模型的规则门禁按来源、发送人、事件类型、授权范围与去重先筛一遍；再由模型在主 Session 上判定「接单 / 停止 / 忽略 / 未完成」。主动工作分 `off`、`observe`、`auto` 三档，`observe` 只记录「本来会做什么」，不真的做。
 - **开的是工单，不是聊天会话。** 接单会同时生成一份不可变授权（Mandate，说明谁可以提、这件事能做到哪一步）和一个工单；工单持有自己的订阅、输入、派工与产物。
 - **在自己的地方干活。** 每个工单跑在独立的执行器 Session 与目录里，按生产线提示词工作，能跨重启恢复，也能交还、重试或续做。
@@ -29,7 +30,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 | 层 | 职责 | 在本仓库的落点 |
 | --- | --- | --- |
-| **L0 事件源** | GitHub/CI、群聊、文件夹投件、定时与内部事件，在边缘完成归一化 | `src/sources/`（`github*`、`feishu*`、`folder`）实现同一份 `SourceKind` 契约，由 `SourceRegistry` 管理实例 |
+| **L0 事件源** | GitHub/CI、群聊、文件夹投件、定时与内部事件，在边缘完成归一化 | `src/sources/`（`github*`、`feishu*`、`folder`、`connectors`）实现同一份 `SourceKind` 契约，由 `SourceRegistry` 管理实例 |
 | **L1 Router**（常驻；只协调，不执行业务） | Trigger 归一化 → Fast Path 规则 → Slow Path 评估 → 建单 → 按优先级与容量派工；订阅、上下文装配、看门狗、人工队列、看板 | `src/core/`（`Intake`、`Evals`、`Tickets`、`Assignments`、`Replies`，统一暴露为一个 `Engine`）、`src/policy.ts`、`src/app/passes.ts`、`src/app/outbox.ts` |
 | **L2 Worker**（每工单一个：独立 Session、目录与上下文） | 理解 → 规划 → 试处理 dry-run → 特性分发 → 并行执行 → 产物与 Spill | `src/executor/dsh.ts`、`cordis.patch.yml` 里的 worker preset、`prompts/worker.md`、subagent |
 | **L3 共享态** | 知识池、运行态、归档与回填、工具环境（存算分离） | SQLite `Store`、`<stateDir>/area/` 目录、产物索引；知识池与归档回填尚未实现 |
@@ -49,7 +50,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 ### 本分支在原型之上补了什么
 
-- **多来源、多实例。** 每种来源 kind 都能开多个具名实例，各自有健康条目、Setup 校验、统计、配置与迁移。新增本地文件夹来源（inbox → `TASK.md` → 工单 → outbox）。
+- **多来源、多实例。** 每种来源 kind 都能开多个具名实例，各自有健康条目、Setup 校验、统计、配置与迁移。本地文件夹来源（inbox → `TASK.md` → 工单 → outbox）已是默认来源：新安装会播种一个 `folder` 实例，收件/交付目录在 `<stateDir>/area/local/` 下，操作系统用户名可投件。来源目录共十类：本地文件夹、GitHub、飞书、以及接入开发中的 Gitee、微信、钉钉、QQ、Telegram、企业微信应用、邮箱（账号可保存，暂不接收消息）。
 - **每源策略与提示词。** 每个来源实例拥有自己的接单规则与提示词配置，入口在它卡片/详情页的「策略提示配置」；没保存过的实例继承安装默认。worker 读的是它工单来源的那份配置与该来源 kind 的默认技能，主 Session 读安装默认加已配置来源 kind 的默认技能并集；新的来源 kind 只需按 `skills/dsh-superagent-<kind>/SKILL.md` 提供自己的默认技能。
 - **项目组（工作站）成为一等对象。** 活归属于工作站；项目未注册时由 Eval 拒绝并反问（`needsProject`），人回答后重新评估；内置 `workspace` 承接无归属的临时工单。
 - **产物成为一等结果。** 交付文件在 `ready` 时收集、提升到工作站成果目录、按 hash 与大小建索引、随结果回复交付、面板可下载，并可 **产物 → 工单 → 派工 → worker Session** 逐级反查。

@@ -61,7 +61,7 @@ export class SourceRegistry implements SourceScope {
     const unregistered = this.registered(kind as unknown as SourceKind)
     return () => { if (!this.kinds.delete(kind.kind)) return; release(); unregistered() }
   }
-  /** Claims one entry per instance of `kind`, releasing the entries of instances it no longer has; the default instance keeps the declared entry named after the kind. */
+  /** Claims one entry per instance of `kind`, releasing the entries of instances it no longer has; a stored instance named after the kind keeps the declared entry. */
   private claimInstances(kind: string, ids: readonly string[]): void {
     const scope = this.health.get(kind)
     if (!scope || scope.released) return
@@ -120,8 +120,8 @@ export class SourceRegistry implements SourceScope {
     return !source.includes(':') && this.kinds.has(source) ? source : undefined
   }
   /**
-   * Every configured instance: registered kinds in kind order, each kind's instances in id order (a default instance when
-   * a registered kind stores none), followed by stored instances whose kind is not installed (kept as stored).
+   * Every configured instance: registered kinds in kind order, each kind's stored instances in id order, followed by stored
+   * instances whose kind is not installed (kept as stored). A registered kind with no stored instance contributes none.
    */
   instances(settings = this.settings()): ResolvedInstance[] {
     const installed = [...this.kinds.keys()].sort((a, b) => a.localeCompare(b))
@@ -133,35 +133,33 @@ export class SourceRegistry implements SourceScope {
         installed: false }))
     return [...installed, ...orphaned]
   }
-  /** Every configured instance of one registered kind, in id order; a synthesized default instance when none is stored. */
+  /** Every stored instance of one registered kind, in id order; a kind none of whose instances is stored has none. */
   instancesOf<C extends Record<string, unknown>>(kind: string, settings = this.settings()): SourceInstance<C>[] {
     const plugin = this.kinds.get(kind)
     if (!plugin) return []
     const stored = Object.entries(settings.sources).filter(([, instance]) => instance.kind === kind).sort(([a], [b]) => a.localeCompare(b))
-    this.claimInstances(kind, stored.length ? stored.map(([id]) => id) : [kind])
-    if (!stored.length) return [this.resolve(plugin, kind, undefined) as SourceInstance<C>]
+    this.claimInstances(kind, stored.map(([id]) => id))
     return stored.map(([id, instance]) => this.resolve(plugin, id, instance) as SourceInstance<C>)
   }
   /** Every installed kind in id order, with the form a new instance of it is configured by, as the panel's add-Source form reads it. */
-  catalog(): { kind: string; title: Localized; description: Localized; fields: FieldSpec[]; defaults: Record<string, unknown> }[] {
+  catalog(): { kind: string; title: Localized; description: Localized; fields: FieldSpec[]; defaults: Record<string, unknown>; placeholder: boolean }[] {
     return [...this.kinds.keys()].sort((a, b) => a.localeCompare(b)).map(name => {
       const kind = this.kinds.get(name)!
-      return { kind: kind.kind, title: kind.title, description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}) }
+      return { kind: kind.kind, title: kind.title, description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}),
+        placeholder: kind.placeholder === true }
     })
   }
-  /** One instance by id: a stored instance, or the default instance of a registered kind (`id` is then the kind). */
+  /** One stored instance by id; an old bare kind with no stored instance is not an instance (see `instanceFor`). */
   instance<C extends Record<string, unknown>>(id: string, settings = this.settings()): SourceInstance<C> | undefined {
     const stored = settings.sources[id]
-    if (stored) {
-      const kind = this.kinds.get(stored.kind)
-      return kind ? this.resolve(kind, id, stored) as SourceInstance<C> : undefined
-    }
-    const kind = this.kinds.get(id)
-    return kind ? this.resolve(kind, id, undefined) as SourceInstance<C> : undefined
+    if (!stored) return undefined
+    const kind = this.kinds.get(stored.kind)
+    return kind ? this.resolve(kind, id, stored) as SourceInstance<C> : undefined
   }
   /**
    * Resolves the instance a stored Source string names. Old values keep the bare kind; `hint` (a folder Trigger's
-   * `meta.row` or a Channel's `address.row`) finds the instance a pre-migration row became.
+   * `meta.row` or a Channel's `address.row`) finds the instance a pre-migration row became, and a bare kind with no stored
+   * instance resolves to that kind's schema defaults so old records and Channels still resolve.
    */
   instanceFor<C extends Record<string, unknown>>(source: string, hint?: string, settings = this.settings()):
   (SourceInstance<C> & { installed: true }) | undefined {
@@ -254,7 +252,9 @@ export class SourceRegistry implements SourceScope {
       const environment = kind.environment
       if (!environment) return []
       const instances = this.instancesOf(name, settings)
-      const chosen = !trigger ? instances : matched?.kind === kind.kind ? instances.filter(instance => instance.id === matched.id) : instances
+      // An old bare-kind Trigger with no stored instance still reads that kind's schema-default configuration.
+      const chosen = !trigger ? instances : matched?.kind === kind.kind
+        ? (instances.length ? instances.filter(instance => instance.id === matched.id) : [matched]) : instances
       return chosen.filter(instance => instance.enabled).map(instance => ({ kind, instance: instance.id, environment, config: instance.config }))
     })
   }
@@ -284,9 +284,10 @@ export class SourceRegistry implements SourceScope {
       if (!result) return []
       const ids = this.instancesOf(name).map(instance => instance.id)
       const prefix = `${kind.kind}:`
-      // A kind names Threads by kind (`github:12`); each instance's Thread key carries its instance id instead.
+      // A kind names Threads by kind (`github:12`); each instance's Thread key carries its instance id instead. With no
+      // stored instance the named Thread stays as the old bare-kind key it already is.
       const threads = result.threads.flatMap(thread => thread.startsWith(prefix)
-        ? ids.map(id => `${id}:${thread.slice(prefix.length)}`) : [thread])
+        ? ids.length ? ids.map(id => `${id}:${thread.slice(prefix.length)}`) : [thread] : [thread])
       return [{ threads, terms: result.terms }]
     })
     return { threads: [...new Set(found.flatMap(item => item.threads))], terms: [...new Set(found.flatMap(item => item.terms))] }

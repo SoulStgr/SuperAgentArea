@@ -88,8 +88,10 @@ export interface TriggerContext {
 }
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
-  /** Stable ID; a default instance with the same ID exists when none is stored. */
+  /** Stable ID; old data may name the bare kind for the kind's one instance, which `instanceFor` still resolves. */
   kind: string
+  /** The kind is listed and its accounts may be configured, but it receives nothing yet: its instances report `paused`. */
+  placeholder?: true
   title: Localized
   description: Localized
   /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
@@ -98,8 +100,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   schema: z.ZodType<C>
   fields: FieldSpec[]
   /**
-   * Health entry names owned by this kind; no other kind or core loop may report them. The entry named after the kind is
-   * its default instance's, and each instance also reports an entry named by its own id; any other name is kind-wide.
+   * Health entry names owned by this kind; no other kind or core loop may report them. The entry named after the kind also
+   * serves a stored instance with that id; each other instance reports an entry named by its own id.
    */
   health: string[]
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */

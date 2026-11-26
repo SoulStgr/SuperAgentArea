@@ -26,6 +26,7 @@ import { ticketCardNotice } from './announcements.ts'
 import { knownPerson, mentionOf } from './people.ts'
 import { ProjectService } from './project-service.ts'
 import { MasterAssessor } from './assessment.ts'
+import { ensureDefaultSources } from './defaults.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
 import { evalsHealth } from './views/overview.ts'
@@ -217,6 +218,12 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  /**
+   * Seeds the default local folder Source once, after startup, and records that it did so; called only by the plugin entry
+   * so a test or a host that constructs the Runtime alone starts from its own settings. A failure leaves no record, so the
+   * next start tries again; an installation that already has a folder instance only gets the record.
+   */
+  ensureDefaults(): void { ensureDefaultSources({ store: this.store, stateDir: this.machine.stateDir }) }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }

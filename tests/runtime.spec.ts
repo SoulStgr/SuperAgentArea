@@ -1972,6 +1972,52 @@ it('keeps two folder instances apart: their Threads, Tickets, environments and r
   // A folder card names its reporter in plain text, since the folder Source has no @ syntax.
   expect(readFileSync(join(inbox('out-ops'), opsTicket.id, `${key('ticket-card', opsTicket.id)}.md`), 'utf8')).toContain('alice')
 })
+it('seeds the default folder Source once after startup, so a later deletion keeps it deleted', () => {
+  expect(runtime.store.settings().sources.folder).toBeUndefined()
+  runtime.ensureDefaults()
+  const seeded = runtime.store.settings()
+  const config = seeded.sources.folder!.config as { operator: string; pollSeconds: number }
+  expect(seeded.sources.folder).toMatchObject({ kind: 'folder', enabled: true, label: '本地文件夹',
+    config: { inbox: join(directory, 'area', 'local', 'inbox'), outbox: join(directory, 'area', 'local', 'outbox'), pollSeconds: 10 } })
+  expect(seeded.policy.sources.folder).toEqual({ allowed: [{ id: config.operator }], admission: {} })
+  expect(existsSync(join(directory, 'area', 'local', 'inbox'))).toBe(true)
+  expect(existsSync(join(directory, 'area', 'local', 'outbox'))).toBe(true)
+  expect(runtime.store.get(KV.runtime.defaultsSeeded)).toBeDefined()
+  // A person deletes it; the recorded seed keeps the next start from bringing it back.
+  runtime.store.saveSettings({ ...seeded, sources: Object.fromEntries(Object.entries(seeded.sources).filter(([id]) => id !== 'folder')),
+    policy: { ...seeded.policy, sources: Object.fromEntries(Object.entries(seeded.policy.sources).filter(([id]) => id !== 'folder')) } })
+  runtime.ensureDefaults()
+  expect(runtime.store.settings().sources.folder).toBeUndefined()
+})
+it('deletes a Source instance: unknown is a 404, one with open work a 409, and its old Tickets stay readable', async () => {
+  runtime.sources.register(folderKind)
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    'folder:ops': { kind: 'folder', enabled: true, config: { inbox: join(directory, 'in-ops'), outbox: join(directory, 'out-ops'),
+      operator: 'alice', pollSeconds: 10 } } },
+  policy: { ...settings.policy, sources: { ...settings.policy.sources, 'folder:ops': { allowed: [{ id: 'alice' }] } } } })
+  const now = new Date().toISOString()
+  const saveTicket = (ended?: { at: string; by: 'human'; outcome: 'stopped' }) => runtime.store.tickets.save({ id: 't-old', title: 'old work',
+    decisionId: 'd', channels: [], undelivered: [], createdAt: now, updatedAt: now, sourceId: 'folder:ops',
+    mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'folder:ops', id: 'alice' }, scope: '' },
+    origin: { triggerId: 'old-drop', triggerIds: ['old-drop'] }, assignments: [], inputs: [], ...ended ? { ended } : {} })
+  saveTicket()
+  expect(await api('DELETE', 'sources/folder:gone')).toMatchObject({ status: 404, body: { code: 'unknownSource' } })
+  expect(await api('DELETE', 'sources/folder:ops')).toMatchObject({ status: 409, body: { code: 'sourceInUse',
+    values: { source: 'folder:ops', count: '1' } } })
+  expect((await api('GET', 'sources/folder:ops')).status).toBe(200)
+  // Ending its work allows the deletion; the Policy part goes with it so a new instance under the same id starts clean.
+  saveTicket({ at: now, by: 'human', outcome: 'stopped' })
+  expect(await api('DELETE', 'sources/folder:ops')).toEqual({ status: 200, body: { deleted: true } })
+  expect(runtime.store.settings().sources['folder:ops']).toBeUndefined()
+  expect(runtime.store.settings().policy.sources['folder:ops']).toBeUndefined()
+  expect((await api('GET', 'sources')).body).not.toContainEqual(expect.objectContaining({ id: 'folder:ops' }))
+  expect((await api('GET', 'sources/folder:ops')).status).toBe(404)
+  // The old Ticket keeps opening, and its Source string no longer resolves an instance.
+  expect(await api('GET', 'tickets/t-old')).toMatchObject({ status: 200, body: { id: 't-old',
+    ended: expect.objectContaining({ outcome: 'stopped' }) } })
+  expect(runtime.sources.instanceFor('folder:ops')).toBeUndefined()
+})
 it('serves one card per Source instance, an instance\'s page, added Sources and the Tickets of one Source', async () => {
   const path = (name: string) => join(directory, name)
   for (const name of ['in-ops', 'out-ops']) mkdirSync(path(name))
