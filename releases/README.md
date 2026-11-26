@@ -29,6 +29,7 @@
 | 0.3.5 | 2026-11-26 | `dsh-superagent-0.3.5.tgz` | 405,998 | `dc6a22e17f6ddea3` | `255d98c` | 添加来源类型改为四列 flex 卡片（宽弹窗、紧凑卡片） |
 | 0.3.6 | 2026-11-26 | `dsh-superagent-0.3.6.tgz` | 418,625 | `ec5f999ce09976e8` | `8c7108f` | 远程文件夹（SFTP/SSH，仅密钥 + known_hosts 强校验）、11 类来源顺序 |
 | 0.3.7 | 2026-11-26 | `dsh-superagent-0.3.7.tgz` | 435,560 | `efcc3b0a7f7ba01b` | `1c6d61c` | 钉钉 Stream 来源（真实收发、token/@、每实例健康；不依赖 dsh-im） |
+| 0.3.8 | 2026-11-26 | `dsh-superagent-0.3.8.tgz` | 451,819 | `135773948bf91092` | `9450a36` | QQ 机器人网关来源（私聊/群 @、被动回复、健康） |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -122,6 +123,14 @@
 - 顺带修复 `package.json` 的 UTF-8 BOM（由 PowerShell 写入引入），避免 `packageRoot()` 的 JSON 解析失败。
 
 对比 0.3.6：11 类来源中钉钉从占位变为可用；QQ、微信仍为占位（P8c/P8d）。
+
+### 0.3.8
+
+- **QQ 来源真实可用**：`qq` kind（order 3）通过公共 SDK `@tencent-connect/qqbot-nodejs` 连接 QQ 机器人网关；私聊与群 @ 消息触发工单；回复走被动 `msg_id`（稳定 `msg_seq` 去重）、markdown 优先并回退纯文本、群回复带 `<@openid>`；窗口过期返回 `gone`，不转主动消息。
+- 每实例独立健康（连接阶段、消息/跳过/失败计数、重连 5s→60s）；`appId/appSecret/allowedUserIds/sandbox` 配置；secret 脱敏。
+- 复用 dsh-im 的 QQ 协议细节（MIT 署名），不引入 dsh-im 依赖；未采用 `@tencent-connect/qqbot-connector`（其许可证为 UNLICENSED，且凭据由本仓库保存）。
+
+对比 0.3.7：11 类来源中钉钉、QQ 均可用；微信仍占位（P8d）。
 
 ## 3. 回退与复现
 
