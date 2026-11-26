@@ -32,6 +32,7 @@ import { settingsView } from './views/settings.ts'
 import { sourceDetail, sourceKinds, sourcesStatus, type SetupState } from './views/sources.ts'
 import { weixinLogins, weixinToken } from '../sources/im/weixin-login.ts'
 import { dingtalkLogins } from '../sources/im/dingtalk-login.ts'
+import { qqLogins } from '../sources/im/qq-login.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
@@ -262,6 +263,23 @@ function routes(runtime: HttpHost): Routes {
     return id
   }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
+  /**
+   * Creates the QQ Source instance one completed QR scan provisioned: the first free id under `qq`, the scanned bot's
+   * AppID and AppSecret, the sandbox switch off (a person turns it on for a test bot in the account's settings), and the
+   * scanning person's openid as the account's allowed sender so the first direct message is received without hunting for
+   * the openid in a Trigger the account would otherwise never open. The secret goes only into this installation's settings.
+   */
+  const createScannedQq = async (credentials: { appId: string; appSecret: string; userOpenid?: string }): Promise<string> => {
+    const kind = runtime.sources.kind('qq')
+    if (!kind || kind.kind !== 'qq') throw new UserError('sourceNotInstalled', { source: 'qq' })
+    const taken = new Set(Object.keys(store.settings().sources))
+    let id = 'qq'
+    for (let index = 2; taken.has(id); index += 1) id = `qq-${index}`
+    await runtime.settings.add({ id, kind: 'qq', label: 'QQ（扫码）',
+      config: { appId: credentials.appId, appSecret: credentials.appSecret, sandbox: false,
+        ...credentials.userOpenid ? { allowedUserIds: credentials.userOpenid } : {} } })
+    return id
+  }
   return {
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
@@ -330,6 +348,14 @@ function routes(runtime: HttpHost): Routes {
       return dingtalkLogins.start({ create: createScannedDingtalk })
     },
     'GET sources/dingtalk/login/:loginId': ({ params }) => dingtalkLogins.poll(params.loginId),
+    // QQ sign-in: a QR bind task whose confirmation provisions the bot's AppID and AppSecret and creates its account. Like
+    // DingTalk's, both routes are installation-wide; the responses never carry the secret, the bind key or the task id.
+    'POST sources/qq/login': () => {
+      const kind = runtime.sources.kind('qq')
+      if (!kind || kind.kind !== 'qq') throw new UserError('sourceNotInstalled', { source: 'qq' })
+      return qqLogins.start({ create: createScannedQq })
+    },
+    'GET sources/qq/login/:loginId': ({ params }) => qqLogins.poll(params.loginId),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {

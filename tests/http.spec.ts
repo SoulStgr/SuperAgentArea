@@ -1,3 +1,4 @@
+import { createCipheriv, randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +13,7 @@ import { SetupError } from '../src/setup.ts'
 import { UserError, type ArtifactRecord, type ProjectRecord, type Ticket, type Trigger } from '../src/core/index.ts'
 import { clearWeixinLogins, weixinToken } from '../src/sources/im/weixin-login.ts'
 import { clearDingtalkLogins } from '../src/sources/im/dingtalk-login.ts'
+import { clearQqLogins } from '../src/sources/im/qq-login.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -453,6 +455,91 @@ it('starts a DingTalk QR scan, creates the account on confirmation and never ret
       body: { code: 'sourceNotInstalled', values: { source: 'dingtalk' } } })
   } finally {
     clearDingtalkLogins()
+    vi.unstubAllGlobals()
+  }
+})
+
+it('starts a QQ QR bind, creates the account on confirmation and never returns its secret', async () => {
+  clearQqLogins()
+  // The AES-256-GCM ciphertext QQ sends as `bot_encrypt_secret`: IV first, then ciphertext, then the auth tag.
+  const sealSecret = (plaintext: string, key: string): string => {
+    const iv = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', Buffer.from(key, 'base64'), iv)
+    const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+    return Buffer.concat([iv, ciphertext, cipher.getAuthTag()]).toString('base64')
+  }
+  let key = ''
+  let polls = 0
+  // One PENDING then the completed bind for the first attempt, and an immediately completed bind for the second.
+  const statuses = [1, 2, 2]
+  const calls: string[] = []
+  // QQ's bind service over a fake fetch: create_bind_task, then the scripted poll answers.
+  const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200,
+    headers: { 'content-type': 'application/json' } })
+  const fetchImpl = (async (input: URL | string, init?: RequestInit): Promise<Response> => {
+    const url = String(input)
+    calls.push(`${init?.method ?? 'GET'} ${url}`)
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error' })
+    if (url.endsWith('/lite/create_bind_task')) {
+      key = String((JSON.parse(String(init?.body)) as { key: string }).key)
+      return json({ retcode: 0, data: { task_id: 'task-1' } })
+    }
+    const status = statuses[polls++] ?? 1
+    return json({ retcode: 0, data: status === 2
+      ? { status, bot_appid: 'qq-app-1', user_openid: 'qq-openid-1', bot_encrypt_secret: sealSecret('qq-secret-1', key) }
+      : { status } })
+  }) as typeof fetch
+  vi.stubGlobal('fetch', fetchImpl)
+  try {
+    const added: { id: string; kind: string; label?: string; config: Record<string, unknown> }[] = []
+    let settings = SettingsSchema.parse({})
+    const call = serve({
+      store: { settings: () => settings, blockRevision: () => 0 },
+      sources: { kind: (id: string) => id === 'qq' ? { kind: 'qq' } : undefined },
+      settings: { add: async (request: { id: string; kind: string; label?: string; config: Record<string, unknown> }) => {
+        added.push(request)
+        settings = SettingsSchema.parse({ ...settings, sources: { ...settings.sources, [request.id]: { kind: request.kind,
+          enabled: true, config: request.config, ...request.label ? { label: request.label } : {} } } })
+        return { revision: 1, restarting: false }
+      } },
+    })
+    const started = await call('POST', 'sources/qq/login')
+    expect(started).toMatchObject({ status: 200, body: { loginId: expect.any(String), expiresAt: expect.any(String) } })
+    expect((started.body as { qrImage: string }).qrImage).toMatch(/^data:image\/png;base64,/)
+    const loginId = (started.body as { loginId: string }).loginId
+    // The background poll confirms; the account is created enabled with the scanned bot's credentials and the scanner
+    // on its allow-list so the first direct message is received without hunting for an openid.
+    await vi.waitFor(async () => {
+      expect(await call('GET', `sources/qq/login/${loginId}`))
+        .toMatchObject({ status: 200, body: { status: 'confirmed', sourceId: 'qq' } })
+    }, { timeout: 5_000 })
+    expect(added).toEqual([{ id: 'qq', kind: 'qq', label: 'QQ（扫码）',
+      config: { appId: 'qq-app-1', appSecret: 'qq-secret-1', sandbox: false, allowedUserIds: 'qq-openid-1' } }])
+    // No response carries the secret, the bind key or the task id, and only QQ's own bind endpoints were called.
+    for (const answer of [started, await call('GET', `sources/qq/login/${loginId}`)]) {
+      expect(JSON.stringify(answer.body)).not.toContain('qq-secret-1')
+      expect(JSON.stringify(answer.body)).not.toContain(key)
+      expect(JSON.stringify(answer.body)).not.toContain('task-1')
+    }
+    // Only QQ's own bind endpoints were called, never a redirect.
+    expect(calls.every(url => url.includes('https://q.qq.com/lite/'))).toBe(true)
+    // A later scan takes the next free id, and an unknown attempt reads as expired.
+    const second = await call('POST', 'sources/qq/login')
+    await vi.waitFor(async () => {
+      expect(await call('GET', `sources/qq/login/${(second.body as { loginId: string }).loginId}`))
+        .toMatchObject({ status: 200, body: { status: 'confirmed', sourceId: 'qq-2' } })
+    }, { timeout: 5_000 })
+    expect(calls.filter(url => /lite\/(create_bind_task|poll_bind_result)$/.test(url))).toHaveLength(5)
+    expect(added.at(-1)).toMatchObject({ id: 'qq-2' })
+    expect(await call('GET', 'sources/qq/login/unknown')).toEqual({ status: 200, body: { status: 'expired' } })
+    // The scan routes keep the same-origin check, and only an installation with the QQ kind can start one.
+    expect((await call.raw('POST', 'sources/qq/login', undefined, { 'x-orchestrator-request': undefined })).status)
+      .toBe(403)
+    const missing = serve({ store: { settings: () => SettingsSchema.parse({}) }, sources: { kind: () => undefined } })
+    expect(await missing('POST', 'sources/qq/login')).toMatchObject({ status: 400,
+      body: { code: 'sourceNotInstalled', values: { source: 'qq' } } })
+  } finally {
+    clearQqLogins()
     vi.unstubAllGlobals()
   }
 })

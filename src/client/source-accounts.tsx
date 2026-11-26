@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
-import { usePoll, type DingtalkLoginPoll, type DingtalkLoginStart, type SourceDetailView, type SourceKindRow,
+import { usePoll, type SourceDetailView, type SourceKindRow,
   type SourceStatusRow, type WechatLoginPoll } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag, type IconName } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
@@ -108,11 +108,10 @@ function DingtalkCreateGuide() {
     </ol>
   </div>
 }
-/** Why QQ's scan setup is not offered yet, and the steps and link of the manual path that replaces it. */
+/** Why QQ's manual path exists, and the steps and link a person follows to create its bot without scanning. */
 function QqManualGuide() {
   const { t } = usePanel()
   return <div className="dt-source-guide">
-    <p className="dt-hint">{t('sourceQqScanPending')}</p>
     <p className="dt-hint">{t('sourceQqCreateHint')} <ExternalLink href="https://q.qq.com/">
       {t('sourceQqOpenPlatform')}</ExternalLink></p>
     <ol className="dt-source-steps">
@@ -122,16 +121,26 @@ function QqManualGuide() {
     </ol>
   </div>
 }
+/** The kinds whose bot can be created by scanning a QR code in the add-account dialog, and the words each uses. */
+type ScanKind = 'dingtalk' | 'qq'
+const SCAN_WORDS = {
+  dingtalk: { hint: 'sourceDingtalkScanHint', start: 'sourceDingtalkScanStart', waiting: 'sourceDingtalkWaiting',
+    connected: 'sourceDingtalkConnected', expired: 'sourceDingtalkExpired', failed: 'sourceDingtalkFailed',
+    refresh: 'sourceDingtalkRefresh', qrAlt: 'sourceDingtalkQrAlt' },
+  qq: { hint: 'sourceQqScanHint', start: 'sourceQqScanStart', waiting: 'sourceQqWaiting', connected: 'sourceQqConnected',
+    expired: 'sourceQqExpired', failed: 'sourceQqFailed', refresh: 'sourceQqRefresh', qrAlt: 'sourceQqQrAlt' },
+} as const
 /**
- * One DingTalk QR sign-in inside the add-account dialog: the person asks to start, the panel shows the QR image and
- * polls the attempt until an account is created, an attempt expires or it fails.
+ * One QR sign-in inside the add-account dialog: the person asks to start, the panel shows the QR image and polls the
+ * attempt until an account is created, an attempt expires or it fails.
  */
-function DingtalkScanConnect({ onConnected }: { onConnected: () => Promise<void> }) {
+function ScanConnect({ kind, onConnected }: { kind: ScanKind; onConnected: () => Promise<void> }) {
   const { t, call, notify } = usePanel()
-  const [attempt, setAttempt] = useState<DingtalkLoginStart>()
-  const [status, setStatus] = useState<DingtalkLoginPoll['status']>('waiting')
+  const [attempt, setAttempt] = useState<{ loginId: string; qrImage: string }>()
+  const [status, setStatus] = useState<'waiting' | 'confirmed' | 'expired' | 'failed'>('waiting')
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
+  const words = SCAN_WORDS[kind]
   // A repeated poll failure reports one toast; the dialog keeps the latest message inline.
   const reported = useRef(false)
   // The parent re-renders on its own polls, so the callbacks this panel finishes with are read through a ref.
@@ -139,26 +148,29 @@ function DingtalkScanConnect({ onConnected }: { onConnected: () => Promise<void>
   latest.current = { onConnected, notify, t }
   const start = useCallback(async () => {
     setBusy(true); setError(undefined); setStatus('waiting'); setAttempt(undefined); reported.current = false
-    try { setAttempt(await call('POST sources/dingtalk/login')) }
-    catch (failure) {
+    try {
+      setAttempt(kind === 'qq' ? await call('POST sources/qq/login') : await call('POST sources/dingtalk/login'))
+    } catch (failure) {
       setError(errorText(failure))
       latest.current.notify(errorText(failure))
       reported.current = true
     } finally { setBusy(false) }
-  }, [call])
+  }, [call, kind])
   useEffect(() => {
     if (!attempt) return
     let active = true
     let timer: ReturnType<typeof setInterval> | undefined
     const poll = async () => {
       try {
-        const result = await call('GET sources/dingtalk/login/:loginId', { loginId: attempt.loginId })
+        const result = kind === 'qq'
+          ? await call('GET sources/qq/login/:loginId', { loginId: attempt.loginId })
+          : await call('GET sources/dingtalk/login/:loginId', { loginId: attempt.loginId })
         if (!active) return
         setStatus(result.status)
         if (result.error) setError(result.error)
         if (result.status === 'confirmed') {
           if (timer) clearInterval(timer)
-          latest.current.notify(latest.current.t('sourceDingtalkConnected'))
+          latest.current.notify(latest.current.t(words.connected))
           await latest.current.onConnected()
         } else if (result.status === 'expired' || result.status === 'failed') {
           if (timer) clearInterval(timer)
@@ -171,23 +183,23 @@ function DingtalkScanConnect({ onConnected }: { onConnected: () => Promise<void>
     }
     timer = setInterval(() => { void poll() }, 2_000)
     return () => { active = false; if (timer) clearInterval(timer) }
-  }, [attempt, call])
+  }, [attempt, call, kind, words])
   const retry = status === 'expired' || status === 'failed'
-  const message = status === 'confirmed' ? t('sourceDingtalkConnected')
-    : status === 'expired' ? t('sourceDingtalkExpired')
-      : status === 'failed' ? t('sourceDingtalkFailed', { error: error ?? '' })
-        : t('sourceDingtalkWaiting')
+  const message = status === 'confirmed' ? t(words.connected)
+    : status === 'expired' ? t(words.expired)
+      : status === 'failed' ? t(words.failed, { error: error ?? '' })
+        : t(words.waiting)
   return <>
-    <p className="dt-hint">{t('sourceDingtalkScanHint')}</p>
-    {attempt && <img className="dt-wechat-qr" src={attempt.qrImage} alt={t('sourceDingtalkQrAlt')} />}
+    <p className="dt-hint">{t(words.hint)}</p>
+    {attempt && <img className="dt-wechat-qr" src={attempt.qrImage} alt={t(words.qrAlt)} />}
     {busy && <p className="dt-hint" role="status">{t('loading')}</p>}
     {attempt && <p className={status === 'failed' ? 'dt-error' : 'dt-hint'} role="status">{message}</p>}
-    {!attempt && error && <p className="dt-error">{t('sourceDingtalkFailed', { error })}</p>}
+    {!attempt && error && <p className="dt-error">{t(words.failed, { error })}</p>}
     <div className="dt-row-buttons">
       {!attempt && <Button variant="primary" disabled={busy} onClick={() => { void start() }}>
-        {t('sourceDingtalkScanStart')}</Button>}
+        {t(words.start)}</Button>}
       {retry && <Button variant="primary" disabled={busy} onClick={() => { void start() }}>
-        {t('sourceDingtalkRefresh')}</Button>}
+        {t(words.refresh)}</Button>}
     </div>
   </>
 }
@@ -206,11 +218,11 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
   const [busy, setBusy] = useState(false)
   const [mode, setMode] = useState<ConnectMode>('manual')
   // A kind that can create its bot by scanning opens on that tab; every other kind keeps the single manual form.
-  const connects = kind.kind === 'dingtalk' || kind.kind === 'qq'
+  const scanKind: ScanKind | undefined = kind.kind === 'dingtalk' ? 'dingtalk' : kind.kind === 'qq' ? 'qq' : undefined
   useEffect(() => {
     if (!open) return
-    setKey(''); setLabel(''); setConfig(kind.defaults); setMode(kind.kind === 'dingtalk' ? 'scan' : 'manual')
-  }, [open, kind])
+    setKey(''); setLabel(''); setConfig(kind.defaults); setMode(scanKind ? 'scan' : 'manual')
+  }, [open, kind, scanKind])
   const submit = async () => {
     setBusy(true)
     try {
@@ -227,18 +239,16 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
     title={`${t('sourceAddAccount')} · ${localized(t, kind.title)}`} closeLabel={t('close')}
     description={t('sourceAddAccountHint')} footer={<>
       <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
-      {(!connects || mode === 'manual') && <Button variant="primary" disabled={busy}
+      {(!scanKind || mode === 'manual') && <Button variant="primary" disabled={busy}
         onClick={() => { void submit() }}>{t('sourceCreateAccount')}</Button>}
     </>}>
     <div className="dt-source-answer">
       {kind.placeholder && <p className="dt-banner">{t('sourceComingSoonHint')}</p>}
-      {connects && <SegmentedControl className="dt-segmented" label={t('sourceConnectMode')} value={mode}
-        options={kind.kind === 'dingtalk'
-          ? [{ value: 'scan', label: t('sourceScanTab') }, { value: 'manual', label: t('sourceManualTab') }]
-          : [{ value: 'scan', label: t('sourceQqScanTab'), disabled: true }, { value: 'manual', label: t('sourceManualTab') }]}
+      {scanKind && <SegmentedControl className="dt-segmented" label={t('sourceConnectMode')} value={mode}
+        options={[{ value: 'scan', label: t('sourceScanTab') }, { value: 'manual', label: t('sourceManualTab') }]}
         onChange={setMode} />}
-      {kind.kind === 'dingtalk' && mode === 'scan'
-        ? <DingtalkScanConnect onConnected={async () => { await onCreated(); onClose() }} />
+      {scanKind && mode === 'scan'
+        ? <ScanConnect kind={scanKind} onConnected={async () => { await onCreated(); onClose() }} />
         : <>
           {kind.kind === 'qq' && <QqManualGuide />}
           {kind.kind === 'dingtalk' && <DingtalkCreateGuide />}

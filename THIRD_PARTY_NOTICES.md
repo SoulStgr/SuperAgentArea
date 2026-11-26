@@ -39,8 +39,23 @@ mechanisms.
 Not adapted and not copied: the session, queue and artifact-delivery parts of `qq-bridge.mjs`, `qq-menu.mjs`, `config-store.mjs`,
 `state-store.mjs`, `qr-auth.mjs`, `state-error.mjs`, `harness-client.mjs`, and every file under `src/channels/shared/`. Session
 binding, commands, approvals, workspaces, deferred delivery and artifact delivery stay this repository's own Ticket, Outbox
-and Source mechanisms; the QR-code sign-in and AppSecret provisioning of dsh-im are replaced by the credentials a person
-enters in this installation's settings.
+and Source mechanisms. dsh-im's `qr-auth.mjs` was read only as background; this repository reimplements QQ's QR bind flow
+itself (see below) and takes the AppID and AppSecret from its own settings.
+
+### QQ QR bind flow — protocol behavior reimplemented, no code copied
+
+`src/sources/im/qq-qr-auth.ts` and `src/sources/im/qq-login.ts` implement the QR sign-in (bind) flow whose observable
+behavior Tencent's QQ Bot connector exposes. This repository **did not copy any code** from that package and does **not**
+depend on it: `@tencent-connect/qqbot-connector` (upstream version 1.2.0) appears neither in `package.json` nor in the
+lockfile. The protocol flow was reimplemented from its publicly observable behavior — the endpoint paths
+(`https://q.qq.com/lite/create_bind_task`, `https://q.qq.com/lite/poll_bind_result`), the `{key}` / `{task_id}` request
+payloads, the connect-page address
+`https://q.qq.com/qqbot/openclaw/connect.html?task_id=<task_id>&source=<source>&_wv=2`, the numeric statuses
+(`0` none, `1` pending, `2` completed, `3` expired), the `bot_appid` / `bot_encrypt_secret` / `user_openid` answer fields,
+and the AES-256-GCM layout of `bot_encrypt_secret` (base64: the first 12 bytes are the IV, the last 16 the auth tag, the
+middle the ciphertext, keyed by the local base64 32-byte key). The QR attempt lifecycle, the QR rendering with the public
+`qrcode` package, the account creation with the scanning person on its allow-list, the 15 s no-redirect HTTPS-only calls
+and the sanitized failures are this repository's own.
 
 ### WeChat (iLink)
 
@@ -100,9 +115,11 @@ npm as a normal dependency and is not copied into this repository. Its own packa
 builds on its `QQBot` WebSocket gateway client, its passive reply send path and its `ApiError` failure shape (read
 structurally, so the transport module does not import the SDK; only the production bot factory loads it, lazily).
 
-`@tencent-connect/qqbot-connector` 1.2.0 is deliberately **not** a dependency: it only provides the QR-code sign-in that
-provisions an AppSecret, while this repository takes the AppID and AppSecret from its own settings. Its upstream package
-is also marked `UNLICENSED`, so it is not redistributed here.
+`@tencent-connect/qqbot-connector` 1.2.0 is deliberately **not** a dependency: its upstream package is marked
+`UNLICENSED`, so it is neither redistributed nor installed here. Its QR-code sign-in behavior is the protocol flow this
+repository reimplements itself in `src/sources/im/qq-qr-auth.ts` and `src/sources/im/qq-login.ts` (see the QQ QR bind flow
+section above): no code of the package was copied, and the AppID and AppSecret it would provision are stored in this
+installation's own settings instead.
 
 ## Upgrading
 

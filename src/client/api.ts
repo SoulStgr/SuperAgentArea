@@ -162,6 +162,9 @@ export type WechatLoginPoll = ApiResponse<'GET sources/:id/wechat/login/:loginId
 /** The DingTalk QR sign-in that creates an account: what starting returns and what one poll reports. */
 export type DingtalkLoginStart = ApiResponse<'POST sources/dingtalk/login'>
 export type DingtalkLoginPoll = ApiResponse<'GET sources/dingtalk/login/:loginId'>
+/** The QQ QR sign-in that creates an account: what starting returns and what one poll reports. */
+export type QqLoginStart = ApiResponse<'POST sources/qq/login'>
+export type QqLoginPoll = ApiResponse<'GET sources/qq/login/:loginId'>
 export type PendingProject = SourceStatusRow['pendingProjects'][number]
 export type ProjectRow = ApiResponse<'GET projects'>[number]
 export type ProjectDetailView = ApiResponse<'GET projects/:id'>

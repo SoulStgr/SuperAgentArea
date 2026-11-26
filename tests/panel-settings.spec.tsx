@@ -288,28 +288,48 @@ it('adds a DingTalk account by hand, with the create-bot entry and steps beside 
   expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', '钉钉'))
 })
 
-it('offers QQ a disabled scan tab with its explanation, and still creates the account from the manual form', async () => {
+it('creates a QQ account by QR scan: starts, shows the code, polls and lists the created account', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  onTestFinished(() => { vi.useRealTimers() })
+  server.qqPolls = ['waiting', 'confirmed']
   await mount()
   await select_kind('QQ')
   await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
-  const tabs = all('[role="dialog"] [role="tab"]')
-  expect(tabs.map(item => item.textContent)).toEqual([zh.sourceQqScanTab, zh.sourceManualTab])
-  expect((tabs[0] as HTMLButtonElement).disabled).toBe(true)
-  // The scan tab cannot be chosen; its explanation and the manual path's entry link and steps are shown instead.
-  expect(dialog().textContent).toContain(zh.sourceQqScanPending)
+  // The dialog opens on the now-enabled scan tab, which asks the person to start the QR bind explicitly.
+  expect(dialog().textContent).toContain(zh.sourceQqScanHint)
+  expect(all('[role="dialog"] [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceScanTab, zh.sourceManualTab])
+  expect((all('[role="dialog"] [role="tab"]')[0] as HTMLButtonElement).disabled).toBe(false)
+  await click(find(zh.sourceQqScanStart, '[role="dialog"] button'))
+  expect(server.requests.find(request => request.path === 'sources/qq/login')).toMatchObject({ method: 'POST' })
+  expect(dialog().querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,cXE=')
+  // The dialog polls every two seconds: waiting for the scan, then the host has created the account.
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(dialog().textContent).toContain(zh.sourceQqWaiting)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceQqConnected)
+  await vi.waitFor(() => expect(all('.dt-source-account')).toHaveLength(1))
+  expect(all('.dt-source-account')[0]!.textContent).toContain('QQ（扫码）')
+  expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceAccountOn)
+  expect(server.settings.sources.qq).toMatchObject({ kind: 'qq', enabled: true,
+    config: { appId: 'qq-app-1', allowedUserIds: 'qq-openid-1' } })
+})
+
+it('adds a QQ account by hand, with the open-platform entry and steps beside its two credentials', async () => {
+  await mount()
+  await select_kind('QQ')
+  await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
+  await click(find(zh.sourceManualTab, '[role="dialog"] [role="tab"]'))
+  // The manual tab links the QQ open platform and lists the steps that produce the two fields.
   expect(dialog().querySelector('a[href="https://q.qq.com/"]')).toBeTruthy()
   expect(dialog().textContent).toContain(zh.sourceQqCreateStepBot)
   expect(dialog().textContent).toContain(zh.sourceQqCreateStepCredentials)
   expect(dialog().textContent).toContain(zh.sourceQqCreateStepSandbox)
-  await click(tabs[0]!)
-  expect((all('[role="dialog"] [role="tab"]')[1]!).getAttribute('aria-selected')).toBe('true')
-  await type(field<HTMLInputElement>(zh.sourceLabel), '客服 QQ')
-  await type(field<HTMLInputElement>('AppID'), 'qq-app-1')
-  await type(field<HTMLInputElement>('AppSecret'), 'qq-secret-1')
+  await type(field<HTMLInputElement>('AppID'), 'qq-app-2')
+  await type(field<HTMLInputElement>('AppSecret'), 'qq-secret-2')
   await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
-  expect(server.settings.sources.qq).toMatchObject({ kind: 'qq', enabled: true,
-    config: { appId: 'qq-app-1', appSecret: 'qq-secret-1' } })
-  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', '客服 QQ'))
+  expect(server.settings.sources.qq).toMatchObject({ kind: 'qq', config: { appId: 'qq-app-2', appSecret: 'qq-secret-2' } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', 'QQ'))
 })
 
 it('edits an account\'s own settings and switches it off from the Sources settings group', async () => {

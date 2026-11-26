@@ -194,6 +194,10 @@ export interface PanelServer {
   dingtalkPolls: string[]
   /** The DingTalk QR sign-in attempts the fake host started, newest last, with the answers left for each. */
   dingtalkLogins: { loginId: string; polls: string[] }[]
+  /** The next QQ QR sign-in's scripted poll answers, consumed by the attempt the panel starts. */
+  qqPolls: string[]
+  /** The QQ QR sign-in attempts the fake host started, newest last, with the answers left for each. */
+  qqLogins: { loginId: string; polls: string[] }[]
 }
 export let server: PanelServer
 
@@ -552,7 +556,7 @@ function initial(): PanelServer {
     sourceExec: { feishu: { working: 1, queued: 1, waiting: 0 } },
     ticketSources: { t1: 'feishu', t0: 'feishu', t4: 'feishu' },
     dropped: [], failing: [], artifacts: [], artifactDetails: {}, artifactFiles: {}, downloads: [],
-    wechatPolls: [], wechatLogins: [], wechatAccounts: {}, dingtalkPolls: [], dingtalkLogins: [],
+    wechatPolls: [], wechatLogins: [], wechatAccounts: {}, dingtalkPolls: [], dingtalkLogins: [], qqPolls: [], qqLogins: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null, problems: {},
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -688,6 +692,29 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     }
     return { status: status as 'waiting' | 'expired' | 'failed',
       ...status === 'failed' ? { error: 'DingTalk refused the QR sign-in' } : {} }
+  } },
+  // QQ QR sign-in: scripted poll answers; `confirmed` creates the account as the host does, never returning its secret.
+  'POST sources/qq/login': { answer: () => {
+    const loginId = `qq-login-${server.qqLogins.length + 1}`
+    server.qqLogins.push({ loginId, polls: [...server.qqPolls] })
+    server.qqPolls = []
+    return { loginId, qrImage: 'data:image/png;base64,cXE=', expiresAt: '2026-11-26T00:05:00.000Z' }
+  } },
+  'GET sources/qq/login/:loginId': { answer: ({ params }) => {
+    const login = server.qqLogins.filter(item => item.loginId === params.loginId).at(-1)
+    if (!login) return { status: 'expired' as const }
+    const status = login.polls.shift() ?? 'waiting'
+    if (status === 'confirmed') {
+      let id = 'qq'
+      for (let index = 2; server.settings.sources[id]; index += 1) id = `qq-${index}`
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [id]: { kind: 'qq', enabled: true,
+        config: { appId: 'qq-app-1', appSecret: 'qq-secret-1', sandbox: false, allowedUserIds: 'qq-openid-1' },
+        label: 'QQ（扫码）' } } }
+      server.revisions[`source:${id}`] = 1
+      return { status: 'confirmed' as const, sourceId: id }
+    }
+    return { status: status as 'waiting' | 'expired' | 'failed',
+      ...status === 'failed' ? { error: 'QQ refused the QR bind' } : {} }
   } },
   'GET projects': { query: ['status'], answer: ({ query }) => projectRows(query.status === 'archived' ? 'archived' : 'active') },
   'GET projects/:id': { answer: ({ params }) => projectDetailOf(params.id) ?? refuse(404, 'Unknown Project',

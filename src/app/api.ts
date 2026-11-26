@@ -52,6 +52,22 @@ export interface DingtalkLoginPoll {
   sourceId?: string
   error?: string
 }
+/** The states one QQ QR sign-in attempt moves through, as the panel polls them. */
+export type QqLoginStatus = 'waiting' | 'confirmed' | 'expired' | 'failed'
+/** What starting a QQ QR sign-in returns the panel: the attempt to poll and the QR image to show. */
+export interface QqLoginStart {
+  loginId: string
+  /** A PNG data URL of QQ's connect page. */
+  qrImage: string
+  /** When the attempt stops being usable, as an ISO time. */
+  expiresAt: string
+}
+/** One poll of a QQ QR sign-in attempt: its state and, once confirmed, the created Source instance (never a secret). */
+export interface QqLoginPoll {
+  status: QqLoginStatus
+  sourceId?: string
+  error?: string
+}
 /**
  * A person's answer to a Trigger's Project question: an existing Project, a new one (a station, or one temporary `adhoc`
  * task), or the assessment's proposal confirmed.
@@ -88,6 +104,9 @@ export interface Api {
   /** The DingTalk QR sign-in that creates an account: no instance id exists yet when it starts. */
   'POST sources/dingtalk/login': { response: DingtalkLoginStart }
   'GET sources/dingtalk/login/:loginId': { response: DingtalkLoginPoll }
+  /** The QQ QR sign-in that binds (or creates) a bot and creates its account: installation-wide, like DingTalk's. */
+  'POST sources/qq/login': { response: QqLoginStart }
+  'GET sources/qq/login/:loginId': { response: QqLoginPoll }
   'POST sources': { body: NewSource; response: { id: string; revision: number; restarting: boolean } }
   'PATCH sources/:id': { body: SourcePatch; response: { revision: number; restarting: boolean } }
   /** Removes a Source instance's configuration; its historical Tickets stay readable. */
