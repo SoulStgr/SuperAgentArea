@@ -115,16 +115,19 @@ export function SegmentedTabs<V extends string>({ items, value, onChange, label,
   </div>
 }
 export function SegmentedControl<V extends string>({ options, value, onChange, label, disabled, className }: {
-  options: readonly { value: V; label: string; title?: string }[]; value: V; onChange: (next: V) => void; label: string; disabled?: boolean
-  className?: string
+  options: readonly { value: V; label: string; title?: string; disabled?: boolean }[]; value: V; onChange: (next: V) => void
+  label: string; disabled?: boolean; className?: string
 }) {
+  // A disabled option can be neither clicked nor reached by the arrow keys; it still shows its label and title.
+  const skipped = (option: { disabled?: boolean } | undefined): boolean => disabled === true || option?.disabled === true
+  const change = (next: V): void => { if (next !== value && !skipped(options.find(option => option.value === next))) onChange(next) }
   return <div role="tablist" aria-label={label} className={cx('dt-segmented', className)}
     style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
-    onKeyDown={event => { if (!disabled) walk(event, options.map(option => option.value), value, onChange) }}>
+    onKeyDown={event => { if (!disabled) walk(event, options.map(option => option.value), value, change) }}>
     {options.map(option => <button key={option.value} type="button" role="tab" aria-selected={option.value === value}
       tabIndex={option.value === value ? 0 : -1}
-      title={option.title} disabled={disabled} className="dt-segment"
-        onClick={() => { if (option.value !== value) onChange(option.value) }}>{option.label}</button>)}
+      title={option.title} disabled={skipped(option)} className="dt-segment"
+        onClick={() => change(option.value)}>{option.label}</button>)}
   </div>
 }
 

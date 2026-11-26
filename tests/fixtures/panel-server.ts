@@ -190,6 +190,10 @@ export interface PanelServer {
   wechatLogins: { instance: string; loginId: string; polls: string[] }[]
   /** Each signed-in WeChat instance's account id and sign-in time, as the status route reports them (never a token). */
   wechatAccounts: Record<string, { ilinkBotId: string; at: string }>
+  /** The next DingTalk QR sign-in's scripted poll answers, consumed by the attempt the panel starts. */
+  dingtalkPolls: string[]
+  /** The DingTalk QR sign-in attempts the fake host started, newest last, with the answers left for each. */
+  dingtalkLogins: { loginId: string; polls: string[] }[]
 }
 export let server: PanelServer
 
@@ -548,7 +552,7 @@ function initial(): PanelServer {
     sourceExec: { feishu: { working: 1, queued: 1, waiting: 0 } },
     ticketSources: { t1: 'feishu', t0: 'feishu', t4: 'feishu' },
     dropped: [], failing: [], artifacts: [], artifactDetails: {}, artifactFiles: {}, downloads: [],
-    wechatPolls: [], wechatLogins: [], wechatAccounts: {},
+    wechatPolls: [], wechatLogins: [], wechatAccounts: {}, dingtalkPolls: [], dingtalkLogins: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null, problems: {},
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -662,6 +666,28 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET sources/:id/wechat/status': { answer: ({ params }) => {
     const account = server.wechatAccounts[params.id]
     return account ? { loggedIn: true, ...account } : { loggedIn: false }
+  } },
+  // DingTalk QR sign-in: scripted poll answers; `confirmed` creates the account as the host does, never returning its secret.
+  'POST sources/dingtalk/login': { answer: () => {
+    const loginId = `dingtalk-login-${server.dingtalkLogins.length + 1}`
+    server.dingtalkLogins.push({ loginId, polls: [...server.dingtalkPolls] })
+    server.dingtalkPolls = []
+    return { loginId, qrImage: 'data:image/png;base64,ZGluZ3RhbGs=', expiresAt: '2026-11-26T00:10:00.000Z' }
+  } },
+  'GET sources/dingtalk/login/:loginId': { answer: ({ params }) => {
+    const login = server.dingtalkLogins.filter(item => item.loginId === params.loginId).at(-1)
+    if (!login) return { status: 'expired' as const }
+    const status = login.polls.shift() ?? 'waiting'
+    if (status === 'confirmed') {
+      let id = 'dingtalk'
+      for (let index = 2; server.settings.sources[id]; index += 1) id = `dingtalk-${index}`
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [id]: { kind: 'dingtalk', enabled: true,
+        config: { clientId: 'ding-client', clientSecret: 'ding-secret', robotCode: 'ding-client' }, label: '钉钉（扫码）' } } }
+      server.revisions[`source:${id}`] = 1
+      return { status: 'confirmed' as const, sourceId: id }
+    }
+    return { status: status as 'waiting' | 'expired' | 'failed',
+      ...status === 'failed' ? { error: 'DingTalk refused the QR sign-in' } : {} }
   } },
   'GET projects': { query: ['status'], answer: ({ query }) => projectRows(query.status === 'archived' ? 'archived' : 'active') },
   'GET projects/:id': { answer: ({ params }) => projectDetailOf(params.id) ?? refuse(404, 'Unknown Project',

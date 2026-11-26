@@ -11,6 +11,7 @@ import { SettingsSchema } from '../src/policy.ts'
 import { SetupError } from '../src/setup.ts'
 import { UserError, type ArtifactRecord, type ProjectRecord, type Ticket, type Trigger } from '../src/core/index.ts'
 import { clearWeixinLogins, weixinToken } from '../src/sources/im/weixin-login.ts'
+import { clearDingtalkLogins } from '../src/sources/im/dingtalk-login.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -318,12 +319,16 @@ it('serves the artifact index and one artifact\'s chain, and downloads a file on
 it('runs a WeChat QR sign-in through its routes and keeps the token out of every response', async () => {
   clearWeixinLogins()
   const saved = new Map<string, unknown>()
-  // iLink over a fake fetch: one QR token, then the statuses the test scripted.
+  // iLink over a fake fetch: one QR token, a PNG answer for the trusted image URL, then the statuses the test scripted.
   const statuses = ['wait', 'confirmed']
   const fetchImpl = (async (input: URL | string): Promise<Response> => {
     if (String(input).includes('get_bot_qrcode')) {
       return new Response(JSON.stringify({ qrcode: 'qr-1', qrcode_img_content: 'https://weixin.qq.com/qr.png' }),
         { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (String(input).endsWith('/qr.png')) {
+      return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]), { status: 200,
+        headers: { 'content-type': 'image/png' } })
     }
     const status = statuses.shift() ?? 'wait'
     const body = status === 'confirmed'
@@ -342,7 +347,8 @@ it('runs a WeChat QR sign-in through its routes and keeps the token out of every
     // Not signed in at first; starting returns the QR image and an attempt id.
     expect(await call('GET', 'sources/wechat:ops/wechat/status')).toEqual({ status: 200, body: { loggedIn: false } })
     const started = await call('POST', 'sources/wechat:ops/wechat/login')
-    expect(started).toMatchObject({ status: 200, body: { qrImage: 'https://weixin.qq.com/qr.png' } })
+    // The QR content is a trusted WeChat URL, but its answer is not an image here, so the host renders the code itself.
+    expect((started.body as { qrImage: string }).qrImage).toMatch(/^data:image\/png;base64,/)
     const loginId = (started.body as { loginId: string }).loginId
     expect(typeof loginId).toBe('string')
     // The background poll confirms; the token goes to the instance's KV record, and the responses carry the account id only.
@@ -375,6 +381,78 @@ it('runs a WeChat QR sign-in through its routes and keeps the token out of every
       body: { error: 'The Source is not a WeChat instance' } })
   } finally {
     clearWeixinLogins()
+    vi.unstubAllGlobals()
+  }
+})
+
+it('starts a DingTalk QR scan, creates the account on confirmation and never returns its secret', async () => {
+  clearDingtalkLogins()
+  let polls = 0
+  const calls: string[] = []
+  // DingTalk's registration over a fake fetch: init and begin, then one WAITING poll and the provisioned credentials.
+  const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200,
+    headers: { 'content-type': 'application/json' } })
+  const fetchImpl = (async (input: URL | string, init?: RequestInit): Promise<Response> => {
+    const url = String(input)
+    calls.push(`${init?.method ?? 'GET'} ${url}`)
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error' })
+    if (url.endsWith('/app/registration/init')) return json({ errcode: 0, nonce: 'nonce-1' })
+    if (url.endsWith('/app/registration/begin')) return json({ errcode: 0, device_code: 'dev-1',
+      verification_uri_complete: 'https://login.dingtalk.com/oauth2/auth?x=1', interval: 0.05, expires_in: 600 })
+    polls += 1
+    return json(polls === 1 ? { errcode: 0, status: 'WAITING' }
+      : { errcode: 0, status: 'SUCCESS', client_id: 'ding-client', client_secret: 'ding-secret' })
+  }) as typeof fetch
+  vi.stubGlobal('fetch', fetchImpl)
+  try {
+    const added: { id: string; kind: string; label?: string; config: Record<string, unknown> }[] = []
+    let settings = SettingsSchema.parse({})
+    const call = serve({
+      store: { settings: () => settings, blockRevision: () => 0 },
+      sources: { kind: (id: string) => id === 'dingtalk' ? { kind: 'dingtalk' } : undefined },
+      settings: { add: async (request: { id: string; kind: string; label?: string; config: Record<string, unknown> }) => {
+        added.push(request)
+        settings = SettingsSchema.parse({ ...settings, sources: { ...settings.sources, [request.id]: { kind: request.kind,
+          enabled: true, config: request.config, ...request.label ? { label: request.label } : {} } } })
+        return { revision: 1, restarting: false }
+      } },
+    })
+    const started = await call('POST', 'sources/dingtalk/login')
+    expect(started).toMatchObject({ status: 200, body: { loginId: expect.any(String), expiresAt: expect.any(String) } })
+    expect((started.body as { qrImage: string }).qrImage).toMatch(/^data:image\/png;base64,/)
+    const loginId = (started.body as { loginId: string }).loginId
+    // The background poll confirms; the account is created enabled with the scanned AppKey as its Robot Code.
+    await vi.waitFor(async () => {
+      expect(await call('GET', `sources/dingtalk/login/${loginId}`))
+        .toMatchObject({ status: 200, body: { status: 'confirmed', sourceId: 'dingtalk' } })
+    }, { timeout: 5_000 })
+    expect(added).toEqual([{ id: 'dingtalk', kind: 'dingtalk', label: '钉钉（扫码）',
+      config: { clientId: 'ding-client', clientSecret: 'ding-secret', robotCode: 'ding-client' } }])
+    // No response carries the secret, and only DingTalk's own registration endpoints were called.
+    for (const answer of [started, await call('GET', `sources/dingtalk/login/${loginId}`)]) {
+      expect(JSON.stringify(answer.body)).not.toContain('ding-secret')
+    }
+    expect(calls.filter(url => /registration\/(init|begin|poll)$/.test(url))).toHaveLength(4)
+    expect(calls.every(url => url.includes('https://oapi.dingtalk.com/app/registration/'))).toBe(true)
+    // A later scan takes the next free id, and an unknown attempt reads as expired.
+    settings = SettingsSchema.parse({ sources: { dingtalk: { kind: 'dingtalk', enabled: true,
+      config: { clientId: 'old', clientSecret: 'old-secret', robotCode: 'old' } } } })
+    polls = 1
+    const second = await call('POST', 'sources/dingtalk/login')
+    await vi.waitFor(async () => {
+      expect(await call('GET', `sources/dingtalk/login/${(second.body as { loginId: string }).loginId}`))
+        .toMatchObject({ status: 200, body: { status: 'confirmed', sourceId: 'dingtalk-2' } })
+    })
+    expect(added.at(-1)).toMatchObject({ id: 'dingtalk-2' })
+    expect(await call('GET', 'sources/dingtalk/login/unknown')).toEqual({ status: 200, body: { status: 'expired' } })
+    // The scan routes keep the same-origin check, and only an installation with the DingTalk kind can start one.
+    expect((await call.raw('POST', 'sources/dingtalk/login', undefined, { 'x-orchestrator-request': undefined })).status)
+      .toBe(403)
+    const missing = serve({ store: { settings: () => SettingsSchema.parse({}) }, sources: { kind: () => undefined } })
+    expect(await missing('POST', 'sources/dingtalk/login')).toMatchObject({ status: 400,
+      body: { code: 'sourceNotInstalled', values: { source: 'dingtalk' } } })
+  } finally {
+    clearDingtalkLogins()
     vi.unstubAllGlobals()
   }
 })

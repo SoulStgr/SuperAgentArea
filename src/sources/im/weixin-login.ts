@@ -5,8 +5,10 @@
  * An attempt lives five minutes, holds only the public QR token and the status the panel polls, and is replaced by the
  * next attempt of the same instance. On `confirmed` the poll writes the bot token to the instance's KV record
  * (`weixin.token:<instance>` as `{token, ilinkBotId, at}`) and stops; the token is never returned to the panel, logged or
- * put in a health detail. The QR image is the HTTPS image URL iLink returns when it returns one, and a locally rendered
- * PNG data URL otherwise (the public `qrcode` package), so the panel never loads a third-party page as an image.
+ * put in a health detail. The panel always receives a PNG data URL: `data:image/*` content is passed through, a trusted
+ * HTTPS WeChat URL is fetched by the server and turned into a data URL when it answers an image (no redirect, 5 s, at most
+ * 1 MiB), and any other content — including a trusted URL that answers a landing page — is rendered with the public
+ * `qrcode` package, so the panel never loads a third-party page as an image.
  *
  * Protocol details adapted from dsh-im (MIT, Copyright (c) 2026 xmanrui, upstream 5.10.0), files
  * `src/channels/weixin/weixin-controller.mjs` (the attempt lifecycle, `confirmed` credentials) and
@@ -30,12 +32,16 @@ export interface WeixinCredential {
 export const weixinToken = family<WeixinCredential, [instance: string]>('weixin.token:')
 /** How long one login attempt may stay open; the QR code stops being scanned after five minutes. */
 export const WEIXIN_LOGIN_TTL_MS = 5 * 60_000
+/** The largest QR image a trusted WeChat URL may answer with; a larger answer is rendered as text instead. */
+export const WEIXIN_QR_IMAGE_BYTES = 1024 * 1024
+/** How long the server spends fetching one trusted QR image URL before rendering the content as text instead. */
+const WEIXIN_QR_IMAGE_TIMEOUT_MS = 5_000
 /** The state the panel polls for: the same states iLink reports, plus `failed` for an unusable answer. */
 export type WeixinLoginStatus = WeixinLoginState
 /** What starting a sign-in returns the panel: the attempt to poll and the QR image to show. */
 export interface WeixinLoginStartView {
   loginId: string
-  /** A data URL or an HTTPS WeChat image URL; never a third-party page. */
+  /** A PNG data URL; never an HTTPS URL of a page the panel would load as an image. */
   qrImage: string
 }
 /** What one poll of a sign-in returns the panel. */
@@ -74,6 +80,36 @@ export async function renderWeixinQrImage(content: string): Promise<string> {
   const module = await import('qrcode') as { toDataURL(text: string, options?: { errorCorrectionLevel?: 'L' | 'M' | 'Q' | 'H'
     margin?: number; width?: number }): Promise<string> }
   return module.toDataURL(content, { errorCorrectionLevel: 'M', margin: 1, width: 320 })
+}
+/** The image MIME type an answer's Content-Type names, without parameters; empty when it is missing or not an image. */
+function imageMimeOf(value: string | null): string {
+  const text = (value ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  return /^image\/[a-z0-9.+-]+$/.test(text) ? text : ''
+}
+/** Reads a response body of at most `maxBytes`, or undefined as soon as it is larger; the rest of a large body is cancelled. */
+async function readBounded(response: Response, maxBytes: number): Promise<Buffer | undefined> {
+  const body = response.body
+  if (!body) return undefined
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {})
+        return undefined
+      }
+      chunks.push(value)
+    }
+  } catch {
+    return undefined
+  } finally {
+    try { reader.releaseLock() } catch { /* A cancelled stream is already released. */ }
+  }
+  return Buffer.concat(chunks, total)
 }
 /**
  * One installation's login attempts, by attempt id, with only the latest attempt of each instance kept as its own. An
@@ -193,15 +229,39 @@ export class WeixinLoginManager {
       session.error = weixinFailureText(error)
     }
   }
-  /** The image the panel shows for one QR answer: a trusted image URL, a data URL as sent, or a rendered PNG data URL. */
+  /** The image the panel shows for one QR answer: a data URL as sent, a fetched trusted image URL as a data URL, or a rendered PNG. */
   private async qrImageOf(content: string): Promise<string> {
     const text = typeof content === 'string' ? content.trim() : ''
     if (!text) throw new WeixinApiError('invalid-response', 'WeChat returned no QR image')
     if (/^data:image\//i.test(text)) return text
-    const trusted = trustedWeixinUrl(text)
-    if (trusted) return trusted
     const render = this.options.renderQr ?? renderWeixinQrImage
-    return render(text)
+    const trusted = trustedWeixinUrl(text)
+    if (!trusted) return render(text)
+    // A trusted URL that answers an image becomes a data URL; one that answers a landing page is rendered as its own text,
+    // because a third-party page must never be loaded by the panel as the image.
+    return await this.downloadQrImage(trusted) ?? render(text)
+  }
+  /** The data URL of a trusted WeChat URL's image answer, or undefined when it answered anything else or failed. */
+  private async downloadQrImage(url: string): Promise<string | undefined> {
+    const { fetchImpl = fetch } = this.options
+    const timeout = AbortSignal.timeout(WEIXIN_QR_IMAGE_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetchImpl(url, { method: 'GET', redirect: 'error', signal: timeout })
+    } catch {
+      return undefined
+    }
+    try {
+      if (!response.ok) return undefined
+      const mime = imageMimeOf(response.headers.get('content-type'))
+      if (!mime) return undefined
+      const declared = Number(response.headers.get('content-length'))
+      if (Number.isFinite(declared) && declared > WEIXIN_QR_IMAGE_BYTES) return undefined
+      const data = await readBounded(response, WEIXIN_QR_IMAGE_BYTES)
+      return data?.length ? `data:${mime};base64,${data.toString('base64')}` : undefined
+    } finally {
+      await response.body?.cancel().catch(() => {})
+    }
   }
 }
 /** The installation's login attempts; the management routes and the plugin's entry share it. */

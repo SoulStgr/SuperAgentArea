@@ -5,10 +5,10 @@
 The DingTalk, QQ and WeChat Sources of this repository adapt protocol details from **dsh-im**, Copyright (c) 2026 xmanrui,
 upstream version **5.10.0** (`https://github.com/xmanrui/dsh-im`), under the MIT License reprinted below. No part of
 dsh-im is imported as a runtime dependency: the adapted code lives in `src/sources/im/dingtalk-transport.ts`,
-`src/sources/im/qq-transport.ts`, `src/sources/im/weixin-transport.ts` and `src/sources/im/weixin-login.ts`, and each
-speaks the same wire protocol through this repository's own Source adapter. Only the connection and protocol layer was
-adapted; the bridge, controller, command, approval, workspace and deferred-delivery logic of dsh-im was neither copied nor
-ported.
+`src/sources/im/dingtalk-device-auth.ts`, `src/sources/im/dingtalk-login.ts`, `src/sources/im/qq-transport.ts`,
+`src/sources/im/weixin-transport.ts` and `src/sources/im/weixin-login.ts`, and each speaks the same wire protocol through
+this repository's own Source adapter. Only the connection, protocol and sign-in layer was adapted; the bridge, controller,
+command, approval, workspace and deferred-delivery logic of dsh-im was neither copied nor ported.
 
 ### DingTalk
 
@@ -18,6 +18,7 @@ ported.
 | `src/channels/dingtalk/dingtalk-api.mjs` | `src/sources/im/dingtalk-transport.ts` (`dingtalkAccessToken`, `sendDingtalkWebhook`, `sendDingtalkRobot`, `sendDingtalkAttachment`, `uploadDingtalkMedia`, `dingtalkMediaMessage`, `downloadDingtalkAttachment`, `normalizeDingtalkCallback`, `normalizeDingtalkSessionWebhook`, `splitDingtalkText`, `DingtalkApiError`) | The OAuth2 access-token request and cache, the `sessionWebhook` text reply with DingTalk's native `at` field, the robot `groupMessages/send` and `oToMessages/batchSend` text payloads, the media-upload-plus-send path for a reply's files (`POST https://oapi.dingtalk.com/media/upload` with the access token in the query and the bytes in a multipart `media` field, then a robot message with `msgKey`/`msgParam` — `sampleFile` with `{ mediaId, fileName, fileType }`, `sampleImageMsg` with `{ photoURL: mediaId }`; this repository adds the Trigger-only route check, the per-reply count and size limits and its own failure counting), the callback field names (`msgId`, `senderStaffId`, `senderNick`, `conversationId`, `conversationType`, `isInAtList`, `sessionWebhook`, `sessionWebhookExpiredTime`, `robotCode`, `chatbotUserId`), the `messageFiles/download` request that turns an attachment's download code into a signed file URL and the bounded attachment `GET` (this repository adds its own HTTPS-only DingTalk/CDN host check, 30 s timeout and 20 MiB cap), trusted-reply-URL checks, text splitting and failure classification |
 | `src/channels/dingtalk/dingtalk-bridge.mjs` | `src/sources/im/dingtalk-transport.ts` (`normalizeDingtalkCallback`, `trustedDingtalkDownloadUrl`, `DingtalkAttachmentRef`) and `src/sources/dingtalk.ts` (`saveDingtalkAttachments`, `dingtalkTrigger`) | The attachment references of a callback: `downloadCode`/`pictureDownloadCode` for a picture, a file's `downloadCode` and `fileName`, the rich-text picture entries and text entries, and the rule that a callback naming an attachment becomes a message rather than a non-text skip. The saving layout under the state directory, the path and file-name sanitization, the size and count limits, the Trigger text lines and `meta.attachments` are this repository's own |
 | `src/channels/dingtalk/dingtalk-menu.mjs` | — (read only) | Read for the callback envelope shape and card topic; AI Cards, menus and streaming updates are deliberately **not** part of this adaptation |
+| `src/channels/dingtalk/device-auth.mjs` | `src/sources/im/dingtalk-device-auth.ts` (`DingtalkDeviceAuth`), `src/sources/im/dingtalk-login.ts` (`DingtalkLoginManager`) and `src/app/http.ts` (`POST sources/dingtalk/login`, `GET sources/dingtalk/login/:loginId`) | The QR device-registration flow: `POST /app/registration/init` with `{ source: 'DING_DWS_CLAW' }` answering a nonce, `POST /app/registration/begin` with `{ nonce }` answering `device_code`, `verification_uri_complete`, `verification_uri`, `user_code`, `interval` and `expires_in`, and `POST /app/registration/poll` with `{ device_code }` answering `WAITING`/`SUCCESS`/`FAIL`/`EXPIRED` plus `client_id`/`client_secret` on success. This repository keeps only start and poll, adds its own one-at-a-time ten-minute attempt, QR rendering with the public `qrcode` package, and the account creation that stores the provisioned Client ID and Secret in its own settings; the secret never leaves the host |
 
 Not adapted and not copied: the session, command, approval and delivery parts of `dingtalk-bridge.mjs`, `dingtalk-controller.mjs`,
 `dingtalk-card-stream.mjs`, `config-store.mjs`, `state-store.mjs`, and every file under `src/channels/shared/`. Session binding,
@@ -81,9 +82,10 @@ SOFTWARE.
 ## qrcode — npm dependency
 
 `qrcode` 1.5.4 (MIT License, Copyright the qrcode contributors) is installed from npm as a normal dependency and is not
-copied into this repository. Its own package carries its license. The WeChat Source renders a QR code as a PNG data URL
-with it when iLink returns QR content that is not already an image URL; the dependency is loaded lazily and is not part of
-the panel bundle.
+copied into this repository. Its own package carries its license. That package renders a QR code as a PNG data URL: the
+WeChat Source renders QR content that is not already a trusted image answer, and the DingTalk Source renders the
+`verification_uri_complete` of its device registration; the dependency is loaded lazily and is not part of the panel
+bundle.
 
 ## dingtalk-stream — npm dependency
 

@@ -21,7 +21,7 @@ export type WechatLoginStatus = 'wait' | 'scaned' | 'confirmed' | 'expired' | 'f
 /** What starting a WeChat QR sign-in returns the panel: the attempt to poll and the QR image to show. */
 export interface WechatLoginStart {
   loginId: string
-  /** A data URL or an HTTPS WeChat image URL. */
+  /** A PNG data URL. */
   qrImage: string
 }
 /** One poll of a WeChat QR sign-in attempt: its state, and the account id once confirmed (never a token). */
@@ -35,6 +35,22 @@ export interface WechatAccountStatus {
   loggedIn: boolean
   ilinkBotId?: string
   at?: string
+}
+/** The states one DingTalk QR sign-in attempt moves through, as the panel polls them. */
+export type DingtalkLoginStatus = 'waiting' | 'confirmed' | 'expired' | 'failed'
+/** What starting a DingTalk QR sign-in returns the panel: the attempt to poll and the QR image to show. */
+export interface DingtalkLoginStart {
+  loginId: string
+  /** A PNG data URL of the address a person scans. */
+  qrImage: string
+  /** When the attempt stops being usable, as an ISO time. */
+  expiresAt: string
+}
+/** One poll of a DingTalk QR sign-in attempt: its state and, once confirmed, the created Source instance (never a secret). */
+export interface DingtalkLoginPoll {
+  status: DingtalkLoginStatus
+  sourceId?: string
+  error?: string
 }
 /**
  * A person's answer to a Trigger's Project question: an existing Project, a new one (a station, or one temporary `adhoc`
@@ -69,6 +85,9 @@ export interface Api {
   'POST sources/:id/wechat/login': { response: WechatLoginStart }
   'GET sources/:id/wechat/login/:loginId': { response: WechatLoginPoll }
   'GET sources/:id/wechat/status': { response: WechatAccountStatus }
+  /** The DingTalk QR sign-in that creates an account: no instance id exists yet when it starts. */
+  'POST sources/dingtalk/login': { response: DingtalkLoginStart }
+  'GET sources/dingtalk/login/:loginId': { response: DingtalkLoginPoll }
   'POST sources': { body: NewSource; response: { id: string; revision: number; restarting: boolean } }
   'PATCH sources/:id': { body: SourcePatch; response: { revision: number; restarting: boolean } }
   /** Removes a Source instance's configuration; its historical Tickets stay readable. */

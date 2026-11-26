@@ -243,6 +243,75 @@ it('adds a WeChat account without blocking on its sign-in, and says to scan its 
     .toContain(zh.sourceWechatLoginHintAfterSave)
 })
 
+it('creates a DingTalk account by QR scan: starts, shows the code, polls and lists the created account', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  onTestFinished(() => { vi.useRealTimers() })
+  server.dingtalkPolls = ['waiting', 'confirmed']
+  await mount()
+  await select_kind('钉钉')
+  await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
+  // The dialog opens on the scan tab, which asks the person to start the device sign-in explicitly.
+  expect(dialog().textContent).toContain(zh.sourceDingtalkScanHint)
+  expect(all('[role="dialog"] [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceScanTab, zh.sourceManualTab])
+  await click(find(zh.sourceDingtalkScanStart, '[role="dialog"] button'))
+  expect(server.requests.find(request => request.path === 'sources/dingtalk/login')).toMatchObject({ method: 'POST' })
+  expect(dialog().querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,ZGluZ3RhbGs=')
+  // The dialog polls every two seconds: waiting for the scan, then the host has created the account.
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(dialog().textContent).toContain(zh.sourceDingtalkWaiting)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceDingtalkConnected)
+  await vi.waitFor(() => expect(all('.dt-source-account')).toHaveLength(1))
+  expect(all('.dt-source-account')[0]!.textContent).toContain('钉钉（扫码）')
+  expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceAccountOn)
+  expect(server.settings.sources.dingtalk).toMatchObject({ kind: 'dingtalk', enabled: true,
+    config: { clientId: 'ding-client', robotCode: 'ding-client' } })
+})
+
+it('adds a DingTalk account by hand, with the create-bot entry and steps beside its three credentials', async () => {
+  await mount()
+  await select_kind('钉钉')
+  await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
+  await click(find(zh.sourceManualTab, '[role="dialog"] [role="tab"]'))
+  // The manual tab links the DingTalk open platform and lists the steps that produce the three fields.
+  expect(dialog().querySelector('a[href="https://open.dingtalk.com/"]')).toBeTruthy()
+  expect(dialog().textContent).toContain(zh.sourceDingtalkCreateStepApp)
+  expect(dialog().textContent).toContain(zh.sourceDingtalkCreateStepRobot)
+  expect(dialog().textContent).toContain(zh.sourceDingtalkCreateStepCredentials)
+  await type(field<HTMLInputElement>('Client ID（AppKey）'), 'ding-client')
+  await type(field<HTMLInputElement>('Client Secret（AppSecret）'), 'ding-secret')
+  await type(field<HTMLInputElement>('Robot Code'), 'ding-robot')
+  await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
+  expect(server.settings.sources.dingtalk).toMatchObject({ kind: 'dingtalk', config: { clientId: 'ding-client',
+    clientSecret: 'ding-secret', robotCode: 'ding-robot' } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', '钉钉'))
+})
+
+it('offers QQ a disabled scan tab with its explanation, and still creates the account from the manual form', async () => {
+  await mount()
+  await select_kind('QQ')
+  await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
+  const tabs = all('[role="dialog"] [role="tab"]')
+  expect(tabs.map(item => item.textContent)).toEqual([zh.sourceQqScanTab, zh.sourceManualTab])
+  expect((tabs[0] as HTMLButtonElement).disabled).toBe(true)
+  // The scan tab cannot be chosen; its explanation and the manual path's entry link and steps are shown instead.
+  expect(dialog().textContent).toContain(zh.sourceQqScanPending)
+  expect(dialog().querySelector('a[href="https://q.qq.com/"]')).toBeTruthy()
+  expect(dialog().textContent).toContain(zh.sourceQqCreateStepBot)
+  expect(dialog().textContent).toContain(zh.sourceQqCreateStepCredentials)
+  expect(dialog().textContent).toContain(zh.sourceQqCreateStepSandbox)
+  await click(tabs[0]!)
+  expect((all('[role="dialog"] [role="tab"]')[1]!).getAttribute('aria-selected')).toBe('true')
+  await type(field<HTMLInputElement>(zh.sourceLabel), '客服 QQ')
+  await type(field<HTMLInputElement>('AppID'), 'qq-app-1')
+  await type(field<HTMLInputElement>('AppSecret'), 'qq-secret-1')
+  await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
+  expect(server.settings.sources.qq).toMatchObject({ kind: 'qq', enabled: true,
+    config: { appId: 'qq-app-1', appSecret: 'qq-secret-1' } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', '客服 QQ'))
+})
+
 it('edits an account\'s own settings and switches it off from the Sources settings group', async () => {
   await mount()
   await open_group(zh['settingsGroup.sources'])

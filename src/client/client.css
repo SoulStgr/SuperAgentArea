@@ -396,6 +396,8 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-source-kpis { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; }
 .dt-source-unassigned { display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); }
 .dt-source-answer { display: flex; flex-direction: column; gap: 16px; }
+.dt-source-guide { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-interactive-bg-hover); }
+.dt-source-steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); }
 .dt-source-segments { margin: 4px 0; }
 .dt-source-governance { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; font-size: 12px; }
 .dt-governance { gap: 12px; }

@@ -5,7 +5,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
-import { usePoll, type SourceDetailView, type SourceKindRow, type SourceStatusRow, type WechatLoginPoll } from './api.ts'
+import { usePoll, type DingtalkLoginPoll, type DingtalkLoginStart, type SourceDetailView, type SourceKindRow,
+  type SourceStatusRow, type WechatLoginPoll } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag, type IconName } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { sourceMark } from './marks.ts'
@@ -13,7 +14,7 @@ import { usePanel, usePanelData } from './provider.tsx'
 import { governanceRoute, sourceRoute } from './route.ts'
 import { ConfigHistory, Fields, SourceField } from './settings-kit.tsx'
 import { errorText, localized, when, type T } from './text.ts'
-import { ConfirmButton, Hint, LoadState } from './widgets.tsx'
+import { ConfirmButton, ExternalLink, Hint, LoadState } from './widgets.tsx'
 
 /** The icon that stands for a Source type in the settings list and the add dialog. */
 const KIND_ICONS: Record<string, IconName> = { folder: 'inbox', github: 'hash', gitee: 'hash', feishu: 'message', wechat: 'message',
@@ -94,6 +95,106 @@ function AccountFields({ kind, keyText, labelText, config, onKey, onLabel, onCon
   </>
 }
 
+/** The steps and the link a person follows to create a DingTalk enterprise bot by hand. */
+function DingtalkCreateGuide() {
+  const { t } = usePanel()
+  return <div className="dt-source-guide">
+    <p className="dt-hint">{t('sourceDingtalkCreateHint')} <ExternalLink href="https://open.dingtalk.com/">
+      {t('sourceDingtalkOpenPlatform')}</ExternalLink></p>
+    <ol className="dt-source-steps">
+      <li>{t('sourceDingtalkCreateStepApp')}</li>
+      <li>{t('sourceDingtalkCreateStepRobot')}</li>
+      <li>{t('sourceDingtalkCreateStepCredentials')}</li>
+    </ol>
+  </div>
+}
+/** Why QQ's scan setup is not offered yet, and the steps and link of the manual path that replaces it. */
+function QqManualGuide() {
+  const { t } = usePanel()
+  return <div className="dt-source-guide">
+    <p className="dt-hint">{t('sourceQqScanPending')}</p>
+    <p className="dt-hint">{t('sourceQqCreateHint')} <ExternalLink href="https://q.qq.com/">
+      {t('sourceQqOpenPlatform')}</ExternalLink></p>
+    <ol className="dt-source-steps">
+      <li>{t('sourceQqCreateStepBot')}</li>
+      <li>{t('sourceQqCreateStepCredentials')}</li>
+      <li>{t('sourceQqCreateStepSandbox')}</li>
+    </ol>
+  </div>
+}
+/**
+ * One DingTalk QR sign-in inside the add-account dialog: the person asks to start, the panel shows the QR image and
+ * polls the attempt until an account is created, an attempt expires or it fails.
+ */
+function DingtalkScanConnect({ onConnected }: { onConnected: () => Promise<void> }) {
+  const { t, call, notify } = usePanel()
+  const [attempt, setAttempt] = useState<DingtalkLoginStart>()
+  const [status, setStatus] = useState<DingtalkLoginPoll['status']>('waiting')
+  const [error, setError] = useState<string>()
+  const [busy, setBusy] = useState(false)
+  // A repeated poll failure reports one toast; the dialog keeps the latest message inline.
+  const reported = useRef(false)
+  // The parent re-renders on its own polls, so the callbacks this panel finishes with are read through a ref.
+  const latest = useRef({ onConnected, notify, t })
+  latest.current = { onConnected, notify, t }
+  const start = useCallback(async () => {
+    setBusy(true); setError(undefined); setStatus('waiting'); setAttempt(undefined); reported.current = false
+    try { setAttempt(await call('POST sources/dingtalk/login')) }
+    catch (failure) {
+      setError(errorText(failure))
+      latest.current.notify(errorText(failure))
+      reported.current = true
+    } finally { setBusy(false) }
+  }, [call])
+  useEffect(() => {
+    if (!attempt) return
+    let active = true
+    let timer: ReturnType<typeof setInterval> | undefined
+    const poll = async () => {
+      try {
+        const result = await call('GET sources/dingtalk/login/:loginId', { loginId: attempt.loginId })
+        if (!active) return
+        setStatus(result.status)
+        if (result.error) setError(result.error)
+        if (result.status === 'confirmed') {
+          if (timer) clearInterval(timer)
+          latest.current.notify(latest.current.t('sourceDingtalkConnected'))
+          await latest.current.onConnected()
+        } else if (result.status === 'expired' || result.status === 'failed') {
+          if (timer) clearInterval(timer)
+        }
+      } catch (failure) {
+        if (!active) return
+        setError(errorText(failure))
+        if (!reported.current) { reported.current = true; latest.current.notify(errorText(failure)) }
+      }
+    }
+    timer = setInterval(() => { void poll() }, 2_000)
+    return () => { active = false; if (timer) clearInterval(timer) }
+  }, [attempt, call])
+  const retry = status === 'expired' || status === 'failed'
+  const message = status === 'confirmed' ? t('sourceDingtalkConnected')
+    : status === 'expired' ? t('sourceDingtalkExpired')
+      : status === 'failed' ? t('sourceDingtalkFailed', { error: error ?? '' })
+        : t('sourceDingtalkWaiting')
+  return <>
+    <p className="dt-hint">{t('sourceDingtalkScanHint')}</p>
+    {attempt && <img className="dt-wechat-qr" src={attempt.qrImage} alt={t('sourceDingtalkQrAlt')} />}
+    {busy && <p className="dt-hint" role="status">{t('loading')}</p>}
+    {attempt && <p className={status === 'failed' ? 'dt-error' : 'dt-hint'} role="status">{message}</p>}
+    {!attempt && error && <p className="dt-error">{t('sourceDingtalkFailed', { error })}</p>}
+    <div className="dt-row-buttons">
+      {!attempt && <Button variant="primary" disabled={busy} onClick={() => { void start() }}>
+        {t('sourceDingtalkScanStart')}</Button>}
+      {retry && <Button variant="primary" disabled={busy} onClick={() => { void start() }}>
+        {t('sourceDingtalkRefresh')}</Button>}
+    </div>
+  </>
+}
+
+/** How a person adds an account of a kind that offers both ways: by scanning a QR code, or by typing its credentials. */
+type ConnectMode = 'scan' | 'manual'
+
 /** The dialog that adds one account to the chosen Source type. */
 function AddAccountDialog({ kind, open, onClose, onCreated }: {
   kind: SourceKindRow; open: boolean; onClose: () => void; onCreated: () => Promise<unknown>
@@ -103,9 +204,12 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
   const [label, setLabel] = useState('')
   const [config, setConfig] = useState<Record<string, unknown>>({})
   const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<ConnectMode>('manual')
+  // A kind that can create its bot by scanning opens on that tab; every other kind keeps the single manual form.
+  const connects = kind.kind === 'dingtalk' || kind.kind === 'qq'
   useEffect(() => {
     if (!open) return
-    setKey(''); setLabel(''); setConfig(kind.defaults)
+    setKey(''); setLabel(''); setConfig(kind.defaults); setMode(kind.kind === 'dingtalk' ? 'scan' : 'manual')
   }, [open, kind])
   const submit = async () => {
     setBusy(true)
@@ -123,11 +227,24 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
     title={`${t('sourceAddAccount')} · ${localized(t, kind.title)}`} closeLabel={t('close')}
     description={t('sourceAddAccountHint')} footer={<>
       <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
-      <Button variant="primary" disabled={busy} onClick={() => { void submit() }}>{t('sourceCreateAccount')}</Button>
+      {(!connects || mode === 'manual') && <Button variant="primary" disabled={busy}
+        onClick={() => { void submit() }}>{t('sourceCreateAccount')}</Button>}
     </>}>
     <div className="dt-source-answer">
       {kind.placeholder && <p className="dt-banner">{t('sourceComingSoonHint')}</p>}
-      <AccountFields kind={kind} keyText={key} labelText={label} config={config} onKey={setKey} onLabel={setLabel} onConfig={setConfig} />
+      {connects && <SegmentedControl className="dt-segmented" label={t('sourceConnectMode')} value={mode}
+        options={kind.kind === 'dingtalk'
+          ? [{ value: 'scan', label: t('sourceScanTab') }, { value: 'manual', label: t('sourceManualTab') }]
+          : [{ value: 'scan', label: t('sourceQqScanTab'), disabled: true }, { value: 'manual', label: t('sourceManualTab') }]}
+        onChange={setMode} />}
+      {kind.kind === 'dingtalk' && mode === 'scan'
+        ? <DingtalkScanConnect onConnected={async () => { await onCreated(); onClose() }} />
+        : <>
+          {kind.kind === 'qq' && <QqManualGuide />}
+          {kind.kind === 'dingtalk' && <DingtalkCreateGuide />}
+          <AccountFields kind={kind} keyText={key} labelText={label} config={config} onKey={setKey} onLabel={setLabel}
+            onConfig={setConfig} />
+        </>}
     </div>
   </Modal>
 }

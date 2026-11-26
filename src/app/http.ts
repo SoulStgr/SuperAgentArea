@@ -31,6 +31,7 @@ import { PROJECT_HISTORY, projectDecisionList, projectDetail, projectHistory, pr
 import { settingsView } from './views/settings.ts'
 import { sourceDetail, sourceKinds, sourcesStatus, type SetupState } from './views/sources.ts'
 import { weixinLogins, weixinToken } from '../sources/im/weixin-login.ts'
+import { dingtalkLogins } from '../sources/im/dingtalk-login.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
@@ -245,6 +246,21 @@ function routes(runtime: HttpHost): Routes {
     if (runtime.sources.kind(id)?.kind !== 'wechat') throw new RouteError(400, 'The Source is not a WeChat instance')
     return instance
   }
+  /**
+   * Creates the DingTalk Source instance one completed QR sign-in provisioned: the first free id under `dingtalk`, the
+   * scanned app's Client ID and Secret, and its AppKey as the Robot Code — DingTalk's own fallback when an app has no
+   * separately named robot code. The secret goes only into this installation's settings.
+   */
+  const createScannedDingtalk = async (credentials: { clientId: string; clientSecret: string }): Promise<string> => {
+    const kind = runtime.sources.kind('dingtalk')
+    if (!kind || kind.kind !== 'dingtalk') throw new UserError('sourceNotInstalled', { source: 'dingtalk' })
+    const taken = new Set(Object.keys(store.settings().sources))
+    let id = 'dingtalk'
+    for (let index = 2; taken.has(id); index += 1) id = `dingtalk-${index}`
+    await runtime.settings.add({ id, kind: 'dingtalk', label: '钉钉（扫码）',
+      config: { clientId: credentials.clientId, clientSecret: credentials.clientSecret, robotCode: credentials.clientId } })
+    return id
+  }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
@@ -306,6 +322,14 @@ function routes(runtime: HttpHost): Routes {
         ? { loggedIn: true, ilinkBotId: credential.ilinkBotId, at: credential.at }
         : { loggedIn: false }
     },
+    // DingTalk sign-in: a QR device registration that provisions an app's Client ID and Secret and creates its account.
+    // No instance exists when the attempt starts, so both routes are installation-wide; the responses never carry the secret.
+    'POST sources/dingtalk/login': () => {
+      const kind = runtime.sources.kind('dingtalk')
+      if (!kind || kind.kind !== 'dingtalk') throw new UserError('sourceNotInstalled', { source: 'dingtalk' })
+      return dingtalkLogins.start({ create: createScannedDingtalk })
+    },
+    'GET sources/dingtalk/login/:loginId': ({ params }) => dingtalkLogins.poll(params.loginId),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {

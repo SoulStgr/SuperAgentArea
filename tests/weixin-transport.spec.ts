@@ -12,20 +12,23 @@ import {
   unregisterWeixinCredential, WEIXIN_ATTACHMENT_BYTES, WEIXIN_PROTOCOL_VERSION, WEIXIN_REPLY_CHARS, WEIXIN_TEXT_CHARS,
   weixinAttachmentDownloadUrl, weixinClientId, weixinReplyTargetOf, WeixinApiError, type WeixinAttachmentRef,
 } from '../src/sources/im/weixin-transport.ts'
-import { renderWeixinQrImage, WeixinLoginManager, weixinToken, type WeixinCredential } from '../src/sources/im/weixin-login.ts'
+import { renderWeixinQrImage, WEIXIN_QR_IMAGE_BYTES, WeixinLoginManager, weixinToken,
+  type WeixinCredential } from '../src/sources/im/weixin-login.ts'
 
-interface FakeCall { url: string; method: string; headers: Record<string, string>; body: unknown }
-type Answer = { status?: number; body: unknown } | Error
+interface FakeCall { url: string; method: string; headers: Record<string, string>; body: unknown
+  redirect: RequestRedirect | undefined }
+type Answer = { status?: number; body: unknown } | { response: Response } | Error
 /** A fake fetch that records each call and answers from a callback; a thrown Error is a socket-level failure. */
 function fakeFetch(answer: (call: FakeCall) => Answer | Promise<Answer>): { fetchImpl: typeof fetch; calls: FakeCall[] } {
   const calls: FakeCall[] = []
   const fetchImpl = (async (input: URL | string, init?: RequestInit): Promise<Response> => {
     const call: FakeCall = { url: String(input), method: init?.method ?? 'GET',
       headers: { ...(init?.headers ?? {}) as Record<string, string> },
-      body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined }
+      body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined, redirect: init?.redirect }
     calls.push(call)
     const result = await answer(call)
     if (result instanceof Error) throw result
+    if ('response' in result) return result.response
     return new Response(JSON.stringify(result.body), { status: result.status ?? 200,
       headers: { 'content-type': 'application/json' } })
   }) as typeof fetch
@@ -41,9 +44,12 @@ const hangingFetch = (): typeof fetch => ((_url: URL | string, init?: RequestIni
 const credential = (overrides: Partial<WeixinCredential> = {}): WeixinCredential =>
   ({ token: 'bot-token-1', ilinkBotId: 'bot-1', at: '2026-11-26T00:00:00.000Z', ...overrides })
 
+/** A PNG answer for a trusted QR image URL, as iLink serves one; the test's assertions only need a data URL back. */
+const QR_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+const qrPngResponse = (): Response => new Response(new Uint8Array(QR_PNG), { status: 200,
+  headers: { 'content-type': 'image/png' } })
 /** The AES-128 key and fixture iLink encrypts an inbound attachment with; the tests use it locally, never a network. */
-const AES_KEY = Buffer.from('00112233445566778899aabbccddeeff', 'hex')
-/** Encrypts bytes as iLink does: AES-128-ECB with PKCS#7 padding, so the ciphertext is whole blocks. */
+const AES_KEY = Buffer.from('00112233445566778899aabbccddeeff', 'hex')/** Encrypts bytes as iLink does: AES-128-ECB with PKCS#7 padding, so the ciphertext is whole blocks. */
 function encryptAttachment(data: string | Buffer, key = AES_KEY): Buffer {
   const cipher = createCipheriv('aes-128-ecb', key, null)
   return Buffer.concat([cipher.update(Buffer.from(data)), cipher.final()])
@@ -362,14 +368,66 @@ describe('inbound attachments', () => {
   })
 })
 
+describe('the QR image the panel shows', () => {
+  /** A fake iLink whose QR content is `content`; a non-status GET answers `image`, or fails when it is `'network'`. */
+  function qrFetch(content: string, image?: () => Response | 'network'): { fetchImpl: typeof fetch; calls: FakeCall[] } {
+    return fakeFetch(call => {
+      if (call.url.includes('get_bot_qrcode')) return { body: { qrcode: 'qr-1', qrcode_img_content: content } }
+      if (call.url.includes('get_qrcode_status')) return { body: { status: 'wait' } }
+      if (image === undefined) return new Error('the QR content is not a URL')
+      const answer = image()
+      return answer === 'network' ? new Error('socket closed') : { response: answer }
+    })
+  }
+  /** Starts one attempt over `fetchImpl` and records what the QR renderer was asked to draw. */
+  async function start(fetchImpl: typeof fetch): Promise<{ qrImage: string; rendered: string[] }> {
+    const rendered: string[] = []
+    const manager = new WeixinLoginManager({ fetchImpl, pollIntervalMs: 1, pollTimeoutMs: 100,
+      renderQr: async content => { rendered.push(content); return `rendered:${content}` } })
+    try {
+      const started = await manager.start('wechat', { save: () => {} })
+      return { qrImage: started.qrImage, rendered }
+    } finally { manager.clear() }
+  }
+  it('fetches a trusted image URL once without following a redirect and returns it as a data URL', async () => {
+    const { fetchImpl, calls } = qrFetch('https://weixin.qq.com/qr.png', qrPngResponse)
+    const { qrImage, rendered } = await start(fetchImpl)
+    expect(qrImage).toBe(`data:image/png;base64,${QR_PNG.toString('base64')}`)
+    expect(rendered).toEqual([])
+    expect(calls.find(call => call.url === 'https://weixin.qq.com/qr.png')).toMatchObject({ method: 'GET', redirect: 'error' })
+  })
+  it('renders a trusted URL that answered a landing page instead of loading the page as an image', async () => {
+    const landing = 'https://weixin.qq.com/qr/landing'
+    const { fetchImpl, calls } = qrFetch(landing, () => new Response('<!doctype html><title>scan</title>', { status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' } }))
+    expect((await start(fetchImpl)).qrImage).toBe(`rendered:${landing}`)
+    expect(calls.filter(call => call.url === landing)).toHaveLength(1)
+  })
+  it('renders ordinary QR text and passes a data URL through unchanged', async () => {
+    expect((await start(qrFetch('weixin://scan?token=1').fetchImpl)).qrImage).toBe('rendered:weixin://scan?token=1')
+    const data = 'data:image/png;base64,AAAA'
+    const passthrough = await start(qrFetch(data).fetchImpl)
+    expect(passthrough.qrImage).toBe(data)
+    expect(passthrough.rendered).toEqual([])
+  })
+  it('falls back to rendering the URL text when the image fetch fails or answers more than 1 MiB', async () => {
+    const url = 'https://weixin.qq.com/qr.png'
+    expect((await start(qrFetch(url, () => 'network').fetchImpl)).qrImage).toBe(`rendered:${url}`)
+    const huge = qrFetch(url, () => new Response('x', { status: 200,
+      headers: { 'content-type': 'image/png', 'content-length': String(WEIXIN_QR_IMAGE_BYTES + 1) } }))
+    expect((await start(huge.fetchImpl)).qrImage).toBe(`rendered:${url}`)
+  })
+})
+
 describe('the login manager', () => {
-  /** A fake iLink that returns one QR token and then the given statuses in order. */
+  /** A fake iLink that returns one QR token and then the given statuses in order; its QR image URL answers a PNG. */
   function fakeLogin(statuses: string[]): { fetchImpl: typeof fetch; calls: FakeCall[] } {
     const queue = [...statuses]
     return fakeFetch(call => {
       if (call.url.includes('get_bot_qrcode')) {
         return { body: { qrcode: 'qr-1', qrcode_img_content: 'https://weixin.qq.com/qr.png' } }
       }
+      if (!call.url.includes('get_qrcode_status')) return { response: qrPngResponse() }
       const status = queue.shift() ?? 'wait'
       return { body: status === 'confirmed' ? { status, bot_token: 'bot-token-1', ilink_bot_id: 'bot-1', ilink_user_id: 'user-1' }
         : { status } }
@@ -381,7 +439,8 @@ describe('the login manager', () => {
     try {
       const saves: WeixinCredential[] = []
       const started = await manager.start('wechat:ops', { save: save => { saves.push(save) } })
-      expect(started.qrImage).toBe('https://weixin.qq.com/qr.png')
+      // The trusted HTTPS image URL is fetched once and handed to the panel as a data URL.
+      expect(started.qrImage).toBe(`data:image/png;base64,${QR_PNG.toString('base64')}`)
       expect(manager.status('wechat:ops', started.loginId).status).toBe('wait')
       await vi.waitFor(() => expect(manager.status('wechat:ops', started.loginId))
         .toMatchObject({ status: 'confirmed', ilinkBotId: 'bot-1' }))
