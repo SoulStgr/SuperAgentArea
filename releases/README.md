@@ -28,6 +28,7 @@
 | 0.3.4 | 2026-11-26 | `dsh-superagent-0.3.4.tgz` | 405,422 | `93d1302fb0209115` | `0fb3f7b` | 飞书列为常驻来源项（账号按需添加） |
 | 0.3.5 | 2026-11-26 | `dsh-superagent-0.3.5.tgz` | 405,998 | `dc6a22e17f6ddea3` | `255d98c` | 添加来源类型改为四列 flex 卡片（宽弹窗、紧凑卡片） |
 | 0.3.6 | 2026-11-26 | `dsh-superagent-0.3.6.tgz` | 418,625 | `ec5f999ce09976e8` | `8c7108f` | 远程文件夹（SFTP/SSH，仅密钥 + known_hosts 强校验）、11 类来源顺序 |
+| 0.3.7 | 2026-11-26 | `dsh-superagent-0.3.7.tgz` | 435,560 | `efcc3b0a7f7ba01b` | `1c6d61c` | 钉钉 Stream 来源（真实收发、token/@、每实例健康；不依赖 dsh-im） |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -113,6 +114,14 @@
 - 方案：IM 三家改为**移植 dsh-im 传输层**（MIT 署名、不引入运行时依赖）；微信先白名单私聊。
 
 对比 0.3.5：从「只有本地文件夹可用」变为「本地 + 远程文件夹可用」，并为后续钉钉/QQ/微信移植定下架构。
+
+### 0.3.7
+
+- **钉钉来源真实可用**：`dingtalk` kind（order 4）通过公共 SDK `dingtalk-stream` 长连接接收私聊与群 @ 消息，回复走 sessionWebhook（带原生 @）或机器人 API 兜底；token 缓存/提前刷新；每实例独立健康与 5s→60s 重连；`allowedUserIds` 白名单；secret 不进日志/健康/Trigger。
+- 复用 dsh-im 的协议细节（MIT 署名，`THIRD_PARTY_NOTICES.md`），但**不引入 `@xmanrui/dsh-im` 运行时依赖**；AI Card/文件/图片留到后续。
+- 顺带修复 `package.json` 的 UTF-8 BOM（由 PowerShell 写入引入），避免 `packageRoot()` 的 JSON 解析失败。
+
+对比 0.3.6：11 类来源中钉钉从占位变为可用；QQ、微信仍为占位（P8c/P8d）。
 
 ## 3. 回退与复现
 
