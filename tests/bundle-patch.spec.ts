@@ -30,9 +30,11 @@ it('defines the worker preset Executor Sessions run under, with a shell that mov
   const rows = await patched()
   expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-folder',
     'dsh-superagent-connectors', 'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
-  // The folder Source is the default one, and the placeholder kinds are always listed; neither row is disabled.
-  expect(rows.find(row => row.id === 'dsh-superagent-folder')?.disabled).toBeUndefined()
-  expect(rows.find(row => row.id === 'dsh-superagent-connectors')?.disabled).toBeUndefined()
+  // Every Source kind is always listed: the default folder, Feishu (an account is added from the panel), and the
+  // placeholder kinds; none of these rows is disabled.
+  for (const id of ['dsh-superagent-folder', 'dsh-superagent-feishu', 'dsh-superagent-connectors']) {
+    expect(rows.find(row => row.id === id)?.disabled, id).toBeUndefined()
+  }
   const preset = presetOf(rows, WORKER_PRESET)
   expect(preset.id).toBe(WORKER_PRESET)
   const plugins = flat(preset.plugins)

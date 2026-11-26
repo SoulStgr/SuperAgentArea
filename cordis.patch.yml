@@ -6,10 +6,10 @@
       name: dsh-superagent
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
-    # Optional Feishu Source; requires configuring a bot CLI after enabling.
+    # The Feishu Source kind is always available in the catalog, like every other kind; add a Feishu account (bot CLI)
+    # from the panel to listen. Without an account the plugin reports its default entry as paused and nothing is polled.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch
-      disabled: true
     # The default local folder Source; dsh-superagent seeds one `folder` instance (its inbox and outbox under the state
     # directory) on a new installation, so this plugin is on by default. Configure more instances from the panel.
     - id: dsh-superagent-folder

@@ -424,7 +424,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts`, `src/sources/feishu.ts`, `src/sources/folder.ts` and `src/sources/connectors.ts` are also the entries of the four Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch`, `./folder-watch` and `./connectors`. The bundle's `cordis.patch.yml` inserts the five plugins: GitHub and the folder Source on (the folder Source is the seeded default), the placeholder connectors on, and Feishu off until its bot is configured.
+`src/sources/github.ts`, `src/sources/feishu.ts`, `src/sources/folder.ts` and `src/sources/connectors.ts` are also the entries of the four Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch`, `./folder-watch` and `./connectors`. The bundle's `cordis.patch.yml` inserts all of them on: a kind's presence in the catalog does not create an account, so Feishu and GitHub stay quiet until a person adds one, while the folder Source seeds its single default account.
 
 ## Tests
 

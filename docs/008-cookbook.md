@@ -340,7 +340,7 @@ entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu
   'webhook-watch': 'src/sources/webhook.ts' },
 ```
 
-Then export the built file in `package.json` by adding `"./webhook-watch": "./lib/webhook-watch.js"` to `exports`, and add the plugin to the `insert` list of the bundle's `cordis.patch.yml`, disabled, as Feishu is:
+Then export the built file in `package.json` by adding `"./webhook-watch": "./lib/webhook-watch.js"` to `exports`, and add the plugin to the `insert` list of the bundle's `cordis.patch.yml`. A Source kind is safe to leave on: accounts are added from the panel, so no account means no polling. Mark the row `disabled` when the kind needs an account configured before its plugin may even load:
 
 ```yaml
     - id: dsh-superagent-webhook
