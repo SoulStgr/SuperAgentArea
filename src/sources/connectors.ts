@@ -1,5 +1,5 @@
 /**
- * Placeholder Source kinds for the eleven-kind catalog: Gitee, WeChat, QQ, Telegram, WeCom app and Email are listed so a
+ * Placeholder Source kinds for the eleven-kind catalog: Gitee, WeChat, Telegram, WeCom app and Email are listed so a
  * person can create and keep their accounts now, while each kind only validates and stores its credentials. None of them
  * watches anything, has a Channel, or reports health beyond the fixed paused "coming soon" state the Source views give a
  * placeholder kind's instances.
@@ -41,16 +41,6 @@ const wechatKind = placeholderKind({
   fields: [credential('appId', { zh: '应用 ID', en: 'App ID' }), credential('appSecret', { zh: '应用密钥', en: 'App secret' })],
 })
 
-const QqConfig = z.object({ appId: secret, appSecret: secret }).strict()
-const qqKind = placeholderKind({
-  kind: 'qq',
-  order: 3,
-  title: { zh: 'QQ', en: 'QQ' },
-  description: { zh: '接收 QQ 机器人的消息；一个来源项可以配置多个机器人账号（接入开发中）。', en: 'Receives a QQ bot\'s messages; one Source kind can hold several bot accounts (coming soon).' },
-  schema: QqConfig,
-  fields: [credential('appId', { zh: 'AppID', en: 'AppID' }), credential('appSecret', { zh: 'AppSecret', en: 'AppSecret' })],
-})
-
 const TelegramConfig = z.object({ botToken: secret }).strict()
 const telegramKind = placeholderKind({
   kind: 'telegram',
@@ -84,12 +74,12 @@ const emailKind = placeholderKind({
     credential('user', { zh: '邮箱地址', en: 'Mailbox address' }), credential('secret', { zh: '密码或授权码', en: 'Password or app password' })],
 })
 
-/** The six placeholder kinds, in the catalog order of plan/23: Gitee, WeChat, QQ, Telegram, WeCom app and Email. */
-export const connectorKinds = [giteeKind, wechatKind, qqKind, telegramKind, wecomKind, emailKind] as unknown as SourceKind[]
+/** The five placeholder kinds, in the catalog order of plan/23: Gitee, WeChat, Telegram, WeCom app and Email. */
+export const connectorKinds = [giteeKind, wechatKind, telegramKind, wecomKind, emailKind] as unknown as SourceKind[]
 
 export const name = 'dsh-superagent-connectors'
 export const inject = ['orchestrator']
-/** Registers each placeholder kind, so the catalog lists eleven kinds while only folder, remote, GitHub, Feishu and DingTalk receive work. */
+/** Registers each placeholder kind, so the catalog lists eleven kinds while only folder, remote, QQ, GitHub, Feishu and DingTalk receive work. */
 export function apply(ctx: Context): void {
   for (const kind of connectorKinds) {
     ctx.effect(() => ctx.orchestrator.sources.register(kind), `${kind.kind}: placeholder source kind`)

@@ -18,6 +18,7 @@
     "./feishu-watch": "./lib/feishu-watch.js",
     "./folder-watch": "./lib/folder-watch.js",
     "./remote-watch": "./lib/remote-watch.js",
+    "./qq-watch": "./lib/qq-watch.js",
     "./dingtalk-watch": "./lib/dingtalk-watch.js",
     "./connectors": "./lib/connectors.js",
     "./package.json": "./package.json",
@@ -61,6 +62,7 @@
   },
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
+    "@tencent-connect/qqbot-nodejs": "1.0.4",
     "dingtalk-stream": "2.1.4",
     "proper-lockfile": "4.1.2",
     "zod": "4.4.3"

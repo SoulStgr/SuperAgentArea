@@ -18,12 +18,16 @@
     # until a person adds an account; the default local folder keeps needing no setup.
     - id: dsh-superagent-remote
       name: dsh-superagent/remote-watch
+    # The QQ Source: one QQ open-platform bot per instance over the bot gateway's WebSocket long connection (no public
+    # callback URL). It stays quiet until a person adds an account with the bot's AppID and AppSecret.
+    - id: dsh-superagent-qq
+      name: dsh-superagent/qq-watch
     # The DingTalk Source: one enterprise-internal bot per instance over Stream mode (a long connection, no public callback
     # URL). It stays quiet until a person adds an account with the app's Client ID, Client Secret and Robot Code.
     - id: dsh-superagent-dingtalk
       name: dsh-superagent/dingtalk-watch
-    # Placeholder Source kinds (Gitee, WeChat, QQ, Telegram, WeCom app, Email) in the eleven-kind catalog: accounts
-    # may be created and saved, while the connection itself is still being developed.
+    # Placeholder Source kinds (Gitee, WeChat, Telegram, WeCom app, Email) in the eleven-kind catalog: accounts may be
+    # created and saved, while the connection itself is still being developed.
     - id: dsh-superagent-connectors
       name: dsh-superagent/connectors
     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.

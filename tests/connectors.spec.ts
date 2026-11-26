@@ -13,6 +13,7 @@ import { folderKind } from '../src/sources/folder.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { HEALTH_TEXT } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
+import { qqKind } from '../src/sources/qq.ts'
 import { remoteKind } from '../src/sources/remote.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 
@@ -33,8 +34,8 @@ afterEach(() => {
 const links = () => ({ url: '', label: { zh: '', en: '' } })
 
 describe('placeholder Source kinds', () => {
-  it('declares six coming-soon kinds with both languages, credential fields, a parseable schema and no loops', () => {
-    expect(connectorKinds.map(kind => kind.kind)).toEqual(['gitee', 'wechat', 'qq', 'telegram', 'wecom', 'email'])
+  it('declares five coming-soon kinds with both languages, credential fields, a parseable schema and no loops', () => {
+    expect(connectorKinds.map(kind => kind.kind)).toEqual(['gitee', 'wechat', 'telegram', 'wecom', 'email'])
     for (const kind of connectorKinds) {
       expect(kind.placeholder, kind.kind).toBe(true)
       expect(kind.health).toEqual([kind.kind])
@@ -49,36 +50,38 @@ describe('placeholder Source kinds', () => {
       expect(kind.threadContext, kind.kind).toBeUndefined()
     }
   })
-  it('offers the eleven kinds in the catalog, in plan order, marking the six placeholders', () => {
+  it('offers the eleven kinds in the catalog, in plan order, marking the five placeholders', () => {
     const store = storeOf()
     const sources = new SourceRegistry(() => store.settings())
-    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, dingtalkKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
+    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, qqKind, dingtalkKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
     const catalog = sources.catalog()
     expect(catalog.map(kind => kind.kind))
       .toEqual(['folder', 'remote', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
     expect(catalog.filter(kind => kind.placeholder).map(kind => kind.kind))
-      .toEqual(['qq', 'wechat', 'wecom', 'email', 'gitee', 'telegram'])
+      .toEqual(['wechat', 'wecom', 'email', 'gitee', 'telegram'])
     // The implemented kinds stay non-placeholder and keep their form defaults.
     expect(catalog.find(kind => kind.kind === 'folder')).toMatchObject({ placeholder: false, defaults: { pollSeconds: 10 } })
     expect(catalog.find(kind => kind.kind === 'remote'))
       .toMatchObject({ placeholder: false, defaults: { port: 22, pollSeconds: 30, maxFileBytes: 1048576 } })
+    expect(catalog.find(kind => kind.kind === 'qq')).toMatchObject({ placeholder: false,
+      defaults: { appId: '', appSecret: '', allowedUserIds: [], sandbox: false } })
     expect(catalog.find(kind => kind.kind === 'dingtalk')).toMatchObject({ placeholder: false,
       defaults: { clientId: '', clientSecret: '', robotCode: '', allowedUserIds: [] } })
   })
   it('shows a placeholder account as paused and coming soon, while its kind receives nothing', () => {
     const settings = SettingsSchema.parse({ sources: {
       'gitee:work': { kind: 'gitee', enabled: true, config: { token: 't', repository: 'acme/widgets' } },
-      qq: { kind: 'qq', enabled: false, config: {} },
+      wechat: { kind: 'wechat', enabled: false, config: {} },
     } })
     const store = storeOf(settings)
     const sources = new SourceRegistry(() => store.settings())
     for (const kind of connectorKinds) sources.register(kind)
     const rows = sourcesStatus({ store, sources, links }, {}, {})
-    expect(rows.map(row => [row.id, row.state])).toEqual([['gitee:work', 'paused'], ['qq', 'off']])
+    expect(rows.map(row => [row.id, row.state])).toEqual([['gitee:work', 'paused'], ['wechat', 'off']])
     expect(rows.find(row => row.id === 'gitee:work')!.health)
       .toEqual([{ name: 'gitee:work', state: 'paused', detail: HEALTH_TEXT.placeholder, code: 'placeholder' }])
     // The instance is stored and configured, so the catalog's add form and the instance's data are available.
     expect(sources.instance('gitee:work')).toMatchObject({ kind: 'gitee', enabled: true })
-    expect(sources.instances().map(instance => instance.id)).toEqual(['gitee:work', 'qq'])
+    expect(sources.instances().map(instance => instance.id)).toEqual(['gitee:work', 'wechat'])
   })
 })

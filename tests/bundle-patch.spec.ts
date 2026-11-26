@@ -29,11 +29,12 @@ const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.confi
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
   expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-folder',
-    'dsh-superagent-remote', 'dsh-superagent-dingtalk', 'dsh-superagent-connectors', 'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
-  // Every Source kind is always listed: the default folder, the remote folder, DingTalk (an account is added from the
+    'dsh-superagent-remote', 'dsh-superagent-qq', 'dsh-superagent-dingtalk', 'dsh-superagent-connectors',
+    'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
+  // Every Source kind is always listed: the default folder, the remote folder, QQ and DingTalk (an account is added from the
   // panel), Feishu and the placeholder kinds; none of these rows is disabled.
-  for (const id of ['dsh-superagent-folder', 'dsh-superagent-remote', 'dsh-superagent-dingtalk', 'dsh-superagent-feishu',
-    'dsh-superagent-connectors']) {
+  for (const id of ['dsh-superagent-folder', 'dsh-superagent-remote', 'dsh-superagent-qq', 'dsh-superagent-dingtalk',
+    'dsh-superagent-feishu', 'dsh-superagent-connectors']) {
     expect(rows.find(row => row.id === id)?.disabled, id).toBeUndefined()
   }
   const preset = presetOf(rows, WORKER_PRESET)

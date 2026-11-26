@@ -8,9 +8,10 @@ const raw = { name: 'raw',
     : undefined }
 export default defineConfig([
   { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'folder-watch': 'src/sources/folder.ts',
-    'remote-watch': 'src/sources/remote.ts', 'dingtalk-watch': 'src/sources/dingtalk.ts', connectors: 'src/sources/connectors.ts' },
+    'remote-watch': 'src/sources/remote.ts', 'qq-watch': 'src/sources/qq.ts', 'dingtalk-watch': 'src/sources/dingtalk.ts',
+    connectors: 'src/sources/connectors.ts' },
     outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true,
-    deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile', 'dingtalk-stream'] } },
+    deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile', 'dingtalk-stream', '@tencent-connect/qqbot-nodejs'] } },
   { entry: { client: 'src/client/index.tsx' }, outDir: 'lib', format: 'cjs', platform: 'browser', dts: false, clean: false, plugins: [raw],
     deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'] },
     outputOptions: { entryFileNames: 'client.js', banner: 'window.__ModuleLoader__.load({ id: "dsh-superagent", factory: (require) => {', footer: 'return module.exports; } });', intro: 'var module = { exports: {} }; var exports = module.exports;' } },

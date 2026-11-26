@@ -28,6 +28,7 @@ import { feishuKind } from '../../src/sources/feishu.ts'
 import { folderKind } from '../../src/sources/folder.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import { remoteKind } from '../../src/sources/remote.ts'
+import { qqKind } from '../../src/sources/qq.ts'
 import { health as healthEntry, type Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
@@ -127,7 +128,7 @@ const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace
   .slice(0, 60) || 'station'
 // The kinds' configurations differ, and the fake reads them only as the records the views carry. The placeholder
 // connectors are listed last, after the kinds the fake's default instances use, so instance order stays as it was.
-const KINDS = [feishuKind, githubKind, folderKind, remoteKind, dingtalkKind, ...connectorKinds] as unknown as SourceKind[]
+const KINDS = [feishuKind, githubKind, folderKind, remoteKind, qqKind, dingtalkKind, ...connectorKinds] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
