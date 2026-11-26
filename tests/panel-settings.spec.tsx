@@ -338,6 +338,10 @@ it('edits an account\'s own settings and switches it off from the Sources settin
   const row = () => all('.dt-source-account')[0]!
   await click(find(zh.sourceEditConfig, '.dt-source-account button'))
   expect(all('.dt-source-account form.dt-card')).toHaveLength(1)
+  // The form starts with the account's display name, empty until a person gives it one.
+  const name = field<HTMLInputElement>(zh.sourceLabel)
+  expect(name.value).toBe('')
+  expect(name.placeholder).toBe('飞书')
   await click(find('仅 @', '.dt-source-account .dt-field-segmented [role="tab"]'))
   await click(find(zh.save, '.dt-source-account button'))
   expect(server.requests.find(request => request.path === 'settings/source:feishu')).toMatchObject({ method: 'PUT',
@@ -357,6 +361,33 @@ it('edits an account\'s own settings and switches it off from the Sources settin
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('飞书')
   expect(all('.dt-governance-parts [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceGovernancePolicy,
     zh.sourceGovernancePrompts])
+})
+
+it('renames an account in its configuration form and saves the display name with the block', async () => {
+  await mount()
+  await open_group(zh['settingsGroup.sources'])
+  const row = () => all('.dt-source-account')[0]!
+  await click(find(zh.sourceEditConfig, '.dt-source-account button'))
+  await type(field<HTMLInputElement>(zh.sourceLabel), '飞书主号')
+  await click(find(zh.save, '.dt-source-account button'))
+  expect(server.requests.find(request => request.path === 'settings/source:feishu')).toMatchObject({ method: 'PUT',
+    body: { value: expect.objectContaining({ label: '飞书主号' }) } })
+  expect(server.settings.sources.feishu!.label).toBe('飞书主号')
+  await vi.waitFor(() => expect(row().textContent).toContain('飞书主号'))
+})
+
+it('shows a credential change in the configuration history without its value', async () => {
+  server.settings = { ...server.settings, sources: { ...server.settings.sources,
+    qq: { kind: 'qq', enabled: true, config: { appId: 'qq-app', appSecret: 'qq-secret-1', sandbox: false } } } }
+  server.history = { current: 5, policyVersion: 'abcdef1234567890', items: [{ revision: 5, savedAt: '2026-09-23T00:00:00Z',
+    source: 'panel', policyVersion: 'abcdef1234567890', policyChanged: false, notified: [], block: 'source:qq',
+    changes: [{ code: 'sourceSecretChanged', source: 'qq', field: 'appSecret' }] }] }
+  await mount()
+  await select_kind('QQ')
+  await click(find(zh.sourceEditConfig, '.dt-source-account button'))
+  await click(find(zh.configHistory, '.dt-source-account [data-disclosure-row]'))
+  expect(text()).toContain('QQ · AppSecret：已更换（内容不记录）')
+  expect(text()).not.toContain('qq-secret-1')
 })
 
 it('deletes accounts from the Sources settings group, refusing one whose Tickets are still open', async () => {

@@ -1,15 +1,26 @@
 /** Concurrency, retry, and validation tests for settings saves, pause toggling, and policy synchronization. */
 import { afterEach, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { UserError } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
+import type { SourceKind } from '../src/sources/kind.ts'
 import { policyVersion } from '../src/policy.ts'
 import { CHAT, MEMBER, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
 afterEach(async () => { await h?.stop(); h = undefined })
+/** A Source kind with one credential field, registered by the tests that check the settings history and account names. */
+const vaultKind: SourceKind = {
+  kind: 'vault', order: 90,
+  title: { zh: '保险库', en: 'Vault' },
+  description: { zh: '测试用的来源', en: 'A Source for tests' },
+  schema: z.object({ token: z.string().default('') }),
+  fields: [{ key: 'token', type: 'text', label: { zh: '令牌', en: 'Token' } }],
+  health: ['vault'],
+}
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(settle => { resolve = settle })
@@ -253,4 +264,59 @@ it('saves a Source Policy part through the panel settings route, and the setting
   expect(store.settings().policy.sources.feishu!.rules).toEqual(rules)
   // The installation's own Policy block and its default rules stay as they were.
   expect([store.blockRevision('policy'), store.settings().policy.rules]).toEqual([policyRevision, defaultRules])
+})
+
+it('records a credential change in the configuration history as set, replaced or cleared, never by value', async () => {
+  h = await startRuntime()
+  await settled(h)
+  h.runtime.sources.register(vaultKind)
+  const { settings, store } = h.runtime
+  const history = () => policyHistory(store, h!.runtime.sources, policyVersion(store.settings()))
+  await settings.add({ id: 'vault', kind: 'vault', label: '凭证库', config: { token: 'first-secret' } })
+  expect(history().items[0]!.changes).toContainEqual({ code: 'sourceSecretSet', source: 'vault', field: 'token' })
+  type Block = { revision: number; value: { enabled: boolean; config: Record<string, unknown>; label?: string } }
+  const block = settings.block('source:vault') as Block
+  expect(block.value).toMatchObject({ label: '凭证库', config: { token: 'first-secret' } })
+  await settings.save('source:vault', { ...block.value, config: { token: 'second-secret' } }, block.revision, 'panel')
+  const changes = history().items[0]!.changes!
+  expect(changes).toContainEqual({ code: 'sourceSecretChanged', source: 'vault', field: 'token' })
+  expect(changes.some(change => change.code === 'sourceField' && change.field === 'token')).toBe(false)
+  // Neither the current nor an older value passes through the history the panel reads.
+  const json = JSON.stringify(history())
+  expect(json).not.toContain('first-secret')
+  expect(json).not.toContain('second-secret')
+  // Clearing the credential is reported as cleared, still without the value it had.
+  const next = settings.block('source:vault') as Block
+  await settings.save('source:vault', { ...next.value, config: { token: '' } }, next.revision, 'panel')
+  expect(history().items[0]!.changes).toContainEqual({ code: 'sourceSecretCleared', source: 'vault', field: 'token' })
+})
+
+it('renames a Source account through its settings block and refuses a name another account already uses', async () => {
+  h = await startRuntime()
+  await settled(h)
+  h.runtime.sources.register(vaultKind)
+  const { settings, store } = h.runtime
+  type Block = { revision: number; value: { enabled: boolean; config: Record<string, unknown>; label?: string } }
+  await settings.add({ id: 'vault:a', kind: 'vault', label: '主凭证', config: { token: 'a' } })
+  await settings.add({ id: 'vault:b', kind: 'vault', label: '备用凭证', config: { token: 'b' } })
+  const block = () => settings.block('source:vault:b') as Block
+  // Creating another account with the same name, or renaming this one to it, is refused naming the account that has it.
+  await expect(settings.add({ id: 'vault:c', kind: 'vault', label: '主凭证', config: {} }))
+    .rejects.toThrow(new UserError('sourceLabelExists', { source: 'vault:a', label: '主凭证' }))
+  const first = block()
+  await expect(settings.save('source:vault:b', { ...first.value, label: ' 主凭证 ' }, first.revision, 'panel'))
+    .rejects.toThrow(new UserError('sourceLabelExists', { source: 'vault:a', label: '主凭证' }))
+  // The account's own name is not a duplicate, and a new name is saved and shown in the settings block.
+  const current = block()
+  await settings.save('source:vault:b', { ...current.value, label: '备用凭证' }, current.revision, 'panel')
+  const renamed = block()
+  await settings.save('source:vault:b', { ...renamed.value, label: '备份凭证' }, renamed.revision, 'panel')
+  expect(store.settings().sources['vault:b']!.label).toBe('备份凭证')
+  expect(block().value.label).toBe('备份凭证')
+  expect(policyHistory(store, h.runtime.sources, policyVersion(store.settings())).items[0]!.changes)
+    .toContainEqual({ code: 'sourceLabel', source: 'vault:b', from: '备用凭证', to: '备份凭证' })
+  // Names differing only in case are the same name.
+  await settings.add({ id: 'vault:d', kind: 'vault', label: 'Backup', config: {} })
+  await expect(settings.add({ id: 'vault:e', kind: 'vault', label: ' backup ', config: {} }))
+    .rejects.toThrow(new UserError('sourceLabelExists', { source: 'vault:d', label: 'backup' }))
 })

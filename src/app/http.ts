@@ -248,6 +248,17 @@ function routes(runtime: HttpHost): Routes {
     return instance
   }
   /**
+   * A display name no configured account uses, numbering a repeated scan (`钉钉（扫码）`, `钉钉（扫码）2`, …) so the
+   * account the scan creates never collides with a name a person has kept or chosen.
+   */
+  const freeAccountLabel = (base: string): string => {
+    const taken = new Set(Object.values(store.settings().sources).flatMap(instance =>
+      instance.label?.trim() ? [instance.label.trim().toLowerCase()] : []))
+    let label = base
+    for (let index = 2; taken.has(label.toLowerCase()); index += 1) label = `${base}${index}`
+    return label
+  }
+  /**
    * Creates the DingTalk Source instance one completed QR sign-in provisioned: the first free id under `dingtalk`, the
    * scanned app's Client ID and Secret, and its AppKey as the Robot Code — DingTalk's own fallback when an app has no
    * separately named robot code. The secret goes only into this installation's settings.
@@ -258,7 +269,7 @@ function routes(runtime: HttpHost): Routes {
     const taken = new Set(Object.keys(store.settings().sources))
     let id = 'dingtalk'
     for (let index = 2; taken.has(id); index += 1) id = `dingtalk-${index}`
-    await runtime.settings.add({ id, kind: 'dingtalk', label: '钉钉（扫码）',
+    await runtime.settings.add({ id, kind: 'dingtalk', label: freeAccountLabel('钉钉（扫码）'),
       config: { clientId: credentials.clientId, clientSecret: credentials.clientSecret, robotCode: credentials.clientId } })
     return id
   }
@@ -275,7 +286,7 @@ function routes(runtime: HttpHost): Routes {
     const taken = new Set(Object.keys(store.settings().sources))
     let id = 'qq'
     for (let index = 2; taken.has(id); index += 1) id = `qq-${index}`
-    await runtime.settings.add({ id, kind: 'qq', label: 'QQ（扫码）',
+    await runtime.settings.add({ id, kind: 'qq', label: freeAccountLabel('QQ（扫码）'),
       config: { appId: credentials.appId, appSecret: credentials.appSecret, sandbox: false,
         ...credentials.userOpenid ? { allowedUserIds: credentials.userOpenid } : {} } })
     return id

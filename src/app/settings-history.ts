@@ -3,12 +3,14 @@ import type { FieldSpec } from '../sources/kind.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Rule } from '../policy.ts'
 import { KV } from '../kv.ts'
+import { isSecretKey } from '../secret.ts'
 import type { Store, SettingsVersion } from './store.ts'
 
 type SourceSettings = SettingsVersion['settings']['sources'][string]
 /** Change codes localized by the web panel as `change.<code>`. */
 export type SettingsChangeCode = 'ruleAdded' | 'ruleRenamed' | 'ruleInstruction' | 'ruleEnabled' | 'ruleDisabled' | 'ruleRemoved'
   | 'sourceEnabled' | 'sourceDisabled' | 'sourceField' | 'sourceRowsAdded' | 'sourceRowsRemoved' | 'sourceRowsChanged' | 'sourceAdmission'
+  | 'sourceLabel' | 'sourceSecretSet' | 'sourceSecretChanged' | 'sourceSecretCleared'
   | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'prepareCommand'
   | 'blockedCommands'
 /** A single settings diff entry rendered by the panel using `change.<code>` and field labels from the Source listing. */
@@ -40,6 +42,14 @@ function fieldChanges(id: string, fields: readonly FieldSpec[], a: Record<string
   for (const field of fields) {
     const from = a[field.key], to = b[field.key]
     if (same(from, to)) continue
+    // A credential is reported as set, replaced or cleared, never by value: the history is shown in the panel and served
+    // as JSON, so the stored secret must not pass through either.
+    if (isSecretKey(field.key)) {
+      const had = typeof from === 'string' && from.trim() !== '', has = typeof to === 'string' && to.trim() !== ''
+      changes.push({ code: !had && has ? 'sourceSecretSet' : had && has ? 'sourceSecretChanged' : 'sourceSecretCleared', ...at,
+        field: field.key })
+      continue
+    }
     if (field.type === 'rows') {
       const rowKey = field.columns[0]!.key
       const rows = (value: unknown) => new Map((Array.isArray(value) ? value as Record<string, unknown>[] : []).map(row => [String(row[rowKey]), row]))
@@ -58,6 +68,8 @@ function fieldChanges(id: string, fields: readonly FieldSpec[], a: Record<string
 function sourceChanges(id: string, before: SourceSettings | undefined, after: SourceSettings | undefined, sources: SourceRegistry): SettingsChange[] {
   const kind = sources.kind(id)
   const changes: SettingsChange[] = []
+  const beforeLabel = before?.label ?? '', afterLabel = after?.label ?? ''
+  if (beforeLabel !== afterLabel) changes.push({ code: 'sourceLabel', source: id, from: beforeLabel, to: afterLabel })
   if ((before?.enabled ?? true) !== (after?.enabled ?? true)) changes.push({ code: after?.enabled === false ? 'sourceDisabled' : 'sourceEnabled', source: id })
   const fill = (value: SourceSettings | undefined) => kind ? kind.schema.parse(value?.config ?? {}) : value?.config ?? {}
   return [...changes, ...fieldChanges(id, kind?.fields ?? [], fill(before), fill(after))]

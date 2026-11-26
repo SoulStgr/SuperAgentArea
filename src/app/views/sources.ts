@@ -177,7 +177,8 @@ export function sourceDetail(host: ViewHost, id: string, health: HealthMap, setu
   if (!instance) return undefined
   const row = sourcesStatus(host, health, setup).find(item => item.id === id)!
   const kind = sources.kind(instance.kind)
-  return { ...row, value: { enabled: instance.enabled, config: instance.config },
+  return { ...row, value: { enabled: instance.enabled, config: instance.config,
+    ...instance.label !== undefined ? { label: instance.label } : {} },
     revision: store.blockRevision(`source:${id}`), restarts: SETUP_FIELDS[instance.kind] ?? [],
     description: kind?.description ?? { zh: '', en: '' }, fields: kind?.fields ?? [],
     defaults: kind ? kind.schema.parse({}) : {}, labels: store.get(KV.sources.labels(id)) ?? {},

@@ -39,7 +39,8 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
       const problem = problemOf(instance.id, setup) ?? problemOf(instance.kind, setup)
       const title = sourceTitle(kind, instance)
       return { id: instance.id, kind: instance.kind, title, description: kind?.description ?? { zh: '', en: '' }, installed: instance.installed,
-        value: { enabled: instance.enabled, config: instance.config }, revision: store.blockRevision(`source:${instance.id}`),
+        value: { enabled: instance.enabled, config: instance.config,
+          ...instance.label !== undefined ? { label: instance.label } : {} }, revision: store.blockRevision(`source:${instance.id}`),
         restarts: SETUP_FIELDS[instance.kind] ?? [], fields: kind?.fields ?? [], facts: kind?.facts?.(setup.deployment) ?? {},
         labels: store.get(KV.sources.labels(instance.id)) ?? {}, ...problem ? { problem } : {},
         ...policyOf(sources, store, settings, instance.id, instance.kind, health) }

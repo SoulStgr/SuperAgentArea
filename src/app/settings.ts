@@ -167,7 +167,8 @@ export class Settings {
     const instance = kind === 'source' || kind === 'sourcePolicy' ? sources.instances(settings).find(item => item.id === id) : undefined
     const value = block === 'pause' ? { paused: settings.paused }
       : kind === 'policy' || kind === 'eval' || kind === 'executor' ? settings[kind]
-        : kind === 'source' ? (instance ? { enabled: instance.enabled, config: instance.config } : undefined)
+        : kind === 'source' ? (instance ? { enabled: instance.enabled, config: instance.config,
+          ...instance.label !== undefined ? { label: instance.label } : {} } : undefined)
           : kind === 'sourcePolicy' ? (instance ? this.policyPart(id) : undefined) : undefined
     if (value === undefined) throw new UserError('unknownBlock', { block })
     return { block, revision: store.blockRevision(block as SettingsSave), value }
@@ -178,6 +179,19 @@ export class Settings {
     const settings = store.settings()
     // `SourceRegistry.policyPart` validates the kind's fields and keeps a stored `rules`; an uninstalled kind keeps its part as stored.
     return sources.policyPart(id) ?? SourcePolicySchema.parse(settings.policy.sources[id] ?? {})
+  }
+  /**
+   * Refuses a Source account's display name when another account already has it, comparing case-insensitively after
+   * trimming (an account keeps its own name). An empty name means the account falls back to its kind's title, so it
+   * never collides.
+   * @throws UserError `sourceLabelExists` naming the account that has the name.
+   */
+  private assertLabelFree(settings: SettingsValue, id: string, label: string | undefined): void {
+    const name = label?.trim().toLowerCase()
+    if (!name) return
+    const taken = Object.entries(settings.sources).find(([other, instance]) => other !== id
+      && instance.label?.trim().toLowerCase() === name)
+    if (taken) throw new UserError('sourceLabelExists', { source: taken[0], label: label!.trim() })
   }
   /**
    * Validates and saves one settings block against its `revision`; a no-op save records no new revision, a changed policy
@@ -216,6 +230,7 @@ export class Settings {
     // Re-read current settings after async checks in case unrelated blocks were saved concurrently.
     const old = store.settings()
     const settings = rules.merge(old, parsed, id)
+    if (kind === 'source') this.assertLabelFree(settings, id, (parsed as { label?: string }).label)
     if (JSON.stringify(SettingsSchema.parse(settings)) === JSON.stringify(old)) {
       const delivery = await sessions.delivery(`settings:${block}`)
       return { saved: true, revision: store.blockRevision(block), policy_changed: false, restarting: false, context_delivery: delivery }
@@ -253,6 +268,7 @@ export class Settings {
     if (!kind) throw new UserError('sourceNotInstalled', { source: request.kind })
     const current = store.settings()
     if (current.sources[request.id]) throw new UserError('sourceExists', { source: request.id })
+    this.assertLabelFree(current, request.id, request.label)
     const value = { kind: kind.kind, enabled: true, config: kind.schema.parse(request.config ?? {}),
       ...request.label ? { label: request.label } : {} }
     const candidate = SettingsSchema.parse({ ...current, sources: { ...current.sources, [request.id]: value } })

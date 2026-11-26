@@ -250,7 +250,8 @@ function sourceSettings(): SourceView[] {
         en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
         : kind.title
     return { id: instance.id, kind: instance.kind, title, description: kind.description, installed: true,
-      value: { enabled: instance.enabled, config }, revision: server.revisions[`source:${instance.id}`] ?? 0,
+      value: { enabled: instance.enabled, config, ...instance.label !== undefined ? { label: instance.label } : {} },
+      revision: server.revisions[`source:${instance.id}`] ?? 0,
       restarts: SETUP_FIELDS[kind.kind] ?? [], fields: kind.fields, facts: kind.facts?.(resolved()) ?? {},
       labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {}, ...problem ? { problem } : {},
       ...policy ? { policy: policy as unknown as NonNullable<SourceView['policy']> } : {} }
@@ -298,7 +299,8 @@ function sourceDetailOf(id: string): SourceDetailView | undefined {
   const tickets = [...server.tickets.open, ...server.person]
     .filter(ticket => (server.ticketSources[ticket.id] ?? 'feishu') === id)
     .filter((ticket, index, list) => list.findIndex(item => item.id === ticket.id) === index)
-  return { ...status, value: { enabled: instance.enabled, config }, revision: server.revisions[`source:${id}`] ?? 0,
+  return { ...status, value: { enabled: instance.enabled, config, ...instance.label !== undefined ? { label: instance.label } : {} },
+    revision: server.revisions[`source:${id}`] ?? 0,
     restarts: SETUP_FIELDS[kind.kind] ?? [], description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}),
     labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {},
     facts: kind.facts?.(resolved()) ?? {}, tickets: page(tickets) }
@@ -598,7 +600,7 @@ type Route<K extends keyof Api> = { query?: readonly Query<K>[]; answer: (reques
 const page = <T>(items: T[]) => ({ items, total: items.length, next_offset: null })
 const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
-const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
+const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown(), label: z.string().trim().max(100).optional() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
@@ -880,7 +882,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       server.settings = { ...server.settings, policy: { ...server.settings.policy,
         sources: { ...server.settings.policy.sources, [instanceId]: part as typeof server.settings.policy.sources[string] } } }
     } else if (kind && instance) {
-      const { enabled, config: value } = SourceSave.parse(body.value)
+      const { enabled, config: value, label } = SourceSave.parse(body.value)
       const config = kind.schema.parse(value)
       // As on the server, a changed CLI that fails its check refuses the save with the setup problem.
       if (config.cli === 'lark-broken') {
@@ -888,7 +890,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
         return refuse(400, refused.message, { setup: refused.problem })
       }
       restarting = (config.cli ?? '') !== (instance.config.cli ?? '')
-      server.settings = { ...server.settings, sources: { ...server.settings.sources, [instanceId!]: { ...instance, enabled, config } } }
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [instanceId!]: { ...instance, enabled, config,
+        ...label === undefined ? {} : { label } } } }
     }
     server.revisions[block] = (server.revisions[block] ?? 0) + 1
     return { restarting, revision: server.revisions[block] }

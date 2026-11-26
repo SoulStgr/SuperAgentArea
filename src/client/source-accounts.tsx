@@ -7,12 +7,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
 import { usePoll, type SourceDetailView, type SourceKindRow,
   type SourceStatusRow, type WechatLoginPoll } from './api.ts'
-import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag, type IconName } from './controls.tsx'
+import { isSecretKey } from '../secret.ts'
+import { Button, DisclosureRow, Dot, Icon, InfoTip, Input, Modal, SegmentedControl, Switch, Tag, type IconName } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { usePanel, usePanelData } from './provider.tsx'
 import { governanceRoute, sourceRoute } from './route.ts'
-import { ConfigHistory, Fields, SourceField } from './settings-kit.tsx'
+import { ConfigHistory, Field, Fields, SourceField } from './settings-kit.tsx'
 import { errorText, localized, when, type T } from './text.ts'
 import { ConfirmButton, ExternalLink, Hint, LoadState } from './widgets.tsx'
 
@@ -20,8 +21,6 @@ import { ConfirmButton, ExternalLink, Hint, LoadState } from './widgets.tsx'
 const KIND_ICONS: Record<string, IconName> = { folder: 'inbox', github: 'hash', gitee: 'hash', feishu: 'message', wechat: 'message',
   dingtalk: 'message', qq: 'message', telegram: 'message', wecom: 'message', email: 'ask' }
 const kindIcon = (kind: string): IconName => KIND_ICONS[kind] ?? 'inbox'
-/** Fields whose values the account summary only marks as set, so credentials are not shown at a glance. */
-const secretField = /(?:secret|token|password|passwd|apikey|aeskey)/i
 /** A one-line summary of an account's configuration from its type's fields, credentials marked as set. */
 function configSummary(t: T, detail: SourceDetailView): string {
   const parts = detail.fields.flatMap(field => {
@@ -30,7 +29,7 @@ function configSummary(t: T, detail: SourceDetailView): string {
     if (value === undefined || value === null || value === '') return []
     const shown = typeof value === 'boolean' ? t(value ? 'yes' : 'no')
       : field.type === 'select' ? localized(t, field.options.find(option => option.value === value)?.label ?? field.options[0]!.label)
-        : secretField.test(field.key) ? '••••' : String(value)
+        : isSecretKey(field.key) ? '••••' : String(value)
     return [`${localized(t, field.label)}${t('labelSeparator')}${shown.length > 32 ? `${shown.slice(0, 32)}…` : shown}`]
   })
   return parts.slice(0, 3).join(' · ') || t('sourceConfigEmpty')
@@ -54,6 +53,7 @@ export function SourceConfigForm({ source, reload }: { source: SourceDetailView;
     },
   })
   const value = draft.value
+  const label = typeof value.label === 'string' ? value.label : ''
   const changed = (key: string) => String(value.config[key] ?? '') !== String(source.value.config[key] ?? '')
   const restarts = draft.dirty && source.restarts.some(changed)
   const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
@@ -67,6 +67,10 @@ export function SourceConfigForm({ source, reload }: { source: SourceDetailView;
         <span className="dt-card-title">{t('sourceConfigTitle')}</span>
         <InfoTip text={localized(t, source.description)} />
       </div></div></div>
+      <Field label={t('sourceLabel')} hint={t('sourceLabelHint')}>
+        <Input value={label} maxLength={100} spellCheck={false} placeholder={localized(t, source.title)}
+          onChange={event => draft.edit({ ...value, label: event.target.value })} />
+      </Field>
       {source.fields.filter(spec => !spec.advanced).map(field)}
       {advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}><div className="dt-disclosure-body">{advanced.map(field)}</div></DisclosureRow>}
