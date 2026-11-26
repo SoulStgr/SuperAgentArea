@@ -300,7 +300,7 @@
     },
     {
       "version": "0.3.15",
-      "tgz": "dsh-superagent-0.3.15.tgz",
+      "tgz": "history/dsh-superagent-0.3.15.tgz",
       "bytes": 514490,
       "sha256": "96f5bcb100fd12ac9b4c9bace5da4aa0c2e2e95815d3866c90ae5736cf08ce4d",
       "date": "2026-11-26",
@@ -308,7 +308,19 @@
       "recordedCommit": "2da92fe714552db119a482d55c063269fa57ecf8",
       "stateSchema": 12,
       "architecture": "twelve source kinds; QQ scan onboarding",
-      "comparison": "QQ scan-to-create onboarding reimplemented from the public bind protocol (create_bind_task, AES-256-GCM secret decrypt) without the UNLICENSED connector; server creates the QQ account and seeds the scanner openid into the allow-list; secret never returns to the browser",
+      "comparison": "QQ scan-to-create onboarding reimplemented from the public bind protocol (create_bind_task, AES-256-GCM secret decrypt) without the UNLICENSED connector; server creates the QQ account and seeds the scanner openid into the allow-list; secret never returns to the browser"
+    },
+    {
+      "version": "0.3.16",
+      "tgz": "dsh-superagent-0.3.16.tgz",
+      "bytes": 516181,
+      "sha256": "16aa69f1f7c9444344ecdeb036b4cbda52057317d6002254307ec3c178d5eb96",
+      "date": "2026-11-26",
+      "sourceCommit": "8d74543bc4031cc090071a56c500abb08a1db788",
+      "recordedCommit": "8d74543bc4031cc090071a56c500abb08a1db788",
+      "stateSchema": 12,
+      "architecture": "twelve source kinds; secret-free settings history and unique account names",
+      "comparison": "Configuration history reports a credential only as set, replaced or cleared and never returns its value; an account's display name is editable in its settings form and kept unique across accounts (case-insensitively), with scan-created accounts taking numbered names",
       "note": "current latest"
     }
   ]

@@ -30,8 +30,9 @@
 | 0.3.12 | `history/dsh-superagent-0.3.12.tgz` | 487,824 | `fbd0ffae136ad8bd` | `a6455b6` |
 | 0.3.13 | `history/dsh-superagent-0.3.13.tgz` | 491,481 | `e079dfa9a13e1bed` | `b29abae` |
 | 0.3.14 | `history/dsh-superagent-0.3.14.tgz` | 510,789 | `3c8dfddb28ba8d2c` | `125103c` |
+| 0.3.15 | `history/dsh-superagent-0.3.15.tgz` | 514,490 | `96f5bcb100fd12ac` | `2da92fe` |
 
-最新版：`dsh-superagent-0.3.15.tgz`（仓库根目录）。
+最新版：`dsh-superagent-0.3.16.tgz`（仓库根目录）。
 
 ## 说明
 
