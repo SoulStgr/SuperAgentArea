@@ -312,7 +312,7 @@
     },
     {
       "version": "0.3.16",
-      "tgz": "dsh-superagent-0.3.16.tgz",
+      "tgz": "history/dsh-superagent-0.3.16.tgz",
       "bytes": 516181,
       "sha256": "16aa69f1f7c9444344ecdeb036b4cbda52057317d6002254307ec3c178d5eb96",
       "date": "2026-11-26",
@@ -321,6 +321,19 @@
       "stateSchema": 12,
       "architecture": "twelve source kinds; secret-free settings history and unique account names",
       "comparison": "Configuration history reports a credential only as set, replaced or cleared and never returns its value; an account's display name is editable in its settings form and kept unique across accounts (case-insensitively), with scan-created accounts taking numbered names",
+      "note": "superseded by 0.3.17"
+    },
+    {
+      "version": "0.3.17",
+      "tgz": "dsh-superagent-0.3.17.tgz",
+      "bytes": 519406,
+      "sha256": "cc50e66eee549cb00f574e8e1e327bd2957c3c11b14f3c7c462dd2fada3d0be3",
+      "date": "2026-11-26",
+      "sourceCommit": "4c819a915c947783fd5aeb5d948a215991512918",
+      "recordedCommit": "4c819a915c947783fd5aeb5d948a215991512918",
+      "stateSchema": 12,
+      "architecture": "workstation agent requirements and a one-click conversation in the station directory",
+      "comparison": "A workstation records the operator requirements and rules its agent conversation and its Tickets follow, and opens its deterministic project-<id> conversation directly in its own directory without asking for a workspace",
       "note": "current latest"
     }
   ]
