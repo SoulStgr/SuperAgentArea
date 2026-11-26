@@ -41,6 +41,7 @@
 | 0.3.17 | 2026-11-26 | `history/dsh-superagent-0.3.17.tgz` | 519,406 | `cc50e66eee549cb0` | `4c819a9` | 工作站 Agent 要求与规则、一键会话（不选工作区） |
 | 0.3.18 | 2026-11-26 | `history/dsh-superagent-0.3.18.tgz` | 521,832 | `d03d4434ac195bcf` | `0057b6f` | 删除工作站、删除会话（会话代数）、规则编辑布局、发布包统一入 history |
 | 0.3.19 | 2026-11-26 | `history/dsh-superagent-0.3.19.tgz` | 522,459 | `12f902101815a207` | `7fd5d8d` | 会话直达（Workspace 预建/命名 SAA-工作站名、不再选工作区）、agent 段精简 |
+| 0.3.20 | 2026-11-26 | `history/dsh-superagent-0.3.20.tgz` | 521,499 | `be07ea133079e9c0` | `9b04b4b` | agent 段再精简（移除工单/产物/报告历史，只保留要求与规则） |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -238,6 +239,14 @@
 - 测试：`pnpm check` 全绿（77 个测试文件 / 1605 项：1591 passed / 14 skipped + build）。
 
 对比 0.3.18：修复工作站会话仍要求选择工作区的问题（本地 Workspace 快照未含新会话）；agent 段不再放会话入口；Workspace 统一以 `SAA-<工作站名称>` 命名。
+
+### 0.3.20
+
+- **agent 段再精简**：移除工作站的「工单历史 / 修改历史（产物）/ 最近报告」三块历史展示，agent 段只保留「Agent 的要求与规则」；历史内容仍在各自页面：工单 → 执行页，产物 → 产物页，报告 → Ticket/Assignment 详情。
+- 同步清理面板中不再使用的历史行组件、`GET projects/:id/history` 轮询、`LoadState` 与相关 CSS；服务端 `GET projects/:id/history` 路由与 `projectHistory` 视图**保留**（面板不再调用）。
+- 测试：更新 panel-workstations（agent 段只断言规则、无工作历史、无工单工作站仍可打开会话）；`pnpm check` 全绿（77 个测试文件 / 1603 项：1589 passed / 14 skipped + build）。
+
+对比 0.3.19：agent 段从「要求与规则 + 历史」精简为「要求与规则」，更聚焦该功能；历史不丢失、只是回到各自归属页面。
 
 ## 3. 回退与复现
 

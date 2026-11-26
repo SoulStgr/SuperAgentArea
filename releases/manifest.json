@@ -360,6 +360,19 @@
       "stateSchema": 12,
       "architecture": "workstation conversation opens directly in a Workspace named SAA-<station>; agent section trimmed to requirements and history",
       "comparison": "A workstation conversation creates and names its Workspace before the Session is shown and merges the Workspace row with its sessionIds, so the DSH conversation no longer asks for a workspace; a Session left outside its Workspace by an older version is started over as the next generation",
+      "note": "superseded by 0.3.20"
+    },
+    {
+      "version": "0.3.20",
+      "tgz": "history/dsh-superagent-0.3.20.tgz",
+      "bytes": 521499,
+      "sha256": "be07ea133079e9c05f37771c71cd9979009f30ca89cb8fd530b931cf2d3216ee",
+      "date": "2026-11-26",
+      "sourceCommit": "9b04b4b6d955eba42b2d4498198e4f8c5fe2a54b",
+      "recordedCommit": "9b04b4b6d955eba42b2d4498198e4f8c5fe2a54b",
+      "stateSchema": 12,
+      "architecture": "workstation agent section trimmed to its requirements and rules; work history stays on its own pages",
+      "comparison": "The workstation agent section only edits the requirements and rules its conversations and workers follow; the Ticket, artifact and report history it used to list stays on the Execution and Artifacts pages, and the history API remains for callers",
       "note": "current latest"
     }
   ]
