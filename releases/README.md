@@ -40,6 +40,7 @@
 | 0.3.16 | 2026-11-26 | `history/dsh-superagent-0.3.16.tgz` | 516,181 | `16aa69f1f7c94443` | `8d74543` | 配置历史密钥脱敏、账号显示名称可改且全安装唯一 |
 | 0.3.17 | 2026-11-26 | `history/dsh-superagent-0.3.17.tgz` | 519,406 | `cc50e66eee549cb0` | `4c819a9` | 工作站 Agent 要求与规则、一键会话（不选工作区） |
 | 0.3.18 | 2026-11-26 | `history/dsh-superagent-0.3.18.tgz` | 521,832 | `d03d4434ac195bcf` | `0057b6f` | 删除工作站、删除会话（会话代数）、规则编辑布局、发布包统一入 history |
+| 0.3.19 | 2026-11-26 | `history/dsh-superagent-0.3.19.tgz` | 522,459 | `12f902101815a207` | `7fd5d8d` | 会话直达（Workspace 预建/命名 SAA-工作站名、不再选工作区）、agent 段精简 |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -227,6 +228,16 @@
 - 测试：`pnpm check` 全绿（77 个测试文件 / 1602 项：1588 passed / 14 skipped + build）；新增删除工作站、删除会话、代数命名与布局用例。
 
 对比 0.3.17：工作站获得删除与「删除会话」生命周期操作；Agent 规则编辑更整洁；发布包不再放仓库根。
+
+### 0.3.19
+
+- **会话直达**：工作站会话点击后，先创建/复用工作站目录的 DSH Workspace 并命名为 `SAA-<工作站名称>`，再创建/采纳确定性 `project-<id>` 会话，随后 `workspaces.rename(...)` 用 host 返回的 Workspace 行（带 `sessionIds`）刷新客户端快照——DSH 对话直接显示该 Workspace、不再出现「选择一个工作区开始」。
+- **旧会话迁移**：若刷新后 Workspace 行仍不含该会话（旧版本遗留、无法在客户端补挂），自动 `POST projects/:id/conversation/reset` 代数 +1，以 `project-<id>-<n>` 新建并再次命名 Workspace；旧会话保留在 DSH、内容不迁移。
+- **agent 段精简**：移除整块「工作站会话」（打开/删除会话），agent 段只保留 Agent 要求与规则 + 工单/产物/报告历史；「打开会话」只保留在工作站卡片与详情页头，「删除会话」移到详情页头与打开并列。
+- 面板与测试：新增/更新 navigation 与 panel-workstations 用例（rename 标题、sessionIds 刷新、rename 失败回落、stale 会话 reset、无 Workspace 回退、agent 段精简）。
+- 测试：`pnpm check` 全绿（77 个测试文件 / 1605 项：1591 passed / 14 skipped + build）。
+
+对比 0.3.18：修复工作站会话仍要求选择工作区的问题（本地 Workspace 快照未含新会话）；agent 段不再放会话入口；Workspace 统一以 `SAA-<工作站名称>` 命名。
 
 ## 3. 回退与复现
 

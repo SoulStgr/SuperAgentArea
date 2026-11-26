@@ -347,6 +347,19 @@
       "stateSchema": 12,
       "architecture": "workstation lifecycle: deletable stations, resettable conversations, and release packages archived under history/",
       "comparison": "A workstation can be deleted when it owns no work, its conversation can be deleted and started over under a new deterministic Session id, the Agent requirements editor lays out add and save cleanly, and every release package lives under history/ instead of the repository root",
+      "note": "superseded by 0.3.19"
+    },
+    {
+      "version": "0.3.19",
+      "tgz": "history/dsh-superagent-0.3.19.tgz",
+      "bytes": 522459,
+      "sha256": "12f902101815a207849e5fd12a98da7f556fb77664e1abc6b89b5bb630bad880",
+      "date": "2026-11-26",
+      "sourceCommit": "7fd5d8dfaecc5c932d15b69e81463ec0d60bdee0",
+      "recordedCommit": "7fd5d8dfaecc5c932d15b69e81463ec0d60bdee0",
+      "stateSchema": 12,
+      "architecture": "workstation conversation opens directly in a Workspace named SAA-<station>; agent section trimmed to requirements and history",
+      "comparison": "A workstation conversation creates and names its Workspace before the Session is shown and merges the Workspace row with its sessionIds, so the DSH conversation no longer asks for a workspace; a Session left outside its Workspace by an older version is started over as the next generation",
       "note": "current latest"
     }
   ]
