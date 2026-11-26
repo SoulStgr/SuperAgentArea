@@ -156,6 +156,9 @@ export type SourceView = SettingsView['sources'][number]
 export type SourceStatusRow = ApiResponse<'GET sources'>[number]
 export type SourceDetailView = ApiResponse<'GET sources/:id'>
 export type SourceKindRow = ApiResponse<'GET source-kinds'>[number]
+/** One WeChat instance's sign-in: the account id and time the panel shows, and one login attempt's state. */
+export type WechatAccountStatus = ApiResponse<'GET sources/:id/wechat/status'>
+export type WechatLoginPoll = ApiResponse<'GET sources/:id/wechat/login/:loginId'>
 export type PendingProject = SourceStatusRow['pendingProjects'][number]
 export type ProjectRow = ApiResponse<'GET projects'>[number]
 export type ProjectDetailView = ApiResponse<'GET projects/:id'>

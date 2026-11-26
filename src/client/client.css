@@ -416,6 +416,10 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-source-kind-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 14px; line-height: 20px; }
 .dt-source-account { align-items: flex-start; border-top: 0.5px solid var(--dsw-alias-border-l2); border-radius: 0; }
 .dt-account-summary { overflow-wrap: anywhere; }
+/* A WeChat account's sign-in state and QR dialog: a compact row of state and actions, and a scannable QR image. */
+.dt-wechat-signin { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.dt-wechat-login { align-items: center; text-align: center; }
+.dt-wechat-qr { width: 240px; height: 240px; padding: 8px; border-radius: 12px; background: #fff; object-fit: contain; }
 .dt-account-edit { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .dt-source-picks { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
 .dt-source-pick { flex: 0 0 calc(25% - 7.5px); min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 10px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }

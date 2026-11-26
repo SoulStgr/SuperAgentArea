@@ -3,16 +3,16 @@
  * account's configuration, and the dialogs that add an account or a whole Source (a type, then an existing account or a
  * new one). An account is a Source instance of its type; a placeholder type lists accounts that save but receive nothing.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
-import { usePoll, type SourceDetailView, type SourceKindRow, type SourceStatusRow } from './api.ts'
+import { usePoll, type SourceDetailView, type SourceKindRow, type SourceStatusRow, type WechatLoginPoll } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag, type IconName } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { usePanel, usePanelData } from './provider.tsx'
 import { governanceRoute, sourceRoute } from './route.ts'
 import { ConfigHistory, Fields, SourceField } from './settings-kit.tsx'
-import { errorText, localized, type T } from './text.ts'
+import { errorText, localized, when, type T } from './text.ts'
 import { ConfirmButton, Hint, LoadState } from './widgets.tsx'
 
 /** The icon that stands for a Source type in the settings list and the add dialog. */
@@ -113,6 +113,8 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
       await call('POST sources', { body: { kind: kind.kind, ...key.trim() ? { key: key.trim() } : {},
         ...label.trim() ? { label: label.trim() } : {}, config } })
       notify(t('sourceAdded', { name: label.trim() || key.trim() || localized(t, kind.title) }))
+      // A WeChat account is only reachable after its QR sign-in; say so without keeping the save from completing.
+      if (kind.kind === 'wechat') notify(t('sourceWechatLoginHintAfterSave'))
       await onCreated()
       onClose()
     } catch (failure) { notify(errorText(failure)) } finally { setBusy(false) }
@@ -128,6 +130,98 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
       <AccountFields kind={kind} keyText={key} labelText={label} config={config} onKey={setKey} onLabel={setLabel} onConfig={setConfig} />
     </div>
   </Modal>
+}
+
+/** One WeChat QR sign-in dialog: starts an attempt, shows its QR image, polls it and closes once the account is signed in. */
+function WechatLoginDialog({ source, onClose, onSignedIn }: {
+  source: SourceStatusRow; onClose: () => void; onSignedIn: () => Promise<unknown>
+}) {
+  const { t, call, notify } = usePanel()
+  const [attempt, setAttempt] = useState<{ loginId: string; qrImage: string }>()
+  const [status, setStatus] = useState<WechatLoginPoll['status']>('wait')
+  const [error, setError] = useState<string>()
+  const [busy, setBusy] = useState(false)
+  // A repeated poll failure reports one toast; the dialog keeps the latest message inline.
+  const reported = useRef(false)
+  // The parent re-renders on its own polls, so the callbacks this dialog finishes with are read through a ref.
+  const latest = useRef({ onClose, onSignedIn, notify, t })
+  latest.current = { onClose, onSignedIn, notify, t }
+  const start = useCallback(async () => {
+    setBusy(true); setError(undefined); setStatus('wait'); setAttempt(undefined); reported.current = false
+    try { setAttempt(await call('POST sources/:id/wechat/login', { id: source.id })) }
+    catch (failure) {
+      setError(errorText(failure))
+      latest.current.notify(errorText(failure))
+      reported.current = true
+    } finally { setBusy(false) }
+  }, [call, source.id])
+  useEffect(() => { void start() }, [start])
+  useEffect(() => {
+    if (!attempt) return
+    let active = true
+    let timer: ReturnType<typeof setInterval> | undefined
+    const poll = async () => {
+      try {
+        const result = await call('GET sources/:id/wechat/login/:loginId', { id: source.id, loginId: attempt.loginId })
+        if (!active) return
+        setStatus(result.status)
+        if (result.error) setError(result.error)
+        if (result.status === 'confirmed') {
+          if (timer) clearInterval(timer)
+          latest.current.notify(latest.current.t('sourceWechatConfirmed'))
+          await latest.current.onSignedIn()
+          if (active) latest.current.onClose()
+        } else if (result.status === 'expired' || result.status === 'failed') {
+          if (timer) clearInterval(timer)
+        }
+      } catch (failure) {
+        if (!active) return
+        setError(errorText(failure))
+        if (!reported.current) { reported.current = true; latest.current.notify(errorText(failure)) }
+      }
+    }
+    timer = setInterval(() => { void poll() }, 2_000)
+    return () => { active = false; if (timer) clearInterval(timer) }
+  }, [attempt, call, source.id])
+  const retry = status === 'expired' || status === 'failed'
+  const message = status === 'scaned' ? t('sourceWechatScanned')
+    : status === 'confirmed' ? t('sourceWechatConfirmed')
+      : status === 'expired' ? t('sourceWechatExpired')
+        : status === 'failed' ? t('sourceWechatFailed', { error: error ?? '' })
+          : t('sourceWechatWaiting')
+  return <Modal open onClose={onClose} className="dt-modal-mid" title={t('sourceWechatLoginTitle')}
+    closeLabel={t('close')} description={t('sourceWechatLoginHint')} footer={<>
+      <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
+      {retry && <Button variant="primary" disabled={busy} onClick={() => { void start() }}>{t('sourceWechatRefresh')}</Button>}
+    </>}>
+    <div className="dt-source-answer dt-wechat-login">
+      {attempt && <img className="dt-wechat-qr" src={attempt.qrImage} alt={t('sourceWechatQrAlt')} />}
+      {busy && <p className="dt-hint" role="status">{t('loading')}</p>}
+      {attempt && <p className={status === 'failed' ? 'dt-error' : 'dt-hint'} role="status">{message}</p>}
+      {!attempt && error && <p className="dt-error">{t('sourceWechatFailed', { error })}</p>}
+    </div>
+  </Modal>
+}
+
+/** One WeChat account's sign-in state, with the QR dialog that starts or repeats the sign-in. */
+function WechatSignIn({ source, onChanged }: { source: SourceStatusRow; onChanged: () => Promise<unknown> }) {
+  const { t, call } = usePanel()
+  const { data: status, reload } = usePoll(() => call('GET sources/:id/wechat/status', { id: source.id }), [source.id])
+  const [open, setOpen] = useState(false)
+  if (!status) return <div className="dt-wechat-signin"><span className="dt-hint" role="status">{t('loading')}</span></div>
+  return <div className="dt-wechat-signin">
+    {status.loggedIn ? <>
+      <Tag tone="success">{t('sourceWechatAccount', { id: status.ilinkBotId ?? '' })}</Tag>
+      {status.at && <span className="dt-hint">{t('sourceWechatSignedInAt', { at: when(status.at, t('lang')) })}</span>}
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>{t('sourceWechatSignInAgain')}</Button>
+    </> : <>
+      <Tag tone="warning">{t('sourceWechatNotSignedIn')}</Tag>
+      <Button variant="primary" size="sm" icon={<Icon name="message" size={14} />}
+        onClick={() => setOpen(true)}>{t('sourceWechatSignIn')}</Button>
+    </>}
+    {open && <WechatLoginDialog source={source} onClose={() => setOpen(false)}
+      onSignedIn={async () => { await reload(); await onChanged() }} />}
+  </div>
 }
 
 /** One account of the selected Source type: its status, configuration summary, and the actions that change it. */
@@ -160,6 +254,7 @@ function SourceAccountRow({ source, placeholder, onChanged }: {
         {placeholder && <Tag tone="warning">{t('sourceComingSoonTag')}</Tag>}
       </div>
       {detail && <div className="dt-row-meta"><span className="dt-account-summary">{configSummary(t, detail)}</span></div>}
+      {source.kind === 'wechat' && <WechatSignIn source={source} onChanged={onChanged} />}
       {error && <p className="dt-error">{error.message}</p>}
       <div className="dt-row-buttons">
         <Button variant="outline" size="sm" aria-expanded={editing} disabled={!detail}
@@ -273,6 +368,7 @@ export function AddSourceDialog({ open, onClose, onCreated }: {
       await call('POST sources', { body: { kind: selected.kind, ...key.trim() ? { key: key.trim() } : {},
         ...label.trim() ? { label: label.trim() } : {}, config } })
       notify(t('sourceAdded', { name: label.trim() || key.trim() || localized(t, selected.title) }))
+      if (selected.kind === 'wechat') notify(t('sourceWechatLoginHintAfterSave'))
       await onCreated()
       onClose()
     } catch (failure) { notify(errorText(failure)) } finally { setBusy(false) }

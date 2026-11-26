@@ -14,7 +14,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 ## 它能做什么
 
-- **监听** 默认监听本地文件夹投件；添加远程文件夹账号后，通过 SFTP 监听另一台机器的收件目录；GitHub（issue、评论、pull request）、飞书群聊、QQ 与钉钉会话在添加账号后监听。来源 *kind* 是可复用的实现，来源 *实例* 是它的一个具体监听配置，例如 `github:owner/name`、`folder:ops`。来源目录共十一类：本地文件夹、远程文件夹、GitHub、飞书、QQ、钉钉已实现；Gitee、微信、Telegram、企业微信应用、邮箱为「接入开发中」，账号可先保存。
+- **监听** 默认监听本地文件夹投件；添加远程文件夹账号后，通过 SFTP 监听另一台机器的收件目录；GitHub（issue、评论、pull request）、飞书群聊、QQ、钉钉会话与微信私聊在添加账号后监听。来源 *kind* 是可复用的实现，来源 *实例* 是它的一个具体监听配置，例如 `github:owner/name`、`folder:ops`。来源目录共十一类：本地文件夹、远程文件夹、GitHub、飞书、QQ、钉钉、微信已实现；Gitee、Telegram、企业微信应用、邮箱为「接入开发中」，账号可先保存。
 - **默认从本地文件夹开始。** 新安装会播种一个 `folder` 实例：收件目录与交付目录在状态目录下（`<stateDir>/area/local/`），操作系统用户名即允许投件的操作者。只播种一次，删除后不会再出现。
 - **先判断再行动。** 不调模型的规则门禁按来源、发送人、事件类型、授权范围与去重先筛一遍；再由模型在主 Session 上判定「接单 / 停止 / 忽略 / 未完成」。主动工作分 `off`、`observe`、`auto` 三档，`observe` 只记录「本来会做什么」，不真的做。
 - **开的是工单，不是聊天会话。** 接单会同时生成一份不可变授权（Mandate，说明谁可以提、这件事能做到哪一步）和一个工单；工单持有自己的订阅、输入、派工与产物。
@@ -30,7 +30,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 | 层 | 职责 | 在本仓库的落点 |
 | --- | --- | --- |
-| **L0 事件源** | GitHub/CI、群聊、文件夹投件、SFTP 远程收件目录、定时与内部事件，在边缘完成归一化 | `src/sources/`（`github*`、`feishu*`、`folder`、`remote`、`qq*`、`dingtalk*`、`connectors`）实现同一份 `SourceKind` 契约，由 `SourceRegistry` 管理实例 |
+| **L0 事件源** | GitHub/CI、群聊、文件夹投件、SFTP 远程收件目录、定时与内部事件，在边缘完成归一化 | `src/sources/`（`github*`、`feishu*`、`folder`、`remote`、`qq*`、`dingtalk*`、`wechat*`、`connectors`）实现同一份 `SourceKind` 契约，由 `SourceRegistry` 管理实例 |
 | **L1 Router**（常驻；只协调，不执行业务） | Trigger 归一化 → Fast Path 规则 → Slow Path 评估 → 建单 → 按优先级与容量派工；订阅、上下文装配、看门狗、人工队列、看板 | `src/core/`（`Intake`、`Evals`、`Tickets`、`Assignments`、`Replies`，统一暴露为一个 `Engine`）、`src/policy.ts`、`src/app/passes.ts`、`src/app/outbox.ts` |
 | **L2 Worker**（每工单一个：独立 Session、目录与上下文） | 理解 → 规划 → 试处理 dry-run → 特性分发 → 并行执行 → 产物与 Spill | `src/executor/dsh.ts`、`cordis.patch.yml` 里的 worker preset、`prompts/worker.md`、subagent |
 | **L3 共享态** | 知识池、运行态、归档与回填、工具环境（存算分离） | SQLite `Store`、`<stateDir>/area/` 目录、产物索引；知识池与归档回填尚未实现 |
@@ -50,7 +50,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 ### 本分支在原型之上补了什么
 
-- **多来源、多实例。** 每种来源 kind 都能开多个具名实例，各自有健康条目、Setup 校验、统计、配置与迁移。本地文件夹来源（inbox → `TASK.md` → 工单 → outbox）已是默认来源：新安装会播种一个 `folder` 实例，收件/交付目录在 `<stateDir>/area/local/` 下，操作系统用户名可投件。来源目录共十一类：本地文件夹、远程文件夹、GitHub、飞书、QQ、钉钉、以及接入开发中的 Gitee、微信、Telegram、企业微信应用、邮箱（账号可保存，暂不接收消息）。远程文件夹 kind 通过 SFTP 监听另一台主机的收件目录，只用密钥认证并强校验主机密钥（见 [docs/006-deployment.md](docs/006-deployment.md#remote-folder-over-sftp)）；QQ kind 通过机器人网关 WebSocket 长连接 QQ 开放平台机器人，无需公网回调地址，接收私聊与群 @ 消息并以带 `msg_id` 的被动回复在原会话回帖（见 [docs/006-deployment.md](docs/006-deployment.md#qq-bot-optional-bot-gateway)）；钉钉 kind 通过 Stream 模式长连接企业机器人，无需公网回调地址，接收私聊与群 @ 消息并在原会话回帖（见 [docs/006-deployment.md](docs/006-deployment.md#dingtalk-bot-optional-stream-mode)）。
+- **多来源、多实例。** 每种来源 kind 都能开多个具名实例，各自有健康条目、Setup 校验、统计、配置与迁移。本地文件夹来源（inbox → `TASK.md` → 工单 → outbox）已是默认来源：新安装会播种一个 `folder` 实例，收件/交付目录在 `<stateDir>/area/local/` 下，操作系统用户名可投件。来源目录共十一类：本地文件夹、远程文件夹、GitHub、飞书、QQ、钉钉、微信，以及接入开发中的 Gitee、Telegram、企业微信应用、邮箱（账号可保存，暂不接收消息）。远程文件夹 kind 通过 SFTP 监听另一台主机的收件目录，只用密钥认证并强校验主机密钥（见 [docs/006-deployment.md](docs/006-deployment.md#remote-folder-over-sftp)）；QQ kind 通过机器人网关 WebSocket 长连接 QQ 开放平台机器人，无需公网回调地址，接收私聊与群 @ 消息并以带 `msg_id` 的被动回复在原会话回帖（见 [docs/006-deployment.md](docs/006-deployment.md#qq-bot-optional-bot-gateway)）；钉钉 kind 通过 Stream 模式长连接企业机器人，无需公网回调地址，接收私聊与群 @ 消息并在原会话回帖（见 [docs/006-deployment.md](docs/006-deployment.md#dingtalk-bot-optional-stream-mode)）；微信 kind 用一个独立个人号扫码登录，接收策略 allowed 名单里的人在私聊发的文字消息并在原会话回帖（见 [docs/006-deployment.md](docs/006-deployment.md#wechat-account-optional-ilink-qr-sign-in)）。
 - **每源策略与提示词。** 每个来源实例拥有自己的接单规则与提示词配置，入口在它卡片/详情页的「策略提示配置」；没保存过的实例继承安装默认。worker 读的是它工单来源的那份配置与该来源 kind 的默认技能，主 Session 读安装默认加已配置来源 kind 的默认技能并集；新的来源 kind 只需按 `skills/dsh-superagent-<kind>/SKILL.md` 提供自己的默认技能。
 - **项目组（工作站）成为一等对象。** 活归属于工作站；项目未注册时由 Eval 拒绝并反问（`needsProject`），人回答后重新评估；内置 `workspace` 承接无归属的临时工单。
 - **产物成为一等结果。** 交付文件在 `ready` 时收集、提升到工作站成果目录、按 hash 与大小建索引、随结果回复交付、面板可下载，并可 **产物 → 工单 → 派工 → worker Session** 逐级反查。
@@ -59,7 +59,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 ## 状态
 
-当前版本 **0.3.8**。P1–P6c 已全部完成：schema 12、来源多实例、项目归属前置、工单源/工作站/产物三个页面、项目会话与历史、以及收口项；**0.3.0** 已通过桌面端真实 E2E。**0.3.1/0.3.2** 把策略与提示词下沉到每个工单源实例，并拆出独立的「策略提示配置」页面（策略、提示词两个 Tab），每种来源 kind 提供自己的默认技能。**0.3.3** 新增「设置」Tab：来源项与多账号管理、两步添加来源、默认本地文件夹只播种一次、删除来源 API。**0.3.4** 让飞书常驻来源项目录；**0.3.5** 把添加来源的类型选择改为紧凑的四列网格；**0.3.6** 新增**远程文件夹（SFTP/SSH）**来源（仅密钥、known_hosts 强校验、不走 shell），来源项固定为 11 类顺序。**0.3.7** 让**钉钉**成为真实来源：企业自建应用机器人走 Stream 长连接，接收私聊与群 @ 消息并在原会话回帖；协议层参考 dsh-im（MIT，见 `THIRD_PARTY_NOTICES.md`）重写，不引入 dsh-im 依赖。**0.3.8** 让 **QQ** 来源按同一方式接入：走机器人网关 WebSocket 长连接，接收私聊与群 @ 消息，并以带 `msg_id` 的被动回复在原会话回帖；微信仍为接入开发中。`pnpm check` 全绿，测试 1400 余项。后续工作记录在 [plan/24-IM与远程来源方案.md](plan/24-IM与远程来源方案.md)：移植微信传输层（不依赖 dsh-im）、仓库站 worktree、L2 生产线提示词与技能、治理、知识池。
+当前版本 **0.3.8**。P1–P6c 已全部完成：schema 12、来源多实例、项目归属前置、工单源/工作站/产物三个页面、项目会话与历史、以及收口项；**0.3.0** 已通过桌面端真实 E2E。**0.3.1/0.3.2** 把策略与提示词下沉到每个工单源实例，并拆出独立的「策略提示配置」页面（策略、提示词两个 Tab），每种来源 kind 提供自己的默认技能。**0.3.3** 新增「设置」Tab：来源项与多账号管理、两步添加来源、默认本地文件夹只播种一次、删除来源 API。**0.3.4** 让飞书常驻来源项目录；**0.3.5** 把添加来源的类型选择改为紧凑的四列网格；**0.3.6** 新增**远程文件夹（SFTP/SSH）**来源（仅密钥、known_hosts 强校验、不走 shell），来源项固定为 11 类顺序。**0.3.7** 让**钉钉**成为真实来源：企业自建应用机器人走 Stream 长连接，接收私聊与群 @ 消息并在原会话回帖；协议层参考 dsh-im（MIT，见 `THIRD_PARTY_NOTICES.md`）重写，不引入 dsh-im 依赖。**0.3.8** 让 **QQ** 来源按同一方式接入：走机器人网关 WebSocket 长连接，接收私聊与群 @ 消息，并以带 `msg_id` 的被动回复在原会话回帖。**0.3.8 之后**接入**微信**来源：独立个人号在面板扫码登录，接收策略 allowed 名单里的人在私聊发的文字消息并在原会话回帖；bot token 只存在本机状态里，不进面板、日志与工单。微信的群自动回复与文件/图片消息是下一阶段。`pnpm check` 全绿，测试 1400 余项。后续工作记录在 [plan/24-IM与远程来源方案.md](plan/24-IM与远程来源方案.md)：微信群回复与附件（P8e）、仓库站 worktree、L2 生产线提示词与技能、治理、知识池。
 
 ## 版本归档
 

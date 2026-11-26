@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { registerHttp } from '../src/app/http.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
@@ -10,6 +10,7 @@ import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SetupError } from '../src/setup.ts'
 import { UserError, type ArtifactRecord, type ProjectRecord, type Ticket, type Trigger } from '../src/core/index.ts'
+import { clearWeixinLogins, weixinToken } from '../src/sources/im/weixin-login.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -313,3 +314,68 @@ it('serves the artifact index and one artifact\'s chain, and downloads a file on
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+it('runs a WeChat QR sign-in through its routes and keeps the token out of every response', async () => {
+  clearWeixinLogins()
+  const saved = new Map<string, unknown>()
+  // iLink over a fake fetch: one QR token, then the statuses the test scripted.
+  const statuses = ['wait', 'confirmed']
+  const fetchImpl = (async (input: URL | string): Promise<Response> => {
+    if (String(input).includes('get_bot_qrcode')) {
+      return new Response(JSON.stringify({ qrcode: 'qr-1', qrcode_img_content: 'https://weixin.qq.com/qr.png' }),
+        { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const status = statuses.shift() ?? 'wait'
+    const body = status === 'confirmed'
+      ? { status, bot_token: 'bot-token-1', ilink_bot_id: 'bot-1', ilink_user_id: 'user-1' } : { status }
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  vi.stubGlobal('fetch', fetchImpl)
+  try {
+    const call = serve({
+      store: { get: (name: string) => saved.get(name), set: (name: string, value: unknown) => { saved.set(name, value) } },
+      sources: {
+        instances: () => [{ id: 'wechat:ops', kind: 'wechat', enabled: true, config: { botType: '3' } }],
+        kind: (id: string) => id === 'wechat:ops' ? { kind: 'wechat' } : undefined,
+      },
+    })
+    // Not signed in at first; starting returns the QR image and an attempt id.
+    expect(await call('GET', 'sources/wechat:ops/wechat/status')).toEqual({ status: 200, body: { loggedIn: false } })
+    const started = await call('POST', 'sources/wechat:ops/wechat/login')
+    expect(started).toMatchObject({ status: 200, body: { qrImage: 'https://weixin.qq.com/qr.png' } })
+    const loginId = (started.body as { loginId: string }).loginId
+    expect(typeof loginId).toBe('string')
+    // The background poll confirms; the token goes to the instance's KV record, and the responses carry the account id only.
+    await vi.waitFor(async () => {
+      const poll = await call('GET', `sources/wechat:ops/wechat/login/${loginId}`)
+      expect(poll).toMatchObject({ status: 200, body: { status: 'confirmed', ilinkBotId: 'bot-1' } })
+    }, { timeout: 5_000 })
+    expect(saved.get(weixinToken('wechat:ops'))).toMatchObject({ token: 'bot-token-1', ilinkBotId: 'bot-1',
+      at: expect.any(String) })
+    const account = await call('GET', 'sources/wechat:ops/wechat/status')
+    expect(account).toMatchObject({ status: 200, body: { loggedIn: true, ilinkBotId: 'bot-1', at: expect.any(String) } })
+    for (const answer of [started, account]) expect(JSON.stringify(answer.body)).not.toContain('bot-token-1')
+    // A new attempt may expire; the route reports it so the panel offers a refresh.
+    statuses.push('expired')
+    const second = await call('POST', 'sources/wechat:ops/wechat/login')
+    const secondId = (second.body as { loginId: string }).loginId
+    await vi.waitFor(async () => {
+      const poll = await call('GET', `sources/wechat:ops/wechat/login/${secondId}`)
+      expect(poll).toMatchObject({ status: 200, body: { status: 'expired' } })
+    })
+    // The sign-in routes only address a saved WeChat instance, and keep the same-origin check.
+    expect(await call('POST', 'sources/folder:ops/wechat/login')).toMatchObject({ status: 404 })
+    expect((await call.raw('POST', 'sources/wechat:ops/wechat/login', undefined, { 'x-orchestrator-request': undefined })).status)
+      .toBe(403)
+    const other = serve({
+      store: { get: () => undefined, set: () => {} },
+      sources: { instances: () => [{ id: 'folder:ops', kind: 'folder' }], kind: () => ({ kind: 'folder' }) },
+    })
+    expect(await other('POST', 'sources/folder:ops/wechat/login')).toMatchObject({ status: 400,
+      body: { error: 'The Source is not a WeChat instance' } })
+  } finally {
+    clearWeixinLogins()
+    vi.unstubAllGlobals()
+  }
+})
+

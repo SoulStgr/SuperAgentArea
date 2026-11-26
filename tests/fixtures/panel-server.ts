@@ -29,6 +29,7 @@ import { folderKind } from '../../src/sources/folder.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import { remoteKind } from '../../src/sources/remote.ts'
 import { qqKind } from '../../src/sources/qq.ts'
+import { wechatKind } from '../../src/sources/wechat.ts'
 import { health as healthEntry, type Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
@@ -128,7 +129,7 @@ const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace
   .slice(0, 60) || 'station'
 // The kinds' configurations differ, and the fake reads them only as the records the views carry. The placeholder
 // connectors are listed last, after the kinds the fake's default instances use, so instance order stays as it was.
-const KINDS = [feishuKind, githubKind, folderKind, remoteKind, qqKind, dingtalkKind, ...connectorKinds] as unknown as SourceKind[]
+const KINDS = [feishuKind, githubKind, folderKind, remoteKind, qqKind, dingtalkKind, wechatKind, ...connectorKinds] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
@@ -182,6 +183,12 @@ export interface PanelServer {
   artifactFiles: Record<string, { name: string; body: string }>
   /** The artifact ids the panel downloaded, in order. */
   downloads: string[]
+  /** The next WeChat QR sign-in's scripted poll answers, consumed by the attempt the panel starts. */
+  wechatPolls: string[]
+  /** The WeChat QR sign-in attempts the fake host started, newest last, with the answers left for each. */
+  wechatLogins: { instance: string; loginId: string; polls: string[] }[]
+  /** Each signed-in WeChat instance's account id and sign-in time, as the status route reports them (never a token). */
+  wechatAccounts: Record<string, { ilinkBotId: string; at: string }>
 }
 export let server: PanelServer
 
@@ -540,6 +547,7 @@ function initial(): PanelServer {
     sourceExec: { feishu: { working: 1, queued: 1, waiting: 0 } },
     ticketSources: { t1: 'feishu', t0: 'feishu', t4: 'feishu' },
     dropped: [], failing: [], artifacts: [], artifactDetails: {}, artifactFiles: {}, downloads: [],
+    wechatPolls: [], wechatLogins: [], wechatAccounts: {},
     setup: { machine: MACHINE, problem: null, feishuProblem: null, problems: {},
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -629,6 +637,30 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     const { [params.id]: _policy, ...policies } = server.settings.policy.sources
     server.settings = { ...server.settings, sources, policy: { ...server.settings.policy, sources: policies } }
     return { deleted: true }
+  } },
+  // WeChat QR sign-in: the fake returns scripted poll answers; `confirmed` signs the instance in, as the host writes its token.
+  'POST sources/:id/wechat/login': { answer: ({ params }) => {
+    const instance = instancesOf().find(item => item.id === params.id)
+    if (!instance) return refuse(404, 'Unknown Source', { code: 'unknownSource', values: { source: params.id } })
+    if (instance.kind !== 'wechat') return refuse(400, 'The Source is not a WeChat instance')
+    const loginId = `login-${server.wechatLogins.length + 1}`
+    server.wechatLogins.push({ instance: params.id, loginId, polls: [...server.wechatPolls] })
+    server.wechatPolls = []
+    return { loginId, qrImage: 'data:image/png;base64,d2VjaGF0' }
+  } },
+  'GET sources/:id/wechat/login/:loginId': { answer: ({ params }) => {
+    const login = server.wechatLogins.filter(item => item.instance === params.id && item.loginId === params.loginId).at(-1)
+    if (!login) return { status: 'expired' as const }
+    const status = login.polls.shift() ?? 'wait'
+    if (status === 'confirmed') {
+      server.wechatAccounts[params.id] = { ilinkBotId: 'wx_bot_1', at: '2026-11-26T00:00:00.000Z' }
+      return { status: 'confirmed' as const, ilinkBotId: 'wx_bot_1' }
+    }
+    return { status: status as 'wait' | 'scaned' | 'expired' | 'failed', ...status === 'failed' ? { error: 'the code expired' } : {} }
+  } },
+  'GET sources/:id/wechat/status': { answer: ({ params }) => {
+    const account = server.wechatAccounts[params.id]
+    return account ? { loggedIn: true, ...account } : { loggedIn: false }
   } },
   'GET projects': { query: ['status'], answer: ({ query }) => projectRows(query.status === 'archived' ? 'archived' : 'active') },
   'GET projects/:id': { answer: ({ params }) => projectDetailOf(params.id) ?? refuse(404, 'Unknown Project',

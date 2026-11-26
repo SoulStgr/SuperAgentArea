@@ -30,6 +30,7 @@ import { PROJECT_HISTORY, projectDecisionList, projectDetail, projectHistory, pr
   projectTicketList } from './views/projects.ts'
 import { settingsView } from './views/settings.ts'
 import { sourceDetail, sourceKinds, sourcesStatus, type SetupState } from './views/sources.ts'
+import { weixinLogins, weixinToken } from '../sources/im/weixin-login.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
@@ -234,6 +235,16 @@ function routes(runtime: HttpHost): Routes {
     if (!runtime.sources.instances().some(instance => instance.id === id)) throw new UserError('unknownSource', { source: id })
     return id
   }
+  /**
+   * A stored WeChat instance, as the sign-in routes require it: a configured instance whose kind is WeChat. The QR sign-in
+   * only applies to a saved account, so an unsaved one is refused like any unknown Source.
+   */
+  const wechatOf = (id: string) => {
+    const instance = runtime.sources.instances().find(item => item.id === id)
+    if (!instance) throw new UserError('unknownSource', { source: id })
+    if (runtime.sources.kind(id)?.kind !== 'wechat') throw new RouteError(400, 'The Source is not a WeChat instance')
+    return instance
+  }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
@@ -276,6 +287,25 @@ function routes(runtime: HttpHost): Routes {
     },
     // A person deletes a Source instance's configuration; its historical Tickets stay readable, and a live Ticket refuses.
     'DELETE sources/:id': ({ params }) => runtime.settings.remove(params.id),
+    // WeChat sign-in: a saved instance starts a QR attempt, the panel polls it, and the confirmed token goes to the instance's
+    // KV record. The responses carry the QR image and the account id only — never the token.
+    'POST sources/:id/wechat/login': async ({ params }) => {
+      const instance = wechatOf(params.id)
+      const botType = typeof instance.config.botType === 'string' ? instance.config.botType : undefined
+      return weixinLogins.start(instance.id, { ...botType === undefined ? {} : { botType },
+        save: credential => store.set(weixinToken(instance.id), credential) })
+    },
+    'GET sources/:id/wechat/login/:loginId': ({ params }) => {
+      wechatOf(params.id)
+      return weixinLogins.status(params.id, params.loginId)
+    },
+    'GET sources/:id/wechat/status': ({ params }) => {
+      wechatOf(params.id)
+      const credential = store.get(weixinToken(params.id))
+      return credential
+        ? { loggedIn: true, ilinkBotId: credential.ilinkBotId, at: credential.at }
+        : { loggedIn: false }
+    },
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
     'GET threads': ({ query }) => {

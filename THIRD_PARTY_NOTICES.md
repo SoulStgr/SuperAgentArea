@@ -2,12 +2,13 @@
 
 ## dsh-im — protocol details adapted
 
-The DingTalk and QQ Sources of this repository adapt protocol details from **dsh-im**, Copyright (c) 2026 xmanrui,
+The DingTalk, QQ and WeChat Sources of this repository adapt protocol details from **dsh-im**, Copyright (c) 2026 xmanrui,
 upstream version **5.10.0** (`https://github.com/xmanrui/dsh-im`), under the MIT License reprinted below. No part of
-dsh-im is imported as a runtime dependency: the adapted code lives in `src/sources/im/dingtalk-transport.ts` and
-`src/sources/im/qq-transport.ts`, and each speaks the same wire protocol through this repository's own Source adapter.
-Only the connection and protocol layer was adapted; the bridge, controller, command, approval, workspace and
-deferred-delivery logic of dsh-im was neither copied nor ported.
+dsh-im is imported as a runtime dependency: the adapted code lives in `src/sources/im/dingtalk-transport.ts`,
+`src/sources/im/qq-transport.ts`, `src/sources/im/weixin-transport.ts` and `src/sources/im/weixin-login.ts`, and each
+speaks the same wire protocol through this repository's own Source adapter. Only the connection and protocol layer was
+adapted; the bridge, controller, command, approval, workspace and deferred-delivery logic of dsh-im was neither copied nor
+ported.
 
 ### DingTalk
 
@@ -37,6 +38,20 @@ workspaces, deferred delivery and artifact delivery stay this repository's own T
 QR-code sign-in and AppSecret provisioning of dsh-im are replaced by the credentials a person enters in this installation's
 settings.
 
+### WeChat (iLink)
+
+| Upstream file (dsh-im 5.10.0) | Adapted into (this repository) | What was adapted |
+| --- | --- | --- |
+| `src/channels/weixin/weixin-api.mjs` | `src/sources/im/weixin-transport.ts` (`beginWeixinLogin`, `pollWeixinLogin`, `getWeixinUpdates`, `sendWeixinText`, `normalizeWeixinInbound`, `splitWeixinText`) and `src/sources/im/weixin-login.ts` (`renderWeixinQrImage`) | The iLink base URL and protocol version 2.4.6, the `iLink-App-Id`/`iLink-App-ClientVersion`/`X-WECHAT-UIN` headers, the bot-token bearer and `AuthorizationType`, the `base_info` payload, the QR handshake (`ilink/bot/get_bot_qrcode?bot_type=3` with `local_token_list`, `ilink/bot/get_qrcode_status`) and its statuses, the `ilink/bot/getupdates` long poll with its `get_updates_buf` cursor (a timeout means no messages), the `ilink/bot/sendmessage` text item with `context_token` and `run_id`, the `message_type` 2 self-message skip, text and voice-transcript extraction, the 1,800-character line-break-aware splitter, trusted-WeChat-URL checks, the `ret`/`errcode` rejection codes and the `-14` stale token, and the failure classification (`network`, `timeout`, `auth`, `rate-limit`, `rejected`, `invalid-response`). The image/file encryption, CDN upload, reply-quote snapshot, typing indicator and proactive-delivery paths are deliberately **not** part of this adaptation |
+| `src/channels/weixin/weixin-runtime.mjs` | `src/sources/im/weixin-login.ts` (`WeixinLoginManager`), `src/sources/wechat.ts` (`watchWechat`, `runWechatInstance`) | The status monitor over `getupdates` (an ordered batch, a cursor committed after handling, three consecutive failures then a backoff), the single attempt that receives one confirmed credential, and the stop/start ordering. This repository replaces dsh-im's Harness bridge and reply bookkeeping with its own Ticket, Outbox and Channel mechanisms |
+| `src/channels/weixin/weixin-controller.mjs` | `src/sources/im/weixin-login.ts` (`WeixinLoginManager`), `src/app/http.ts` (`POST sources/:id/wechat/login`, `GET sources/:id/wechat/login/:loginId`, `GET sources/:id/wechat/status`) | The QR attempt lifecycle: a five-minute attempt, only the newest attempt of an account kept, the `confirmed` answer's `bot_token`/`ilink_bot_id`/`ilink_user_id`, the expired state allowing a new attempt, and the account metadata kept beside the credential. The config store, credential store, per-account runtime supervisor and the panel RPC layer are **not** adapted: the credential is written to this repository's own KV record and the token never leaves the host |
+
+Not adapted and not copied: `weixin-bridge.mjs`, `weixin-controller.mjs`'s config/credential stores and supervisor,
+`config-store.mjs`, `state-store.mjs`, `connection-error.mjs`, `harness-client.mjs`, and every file under
+`src/channels/shared/`. Session binding, commands, approvals, workspaces, deferred delivery and artifact delivery stay this
+repository's own Ticket, Outbox and Source mechanisms. Group chats, media messages and proactive delivery are out of scope
+for this adaptation.
+
 ### MIT License (dsh-im)
 
 Copyright (c) 2026 xmanrui
@@ -59,6 +74,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## qrcode — npm dependency
+
+`qrcode` 1.5.4 (MIT License, Copyright the qrcode contributors) is installed from npm as a normal dependency and is not
+copied into this repository. Its own package carries its license. The WeChat Source renders a QR code as a PNG data URL
+with it when iLink returns QR content that is not already an image URL; the dependency is loaded lazily and is not part of
+the panel bundle.
+
 ## dingtalk-stream — npm dependency
 
 `dingtalk-stream` 2.1.4 (the official DingTalk Stream Mode Node.js SDK, MIT License, Copyright the DingTalk open-platform
@@ -78,6 +100,6 @@ is also marked `UNLICENSED`, so it is not redistributed here.
 
 ## Upgrading
 
-When dsh-im is upgraded upstream, diff its `src/channels/dingtalk/` and `src/channels/qq/` against the tables above and
-merge protocol changes by hand (for QQ also the shared `markdown-chunks.mjs`). This repository pins the adapted version in
-this file (5.10.0) and never adds `@xmanrui/dsh-im` as a dependency.
+When dsh-im is upgraded upstream, diff its `src/channels/dingtalk/`, `src/channels/qq/` and `src/channels/weixin/` against
+the tables above and merge protocol changes by hand (for QQ also the shared `markdown-chunks.mjs`). This repository pins
+the adapted version in this file (5.10.0) and never adds `@xmanrui/dsh-im` as a dependency.

@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Fields } from '../src/client/settings-kit.tsx'
-import { expect, it, onTestFinished } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
@@ -144,11 +144,11 @@ it('lists the eleven Source types with their account counts and coming-soon mark
   await mount()
   await open_group(zh['settingsGroup.sources'])
   expect(all('.dt-source-kind .dt-source-kind-name').map(item => item.textContent)).toEqual(['飞书', 'GitHub', '本地文件夹', '远程文件夹',
-    'QQ', '钉钉', 'Gitee', '微信', 'Telegram', '企业微信应用', '邮箱'])
-  // The two configured accounts are counted under their types; the five types still being built carry the mark.
+    'QQ', '钉钉', '微信', 'Gitee', 'Telegram', '企业微信应用', '邮箱'])
+  // The two configured accounts are counted under their types; the four types still being built carry the mark.
   expect(all('.dt-source-kind').map(button => button.querySelector('.dt-count')?.textContent)).toEqual(['1', '1', '0', '0', '0', '0',
     '0', '0', '0', '0', '0'])
-  expect(all('.dt-source-kind .dt-tag').map(tag => tag.textContent)).toEqual(Array(5).fill(zh.sourceComingSoonTag))
+  expect(all('.dt-source-kind .dt-tag').map(tag => tag.textContent)).toEqual(Array(4).fill(zh.sourceComingSoonTag))
   // The selected type is Feishu: its account shows its settings summary, and an implemented type offers its Policy and prompts.
   expect(all('.dt-source-account')).toHaveLength(1)
   expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceAccountOn)
@@ -173,6 +173,74 @@ it('lists the eleven Source types with their account counts and coming-soon mark
   expect([...all('.dt-source-account')[0]!.querySelectorAll('button')].every(button => button.textContent !== zh.sourcePolicyPrompts))
     .toBe(true)
   expect(all('.dt-source-kind').find(button => button.textContent?.includes('Gitee'))?.querySelector('.dt-count')?.textContent).toBe('1')
+})
+
+/** Opens the Sources settings group and selects one Source type's accounts. */
+async function select_kind(name: string) {
+  await click(find(zh['tab.settings'], '.dt-head button'))
+  await click(find(zh['settingsGroup.sources'], '.dt-settings-link'))
+  await click(all('.dt-source-kind').find(button => button.textContent?.includes(name))!)
+}
+
+it('signs a WeChat account in by QR code: start, poll waiting then scanned, confirm and show the account', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  onTestFinished(() => { vi.useRealTimers() })
+  server.settings = { ...server.settings, sources: { ...server.settings.sources,
+    wechat: { kind: 'wechat', enabled: true, config: { botType: '3' } } } }
+  server.wechatPolls = ['wait', 'scaned', 'confirmed']
+  await mount()
+  await select_kind('微信')
+  const account = () => all('.dt-source-account')[0]!
+  expect(account().textContent).toContain(zh.sourceWechatNotSignedIn)
+  await click(find(zh.sourceWechatSignIn, '.dt-source-account button'))
+  expect(server.requests.find(request => request.path === 'sources/wechat/wechat/login')).toMatchObject({ method: 'POST' })
+  expect(dialog().textContent).toContain(zh.sourceWechatLoginTitle)
+  expect(dialog().querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,d2VjaGF0')
+  // The dialog polls every two seconds: waiting, then scanned, then signed in.
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(dialog().textContent).toContain(zh.sourceWechatWaiting)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(dialog().textContent).toContain(zh.sourceWechatScanned)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceWechatConfirmed)
+  await vi.waitFor(() => expect(account().textContent).toContain(zh.sourceWechatAccount.replace('{id}', 'wx_bot_1')))
+  expect(account().textContent).toContain(zh.sourceWechatSignInAgain)
+  expect(server.requests.some(request => request.path === 'sources/wechat/wechat/status')).toBe(true)
+})
+
+it('offers a refresh when a WeChat QR code expired, then signs in on the new code', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  onTestFinished(() => { vi.useRealTimers() })
+  server.settings = { ...server.settings, sources: { ...server.settings.sources,
+    wechat: { kind: 'wechat', enabled: true, config: {} } } }
+  server.wechatPolls = ['expired']
+  await mount()
+  await select_kind('微信')
+  await click(find(zh.sourceWechatSignIn, '.dt-source-account button'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(dialog().textContent).toContain(zh.sourceWechatExpired)
+  // The refresh button starts a new attempt, and its confirmation signs the account in and closes the dialog.
+  server.wechatPolls = ['confirmed']
+  await click(find(zh.sourceWechatRefresh, '[role="dialog"] button'))
+  expect(server.requests.filter(request => request.path === 'sources/wechat/wechat/login' && request.method === 'POST')).toHaveLength(2)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) }); await settle()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect(server.wechatAccounts.wechat).toMatchObject({ ilinkBotId: 'wx_bot_1' })
+})
+
+it('adds a WeChat account without blocking on its sign-in, and says to scan its QR code', async () => {
+  await mount()
+  await open_group(zh['settingsGroup.sources'])
+  await click(all('.dt-source-kind').find(button => button.textContent?.includes('微信'))!)
+  expect(text()).toContain(zh.sourceAccountsEmpty)
+  await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
+  await type(field<HTMLInputElement>(zh.sourceLabel), '客服微信')
+  await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
+  expect(server.settings.sources.wechat).toBeDefined()
+  // The save is not blocked; its hint says the account still needs its QR sign-in.
+  expect([...document.querySelectorAll('.dt-toast')].map(toast => toast.textContent))
+    .toContain(zh.sourceWechatLoginHintAfterSave)
 })
 
 it('edits an account\'s own settings and switches it off from the Sources settings group', async () => {

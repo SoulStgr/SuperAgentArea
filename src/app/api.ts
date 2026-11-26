@@ -16,6 +16,26 @@ export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as 
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
 export type TicketFilter = typeof TICKET_FILTERS[number]
 export type ThreadFilter = typeof THREAD_FILTERS[number]
+/** The states one WeChat QR sign-in attempt moves through, as the panel polls them. */
+export type WechatLoginStatus = 'wait' | 'scaned' | 'confirmed' | 'expired' | 'failed'
+/** What starting a WeChat QR sign-in returns the panel: the attempt to poll and the QR image to show. */
+export interface WechatLoginStart {
+  loginId: string
+  /** A data URL or an HTTPS WeChat image URL. */
+  qrImage: string
+}
+/** One poll of a WeChat QR sign-in attempt: its state, and the account id once confirmed (never a token). */
+export interface WechatLoginPoll {
+  status: WechatLoginStatus
+  ilinkBotId?: string
+  error?: string
+}
+/** Whether one WeChat instance is signed in, the account id it signed in as and when; never its token. */
+export interface WechatAccountStatus {
+  loggedIn: boolean
+  ilinkBotId?: string
+  at?: string
+}
 /**
  * A person's answer to a Trigger's Project question: an existing Project, a new one (a station, or one temporary `adhoc`
  * task), or the assessment's proposal confirmed.
@@ -45,6 +65,10 @@ export interface Api {
   'GET source-kinds': { response: SourceKindView[] }
   'GET sources': { response: SourceStatusView[] }
   'GET sources/:id': { query?: Paged; response: SourceDetailView }
+  /** One WeChat instance's QR sign-in: start an attempt, poll it, and read whether the instance is signed in. */
+  'POST sources/:id/wechat/login': { response: WechatLoginStart }
+  'GET sources/:id/wechat/login/:loginId': { response: WechatLoginPoll }
+  'GET sources/:id/wechat/status': { response: WechatAccountStatus }
   'POST sources': { body: NewSource; response: { id: string; revision: number; restarting: boolean } }
   'PATCH sources/:id': { body: SourcePatch; response: { revision: number; restarting: boolean } }
   /** Removes a Source instance's configuration; its historical Tickets stay readable. */

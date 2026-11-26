@@ -26,8 +26,13 @@
     # URL). It stays quiet until a person adds an account with the app's Client ID, Client Secret and Robot Code.
     - id: dsh-superagent-dingtalk
       name: dsh-superagent/dingtalk-watch
-    # Placeholder Source kinds (Gitee, WeChat, Telegram, WeCom app, Email) in the eleven-kind catalog: accounts may be
-    # created and saved, while the connection itself is still being developed.
+    # The WeChat Source: one personal WeChat account per instance, signed in by scanning a QR code in the panel. It long-polls
+    # Tencent's iLink bot service for direct messages from the Policy's allowed people and replies in the same conversation;
+    # an instance with no sign-in yet reports paused. It stays quiet until a person adds an account and signs it in.
+    - id: dsh-superagent-wechat
+      name: dsh-superagent/wechat-watch
+    # Placeholder Source kinds (Gitee, Telegram, WeCom app, Email) in the eleven-kind catalog: accounts may be created and
+    # saved, while the connection itself is still being developed.
     - id: dsh-superagent-connectors
       name: dsh-superagent/connectors
     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.
