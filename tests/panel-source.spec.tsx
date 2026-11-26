@@ -88,10 +88,11 @@ it('adds a folder Source from the page, choosing the Source type and then creati
   await click(zh['tab.source'])
   await click(find(zh.sourceAdd, '.dt-status-head button'))
   expect(dialog().textContent).toContain(zh.sourceAddTitle)
-  // Step one lists the ten Source types in a wide four-column flex grid; step two offers the chosen type's accounts and a new account.
-  expect(all('.dt-source-pick')).toHaveLength(10)
+  // Step one lists the eleven Source types in a wide four-column flex grid; step two offers the chosen type's accounts and a new account.
+  expect(all('.dt-source-pick')).toHaveLength(11)
   expect(dialog().className).toContain('dt-modal-wide')
-  expect(dialog().querySelectorAll('.dt-source-picks > .dt-source-pick')).toHaveLength(10)
+  expect(dialog().querySelectorAll('.dt-source-picks > .dt-source-pick')).toHaveLength(11)
+  expect(pick('远程文件夹')).toBeTruthy()
   await click(pick('本地文件夹'))
   expect(dialog().textContent).toContain(zh.sourceNewAccount)
   await type(field<HTMLInputElement>(zh.sourceKey), 'News Ops')

@@ -79,6 +79,11 @@ export const KV = {
   folder: { pending: family<Record<string, { size: number; mtime: number }>, [row: string]>('folder-pending:'),
     seen: family<Record<string, string>, [row: string]>('folder-seen:') },
   /**
+   * Remote folder Source: the content hash of the last handled version of each inbox file, so an unchanged reread is a
+   * duplicate and an edit a new event, also when archiving into `.done` has to wait for a later round.
+   */
+  remote: { seen: family<Record<string, string>, [instance: string]>('remote-seen:') },
+  /**
    * Artifacts: the deliverables earlier versions collected from a ticket's `deliver/` directory, oldest collection last.
    * Since P6c only the schema 12 migration reads them, to index them in the artifact table; nothing writes them any more.
    */

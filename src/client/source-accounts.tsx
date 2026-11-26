@@ -1,5 +1,5 @@
 /**
- * The 工单源 settings group: the ten Source types, each with the accounts configured for it, the form that edits one
+ * The 工单源 settings group: the eleven Source types, each with the accounts configured for it, the form that edits one
  * account's configuration, and the dialogs that add an account or a whole Source (a type, then an existing account or a
  * new one). An account is a Source instance of its type; a placeholder type lists accounts that save but receive nothing.
  */
@@ -224,7 +224,7 @@ export function SourceAccountsSettings() {
 }
 
 /**
- * The dialog that adds a Source to the 工单源 page in two steps: choose one of the ten Source types, then an existing
+ * The dialog that adds a Source to the 工单源 page in two steps: choose one of the eleven Source types, then an existing
  * account (a disabled one is enabled and becomes a card) or a new account, created enabled.
  */
 export function AddSourceDialog({ open, onClose, onCreated }: {

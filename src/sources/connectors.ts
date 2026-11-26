@@ -1,5 +1,5 @@
 /**
- * Placeholder Source kinds for the ten-kind catalog: Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email are listed
+ * Placeholder Source kinds for the eleven-kind catalog: Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email are listed
  * so a person can create and keep their accounts now, while each kind only validates and stores its credentials. None of
  * them watches anything, has a Channel, or reports health beyond the fixed paused "coming soon" state the Source views give
  * a placeholder kind's instances.
@@ -101,7 +101,7 @@ export const connectorKinds = [giteeKind, wechatKind, dingtalkKind, qqKind, tele
 
 export const name = 'dsh-superagent-connectors'
 export const inject = ['orchestrator']
-/** Registers each placeholder kind, so the catalog lists ten kinds while only folder, GitHub and Feishu receive work. */
+/** Registers each placeholder kind, so the catalog lists eleven kinds while only folder, remote, GitHub and Feishu receive work. */
 export function apply(ctx: Context): void {
   for (const kind of connectorKinds) {
     ctx.effect(() => ctx.orchestrator.sources.register(kind), `${kind.kind}: placeholder source kind`)

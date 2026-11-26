@@ -12,6 +12,7 @@ import { folderKind } from '../src/sources/folder.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { HEALTH_TEXT } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
+import { remoteKind } from '../src/sources/remote.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 
 const directories: string[] = []
@@ -47,16 +48,19 @@ describe('placeholder Source kinds', () => {
       expect(kind.threadContext, kind.kind).toBeUndefined()
     }
   })
-  it('offers the ten kinds in the catalog, marking the seven placeholders', () => {
+  it('offers the eleven kinds in the catalog, in plan order, marking the seven placeholders', () => {
     const store = storeOf()
     const sources = new SourceRegistry(() => store.settings())
-    for (const kind of [feishuKind, githubKind, folderKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
+    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
     const catalog = sources.catalog()
-    expect(catalog.map(kind => kind.kind)).toEqual(['folder', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
+    expect(catalog.map(kind => kind.kind))
+      .toEqual(['folder', 'remote', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
     expect(catalog.filter(kind => kind.placeholder).map(kind => kind.kind))
       .toEqual(['qq', 'dingtalk', 'wechat', 'wecom', 'email', 'gitee', 'telegram'])
     // The implemented kinds stay non-placeholder and keep their form defaults.
     expect(catalog.find(kind => kind.kind === 'folder')).toMatchObject({ placeholder: false, defaults: { pollSeconds: 10 } })
+    expect(catalog.find(kind => kind.kind === 'remote'))
+      .toMatchObject({ placeholder: false, defaults: { port: 22, pollSeconds: 30, maxFileBytes: 1048576 } })
   })
   it('shows a placeholder account as paused and coming soon, while its kind receives nothing', () => {
     const settings = SettingsSchema.parse({ sources: {

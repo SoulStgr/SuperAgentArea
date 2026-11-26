@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { feishuKind } from '../src/sources/feishu.ts'
 import { folderKind, folderTrigger } from '../src/sources/folder.ts'
 import { githubKind, pollRound } from '../src/sources/github.ts'
+import { remoteKind } from '../src/sources/remote.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Trigger } from '../src/core/index.ts'
 import { feishuTrigger } from '../src/sources/feishu.ts'
@@ -2022,6 +2023,8 @@ it('serves one card per Source instance, an instance\'s page, added Sources and 
   const path = (name: string) => join(directory, name)
   for (const name of ['in-ops', 'out-ops']) mkdirSync(path(name))
   runtime.sources.register(folderKind)
+  // The remote folder kind is installed too, so the catalog's order shows it between the local folder and the IM kinds.
+  runtime.sources.register(remoteKind)
   const settings = runtime.store.settings()
   runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
     'folder:ops': { kind: 'folder', enabled: true, config: { inbox: path('in-ops'), outbox: path('out-ops'), operator: 'alice',
@@ -2061,7 +2064,8 @@ it('serves one card per Source instance, an instance\'s page, added Sources and 
     expect((tickets.body as { items: { id: string }[] }).items.map(item => item.id).sort()).toEqual(['t-new', 't-old'])
   }
   expect(await api('GET', 'sources/folder:gone')).toMatchObject({ status: 404, body: { code: 'unknownSource' } })
-  expect((await api('GET', 'source-kinds')).body).toMatchObject([{ kind: 'folder' }, { kind: 'feishu' }, { kind: 'github' }])
+  expect((await api('GET', 'source-kinds')).body)
+    .toMatchObject([{ kind: 'folder' }, { kind: 'remote' }, { kind: 'feishu' }, { kind: 'github' }])
   // A person adds a folder Source: its key names it beside the existing instance, and it listens at once.
   const created = await api('POST', 'sources', { kind: 'folder', key: 'Dev Drops', label: '开发投件',
     config: { inbox: path('in-dev'), outbox: path('out-dev'), operator: 'bob', pollSeconds: 10 } })

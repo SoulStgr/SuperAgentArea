@@ -6,8 +6,9 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
 - **A local folder Source, on by default.** A new installation seeds one `folder` instance: drop a file or a task folder into its inbox and it becomes an explicit request from the operator; replies and artifacts land in its outbox. See [Default local folder](#default-local-folder).
+- **A remote folder Source (optional).** An instance watches an inbox on another host over SFTP, using a dedicated SSH key and a strictly checked host key; replies are written to its remote outbox, and handled files move into `.done`. See [Remote folder over SFTP](#remote-folder-over-sftp).
 - **An agent GitHub account (optional).** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account. An installation whose GitHub Source names no repository runs without GitHub: its `gh` fails, and its other Sources work as they do with one.
-- **Optional:** a Feishu bot for chat requests. The ten-kind Source catalog also lists Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email, whose accounts can be saved now while their connections are still being developed.
+- **Optional:** a Feishu bot for chat requests. The eleven-kind Source catalog also lists Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email, whose accounts can be saved now while their connections are still being developed.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for each instance's repository, account, allowed list, rules and prompts, and Settings for the installation-wide Eval, Executor and deployment settings.
 
@@ -23,6 +24,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 - Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
 - GitHub CLI (`gh`) 2.48 or later, only for a GitHub Source. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
+- For a remote folder Source: the OpenSSH client (`sftp` and `ssh-keygen`) on the `PATH` of the dsh-superagent process, and an SSH key the remote host accepts.
 - For a GitHub Source, a repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
@@ -147,7 +149,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-1. **Sources.** Each Source instance's page edits its own configuration. A new installation starts with one **local folder** instance and nothing else; GitHub, Feishu and the other kinds are added with **Add Source**, which creates a named instance of an installed kind. For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. The catalog also offers Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email as **coming soon**: an account saves, but the kind receives and sends nothing yet and its card stays paused. An instance with no open Ticket can be deleted from its page; its historical Tickets stay readable.
+1. **Sources.** Each Source instance's page edits its own configuration. A new installation starts with one **local folder** instance and nothing else; a **remote folder**, GitHub, Feishu and the other kinds are added with **Add Source**, which creates a named instance of an installed kind. For a remote folder, set the host, user, the two absolute local key-file paths and the remote inbox and outbox; see [Remote folder over SFTP](#remote-folder-over-sftp). For GitHub, set the repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages. The catalog also offers Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email as **coming soon**: an account saves, but the kind receives and sends nothing yet and its card stays paused. An instance with no open Ticket can be deleted from its page; its historical Tickets stay readable.
 2. **Policy and prompts, per Source.** An installed instance's page has a **Policy and prompts** section (策略提示配置). Its **Policy** holds the accept rules the instance's work is assessed by — the installation's default rules until the instance saves its own — plus the allowed GitHub accounts and Feishu users who may ask for work, the bot list and the admission table. Until a list has someone, no request through that instance can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**. Its **Prompts** holds the prompt configuration its Tickets' workers read; a default skill of the instance's kind is shown read-only. The installation default rules and configuration, which the main Session reads, are not edited from the panel: change them through the main Session's settings and prompt tools or the management API.
 3. **Routing and Eval.** The header gear's Routing and Eval group sets the accept mode, the Eval timeout and the assessment model, and shows the history of Policy and Eval saves. A rule or admission change on a Source page saves that Source's Policy block; saving an Eval setting saves the Eval block. Each save uses its own revision.
 4. **Executor and environment.** The header gear's Executor and environment group sets the directory root and a prepare command. To give each Ticket a checkout of the repository:
@@ -171,6 +173,58 @@ The first start of a new installation seeds one local folder Source, so dropping
 The seed runs once, after startup, and its one-time record is the KV entry `saa.defaults.seeded`. Deleting the instance later does not bring it back; an installation that already has a folder instance (such as `folder:ops`) keeps it as configured and only gets the record. A failed seed writes no record, so the next start tries again.
 
 A drop is a file (its name and content are the request) or a task folder with `TASK.md`; both are delivered back to the outbox, under the Ticket's id. Deleting the outbox makes later replies undeliverable until the directory is made again.
+
+### Remote folder over SFTP
+
+A remote folder Source applies the local folder's drop model to another host, such as a PC that runs no DeepSeek Harness: an operator copies a file into the remote inbox, the instance reads it over SFTP, and the Ticket's replies are written into the remote outbox. The transport runs `sftp` with an argument array (never a shell) and a batch on standard input. It authenticates with a key only and checks the host key strictly, so this installation stores no password, reads no private-key content and runs no shell on the host.
+
+Configure one instance on its page (**Add Source**, then the instance's settings), or with `PUT settings/source:<instance id>`:
+
+| Field | Meaning |
+| --- | --- |
+| `host`, `port`, `username` | The SSH host (a name or address), port (22 by default) and the remote user |
+| `identityFile` | Absolute local path of the private key, passed to `sftp` with `-i` |
+| `knownHosts` | Absolute local path of the known_hosts file, read with `StrictHostKeyChecking=yes` |
+| `hostKeySha256` | Optional `SHA256:…` pin; when set, `ssh-keygen -F` compares it against the known hosts file before every round and a mismatch fails it |
+| `inbox`, `outbox` | Absolute POSIX paths on the host, such as `/srv/dropbox/inbox`; only letters, digits and `. _ - /`, with no `..`, empty segment, space, quote or wildcard |
+| `pollSeconds` | 30 by default, at least 5 |
+| `maxFileBytes` | 1 MiB by default, from 1 KiB to 16 MiB; a larger file is skipped and named in the health detail |
+| `operator` | The person a drop is attributed to; empty is the OS user name. The Policy's `allowed` list names it |
+
+Prepare a dedicated key and the known hosts file on the machine that runs dsh-superagent:
+
+```sh
+# A dedicated key for this Source. BatchMode=yes cannot prompt, so use a key without a passphrase, or load a
+# passphrase-protected one into the ssh-agent of the dsh-superagent process.
+ssh-keygen -t ed25519 -N '' -C dsh-superagent-remote -f ~/.ssh/dsh-superagent-remote
+
+# Known hosts: copy the host's line from a known_hosts you already verified, or scan it once and compare the
+# fingerprint with the one `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints on the host.
+ssh-keyscan -t ed25519 files.example > ~/.ssh/dsh-superagent-known-hosts
+ssh-keygen -l -f ~/.ssh/dsh-superagent-known-hosts
+```
+
+Put the key's public half into the remote account's `authorized_keys`, restricted to SFTP, and give the remote account only its own drop directories. On the remote host, a minimal `sshd` configuration dedicated to that account:
+
+```
+# /etc/ssh/sshd_config.d/dsh-superagent-remote.conf
+# authorized_keys: restrict,command="internal-sftp" ssh-ed25519 AAAA… dsh-superagent
+Match User dsh-remote
+  PasswordAuthentication no
+  KbdInteractiveAuthentication no
+  PubkeyAuthentication yes
+  PermitTTY no
+  AllowTcpForwarding no
+  X11Forwarding no
+  ForceCommand internal-sftp
+  ChrootDirectory /srv/dsh-remote
+```
+
+With the chroot above, the inbox and outbox are `/inbox` and `/outbox` as the account sees them; make `/srv/dsh-remote` owned by root and its `inbox`/`outbox` directories writable by `dsh-remote`, and leave the account no shell.
+
+A polling round lists the inbox and downloads each candidate file into `<stateDir>/area/remote.tmp/<instance>/`, at most 20 files a round. Hidden entries (including `.done`) and names outside the path alphabet are skipped, as are files larger than `maxFileBytes`; the instance's health detail names the skipped ones and how many files wait for the next round. Each file's UTF-8 text (up to 8,000 characters) becomes the Trigger, and the file is renamed into `<inbox>/.done` once it was received; a failed round keeps the file and counts toward the same three-consecutive-failures health error as the other Sources. The per-instance seen hash remembers a file already received, so a file whose archiving failed is not received twice. A reply is written as `<outbox>/<message id>.md`; a retry of the same message id overwrites the same name. Deleting the remote outbox makes later replies fail as retryable errors.
+
+The remote folder never uses a password, never disables host key checking (`StrictHostKeyChecking=yes` and no `accept-new`), never runs a shell command on the host and never logs a private key: only its path appears in the configuration and the argument array. An account can be saved before it is complete; until `host`, `username`, the two local key paths, `inbox` and `outbox` are set, the instance reports `paused` with what it waits for.
 
 ### Management API
 
@@ -206,7 +260,7 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
-| `github`, `feishu`, `folder`, `history` | Source polling, events and history recovery. Every instance also has its own entry named by its instance id: `<kind>` for a stored instance named after its kind (such as `folder` or `github`), and `<kind>:<key>` for a named one, such as `github:acme-aps`. A placeholder kind's instances report `paused` with the code `placeholder` |
+| `github`, `feishu`, `folder`, `remote`, `history` | Source polling, events and history recovery. Every instance also has its own entry named by its instance id: `<kind>` for a stored instance named after its kind (such as `folder` or `github`), and `<kind>:<key>` for a named one, such as `github:acme-aps`. A remote folder instance's detail names the files a round skipped and the files that wait for the next round. A placeholder kind's instances report `paused` with the code `placeholder` |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -219,7 +273,7 @@ A refusal has a status and `error`, its English text:
 The blocks:
 
 - `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
-- `source:<instance id>`: the id is the kind for a Source stored before instances, else `<kind>:<key>`. A folder Source is one inbox per instance and its config has `inbox`, `outbox`, `operator` and `pollSeconds`; the upgrade turns each old row into `source:folder:<row id>`, and the seeded default is `source:folder`.
+- `source:<instance id>`: the id is the kind for a Source stored before instances, else `<kind>:<key>`. A folder Source is one inbox per instance and its config has `inbox`, `outbox`, `operator` and `pollSeconds`; the upgrade turns each old row into `source:folder:<row id>`, and the seeded default is `source:folder`. A remote folder Source's config has `host`, `port`, `username`, `identityFile`, `knownHosts`, `hostKeySha256`, `inbox`, `outbox`, `pollSeconds`, `maxFileBytes` and `operator`; it stores paths only, never a key or a password.
 - `policy`: the installation's Policy: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `policy:<instance id>`: that Source instance's own Policy part: its kind's fields (such as `allowed`, `bots` and `syncChat`), its `admission` table, and optionally its own `rules` — the same rule shape as the installation's `rules`. Absent `rules` inherits the installation's default rules; a saved list replaces them for that instance only.
 - `eval`: `mode`, `timeoutSeconds` and `model`.
@@ -259,7 +313,7 @@ A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write s
 
 ## Try it
 
-From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
+From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat. For a local or remote folder, drop a file into the inbox: a local drop starts within 10 seconds (the seeded instance), a remote drop within its polling interval, and its reply appears as `<message id>.md` in the same folder's outbox or the remote outbox.
 
 ## Upgrade
 
@@ -295,6 +349,9 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |
 | `The bot lark-cli does not work.` or `The bot identity of app … is …` | Check the configuration's app id and secret |
 | `The Feishu bot is not a member of the chat.` | Add the bot to the chat in the chat's settings; the next attempt succeeds |
+| A remote folder's card reports `Host key verification failed` | The known_hosts file names no key for that host and port, or its key changed: verify the host's fingerprint out of band and update the configured known_hosts file |
+| A remote folder's card reports `Permission denied (publickey)` | The remote account does not accept the configured key: add the key's public half to its `authorized_keys`, and point `identityFile` at the matching private key |
+| A remote folder's settings refuse `The identityFile cannot be read` | The key file path is relative, missing or unreadable by the dsh-superagent process; use an absolute path it can read |
 | `status` exits 2 | A part reports an error, which a restart does not fix: `errors` names each part, as listed under Management API, with its detail; each part clears its own entry once it works again |
 | `status` exits 3 | Setup waits: `setup` says what is missing, and the overview links to the setting that fixes it |
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |

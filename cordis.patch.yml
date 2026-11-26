@@ -14,7 +14,11 @@
     # directory) on a new installation, so this plugin is on by default. Configure more instances from the panel.
     - id: dsh-superagent-folder
       name: dsh-superagent/folder-watch
-    # Placeholder Source kinds (Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app, Email) in the ten-kind catalog: accounts
+    # The remote folder Source: SFTP over SSH with key-only authentication and a strictly checked host key. It stays quiet
+    # until a person adds an account; the default local folder keeps needing no setup.
+    - id: dsh-superagent-remote
+      name: dsh-superagent/remote-watch
+    # Placeholder Source kinds (Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app, Email) in the eleven-kind catalog: accounts
     # may be created and saved, while the connection itself is still being developed.
     - id: dsh-superagent-connectors
       name: dsh-superagent/connectors
