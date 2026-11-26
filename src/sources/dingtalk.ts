@@ -1,23 +1,33 @@
 /**
  * DingTalk Source: one instance is one enterprise-internal bot reached over DingTalk Stream mode. The bot's Stream client
- * (`im/dingtalk-transport.ts`) delivers every text message it receives; a direct message, and a group message that mentions
- * the bot, becomes a Trigger, while messages of the bot itself, non-text messages and unmentioned group messages are counted
- * and dropped. A reply goes back through the route its Trigger carries — the message's own sessionWebhook while it is fresh,
- * the robot API once it expired — and never anywhere else.
+ * (`im/dingtalk-transport.ts`) delivers every message it receives; a direct message, and a group message that mentions the
+ * bot, becomes a Trigger, while messages of the bot itself, unsupported messages and unmentioned group messages are counted
+ * and dropped. A text message becomes a Trigger as it arrives; a picture, a file or a rich-text message is downloaded first
+ * into `<stateDir>/area/attachments/dingtalk/<instance>/<messageId>/` and its Trigger names every saved absolute path, so the
+ * worker can read the file. A message whose attachments cannot be received is counted in the instance's health instead of
+ * opening an empty Ticket. A reply goes back through the route its Trigger carries — the message's own sessionWebhook while
+ * it is fresh, the robot API once it expired — and never anywhere else; replies are text only.
  *
  * The three credentials (Client ID, Client Secret, Robot Code) are required before the bot connects; an account saved with
  * none of them is a new account and reports `paused` until it is filled. Saving does not contact DingTalk: a wrong credential
  * surfaces as this instance's health, and the connection is retried with a 5 s to 60 s backoff, reporting `error` after three
  * consecutive failures. The Client Secret is stored in our own settings, is never logged, never written to a health detail
- * and never put in a Trigger: a reply routes by the conversation ids the Trigger carries plus the instance's credentials.
+ * and never put in a Trigger: a reply routes by the conversation ids the Trigger carries plus the instance's credentials, and
+ * an attachment download carries it only in the access-token request body DingTalk itself requires.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { key, threadKey, type OutboundMessage, type ProjectHint, type Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
-import { DingtalkConnection, DINGTALK_TEXT_CHARS, dingtalkFailureText, replyTargetOf, sendDingtalkReply,
-  type DingtalkMessage, type DingtalkSkipEvent, type DingtalkStreamFactory } from './im/dingtalk-transport.ts'
+import {
+  DingtalkAttachmentError, DINGTALK_ATTACHMENT_BYTES, DINGTALK_ATTACHMENTS_PER_MESSAGE, DINGTALK_TEXT_CHARS,
+  DingtalkConnection, dingtalkFailureText, downloadDingtalkAttachment, replyTargetOf, sendDingtalkReply,
+  type DingtalkAttachmentRef, type DingtalkMessage, type DingtalkSkipEvent, type DingtalkStreamFactory,
+} from './im/dingtalk-transport.ts'
 import { health, reportFailure, sourceContext, type SourceContext } from './host.ts'
 import type { FieldSpec, SourceKind } from './kind.ts'
 
@@ -53,8 +63,138 @@ const RECONCILE_SECONDS = 5
 /** The configuration one instance replies with, as `channel.send` reads it from the Commands the registry scoped to this kind. */
 const scopedConfigs = new WeakMap<object, DingtalkConfig>()
 
-/** The Trigger of one DingTalk message on its instance: the thread is the DingTalk conversation. */
-export function dingtalkTrigger(message: DingtalkMessage, instance: string, config: DingtalkConfig): Trigger {
+/** One attachment saved under this installation's state directory, as a worker reads it and as a Trigger carries it. */
+export interface DingtalkSavedAttachment { path: string; kind: 'image' | 'file'; name: string; mime: string; bytes: number }
+/** Why a message whose attachments could not be received became no Trigger; the Source counts it in the instance's health. */
+export type DingtalkAttachmentSkip = 'attachment-count' | 'attachment-unavailable' | 'attachment-too-large'
+  | 'attachment-untrusted' | 'attachment-download-failed'
+/** How one received message fetches its attachments; the watch loop leaves every default in place. */
+export interface DingtalkReceiveOptions {
+  fetchImpl?: typeof fetch
+  signal?: AbortSignal
+}
+
+/** A short stable hash, so a sanitized path segment or file name stays unique. */
+const shortHash = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 8)
+/**
+ * One safe path segment: only `[A-Za-z0-9._-]`, never `.` or `..`. A value that had to change keeps a short hash, so two
+ * native ids that sanitize alike cannot share one directory.
+ */
+function safeSegment(value: string, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  const cleaned = text.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.\-]+|[.\-]+$/g, '')
+  const usable = cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned.slice(0, 96) : ''
+  if (!usable) return fallback
+  return usable === text ? usable : `${usable}-${shortHash(text)}`
+}
+/** Whether `path` resolves inside `stateDir`; a path that escapes it is never written or kept. */
+function withinStateDir(stateDir: string, path: string): boolean {
+  const inside = relative(resolve(stateDir), resolve(path))
+  return !!inside && !inside.startsWith('..') && !isAbsolute(inside)
+}
+/** The directory one message's attachments are saved in: `<stateDir>/area/attachments/dingtalk/<instance>/<messageId>`. */
+export function dingtalkAttachmentDirectory(stateDir: string, instance: string, messageId: string): string {
+  const directory = join(resolve(stateDir), 'area', 'attachments', 'dingtalk', safeSegment(instance, 'instance'),
+    safeSegment(messageId, 'message'))
+  if (!withinStateDir(stateDir, directory)) throw new Error('The DingTalk attachment directory escapes the state directory')
+  return directory
+}
+/** The file name an attachment is saved as: only `[A-Za-z0-9._-]`, never a path, never `.` or `..`. */
+function safeFileName(value: string, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  const cleaned = text.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.\-]+|[.\-]+$/g, '')
+  const usable = cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned.slice(0, 120) : ''
+  return usable || fallback
+}
+/** The extension a picture is saved under; a Content-Type beyond the four DingTalk sends is kept as raw bytes. */
+const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = { 'image/png': '.png', 'image/jpeg': '.jpg',
+  'image/webp': '.webp', 'image/gif': '.gif' }
+/** A name made unique among the files already saved for one message; the second `image.png` becomes `image-1.png`. */
+function uniqueFileName(name: string, used: Set<string>): string {
+  if (!used.has(name)) { used.add(name); return name }
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const extension = dot > 0 ? name.slice(dot) : ''
+  for (let index = 1; ; index += 1) {
+    const candidate = `${stem}-${index}${extension}`
+    if (!used.has(candidate)) { used.add(candidate); return candidate }
+  }
+}
+/** The file name one downloaded attachment is saved as: a picture by Content-Type, a file by the name DingTalk sent. */
+function attachmentFileName(ref: DingtalkAttachmentRef, name: string, mime: string, messageId: string,
+  used: Set<string>): string {
+  const base = ref.kind === 'image' ? `image${IMAGE_EXTENSIONS[mime] ?? '.bin'}`
+    : safeFileName(name, `file-${safeSegment(messageId, 'message')}`)
+  return uniqueFileName(base, used)
+}
+/** The receipt one failed attachment fetch becomes, as the instance's health counts it. */
+function attachmentSkipOf(error: unknown): DingtalkAttachmentSkip {
+  if (error instanceof DingtalkAttachmentError) {
+    if (error.code === 'too-large') return 'attachment-too-large'
+    if (error.code === 'untrusted-url') return 'attachment-untrusted'
+    if (error.code === 'unavailable') return 'attachment-unavailable'
+  }
+  return 'attachment-download-failed'
+}
+/**
+ * Fetches and saves every attachment of one message under `<stateDir>/area/attachments/dingtalk/<instance>/<messageId>/`.
+ * A message with more than five attachments, an attachment without a download reference, a failed or oversized download and
+ * a download URL outside DingTalk all make the message no work: the directory is removed again and the reason is returned for
+ * the instance's health, so the Source never opens a Ticket that silently misses a file.
+ */
+async function saveDingtalkAttachments(stateDir: string, instance: string, config: DingtalkConfig, message: DingtalkMessage,
+  options: DingtalkReceiveOptions): Promise<{ attachments: DingtalkSavedAttachment[] } | { skipped: DingtalkAttachmentSkip }> {
+  const refs = message.attachments
+  if (!refs.length) return { attachments: [] }
+  if (refs.length > DINGTALK_ATTACHMENTS_PER_MESSAGE) return { skipped: 'attachment-count' }
+  if (refs.some(ref => !ref.downloadCode)) return { skipped: 'attachment-unavailable' }
+  const directory = dingtalkAttachmentDirectory(stateDir, instance, message.messageId)
+  const saved: DingtalkSavedAttachment[] = []
+  const used = new Set<string>()
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    for (const ref of refs) {
+      const file = await downloadDingtalkAttachment({
+        credentials: { clientId: config.clientId, clientSecret: config.clientSecret },
+        robotCode: message.robotCode || config.robotCode,
+        attachment: ref,
+        ...options.fetchImpl ? { fetchImpl: options.fetchImpl } : {},
+        ...options.signal ? { signal: options.signal } : {},
+      })
+      const name = attachmentFileName(ref, file.name, file.mime, message.messageId, used)
+      const path = join(directory, name)
+      if (!withinStateDir(stateDir, path)) throw new Error('The DingTalk attachment path escapes the state directory')
+      await writeFile(path, file.data, { mode: 0o600 })
+      saved.push({ path, kind: ref.kind, name, mime: file.mime, bytes: file.data.byteLength })
+    }
+    return { attachments: saved }
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+    if (options.signal?.aborted) throw error
+    return { skipped: attachmentSkipOf(error) }
+  }
+}
+/** The text a Trigger carries: the original text (when there is one) plus one line per saved attachment with its path. */
+function triggerTextOf(text: string, attachments: readonly DingtalkSavedAttachment[]): string {
+  if (!attachments.length) return text.slice(0, DINGTALK_TEXT_CHARS)
+  const lines = attachments.map((attachment, index) => index === 0 && !text.trim()
+    ? `收到图片/文件：${attachment.path}`
+    : `附件：${attachment.path}（${attachment.kind}/${attachment.mime}）`)
+  const block = lines.join('\n')
+  const original = text.trim()
+  // A long message text is cut so that every attachment path survives: the worker needs the paths more than the tail.
+  const room = DINGTALK_TEXT_CHARS - block.length - 1
+  if (!original || room <= 0) return block.slice(0, DINGTALK_TEXT_CHARS)
+  return `${original.slice(0, room)}\n${block}`
+}
+
+/**
+ * The Trigger of one DingTalk message on its instance: the thread is the DingTalk conversation, and the text names every
+ * attachment the Source saved for the worker (its absolute path plus kind and MIME type). `meta.attachments` carries the
+ * same files as data, so an adapter can read them without parsing the text.
+ */
+export function dingtalkTrigger(message: DingtalkMessage, instance: string, config: DingtalkConfig,
+  attachments: readonly DingtalkSavedAttachment[] = []): Trigger {
   const thread = message.conversationId
   const group = message.conversationType === 'group'
   const address: Record<string, string> = {
@@ -76,29 +216,37 @@ export function dingtalkTrigger(message: DingtalkMessage, instance: string, conf
     human: true,
     addressed: group ? 'mention' : 'direct',
     at: message.createdAt || new Date().toISOString(),
-    text: message.text.slice(0, DINGTALK_TEXT_CHARS),
+    text: triggerTextOf(message.text, attachments),
     channel: { source: instance, thread: `${instance}:${thread}`, address },
     meta: { row: instance, messageId: message.messageId, conversationId: message.conversationId,
       conversationType: message.conversationType, conversationTitle: message.conversationTitle,
       senderStaffId: message.senderStaffId, senderNick: message.senderNick, sessionWebhook: message.sessionWebhook,
       sessionWebhookExpiresAt: message.sessionWebhookExpiresAt, openConversationId: group ? message.openConversationId : '',
-      robotCode: message.robotCode || config.robotCode, addressed: true },
+      robotCode: message.robotCode || config.robotCode, addressed: true,
+      ...attachments.length ? { attachments: attachments.map(attachment => ({ ...attachment })) } : {} },
   }
 }
 /** The name one conversation shows for itself, or its id. */
 const conversationLabel = (message: DingtalkMessage): string => message.conversationType === 'group'
   ? message.conversationTitle || `DingTalk group ${message.conversationId}`
   : message.senderNick || message.senderStaffId
-/** What receiving one message did. */
-export type DingtalkReceipt = 'received' | 'duplicate' | 'filtered' | 'not-allowed'
+/** What receiving one message did; an attachment skip names why the message became no Trigger. */
+export type DingtalkReceipt = 'received' | 'duplicate' | 'filtered' | 'not-allowed' | DingtalkAttachmentSkip
 /**
  * Turns one normalized message into a Trigger and hands it to the Engine: the allow-list filter of this instance drops a
- * sender it does not name, and a message whose Trigger the Engine already holds is a duplicate rather than an error.
+ * sender it does not name, its attachments are fetched first (a message whose files cannot be received becomes no Trigger and
+ * is counted in the instance's health), and a message whose Trigger the Engine already holds is a duplicate, not an error.
  */
 export async function receiveDingtalk(ctx: SourceContext, instance: string, config: DingtalkConfig,
-  message: DingtalkMessage): Promise<DingtalkReceipt> {
+  message: DingtalkMessage, options: DingtalkReceiveOptions = {}): Promise<DingtalkReceipt> {
   if (config.allowedUserIds.length && !config.allowedUserIds.includes(message.senderStaffId)) return 'not-allowed'
-  const trigger = dingtalkTrigger(message, instance, config)
+  let attachments: DingtalkSavedAttachment[] = []
+  if (message.attachments.length) {
+    const outcome = await saveDingtalkAttachments(ctx.deployment.stateDir, instance, config, message, options)
+    if ('skipped' in outcome) return outcome.skipped
+    attachments = outcome.attachments
+  }
+  const trigger = dingtalkTrigger(message, instance, config, attachments)
   const result = await ctx.receive(trigger)
   ctx.threads.describe(threadKey(trigger.threads[0]!), { label: conversationLabel(message), facts: {
     conversation: { label: { zh: '会话', en: 'Conversation' },
@@ -126,8 +274,8 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
   kind: 'dingtalk',
   order: 4,
   title: { zh: '钉钉', en: 'DingTalk' },
-  description: { zh: '接收钉钉企业自建应用机器人收到的私聊与群 @ 消息，并回到原会话；长连接（Stream 模式），不需要公网回调地址。',
-    en: 'Receives the direct messages and group mentions of an enterprise DingTalk bot and replies in the same conversation, over Stream mode; no public callback URL is needed.' },
+  description: { zh: '接收钉钉企业自建应用机器人收到的私聊与群 @ 消息（文字、图片、文件），并回到原会话；长连接（Stream 模式），不需要公网回调地址。',
+    en: 'Receives the direct messages and group mentions of an enterprise DingTalk bot — text, pictures and files — and replies in the same conversation over Stream mode; no public callback URL is needed.' },
   schema: ConfigSchema,
   fields,
   health: ['dingtalk'],
@@ -215,6 +363,8 @@ function connectedText(counters: DingtalkCounters): string {
 /** One connection's options, as the caller injected them; every field has a production default. */
 export interface DingtalkWatchOptions {
   streamFactory?: DingtalkStreamFactory
+  /** The `fetch` attachment downloads use; tests inject a fake, production takes the global one. */
+  fetchImpl?: typeof fetch
   /** How long one Stream handshake may take before the attempt counts as failed. */
   connectTimeoutMs?: number
   /** How often an open connection is checked, and a handshake's `connected` flag polled. */
@@ -253,7 +403,8 @@ async function runDingtalkInstance(ctx: SourceContext, id: string, config: Dingt
       ...options.probeIntervalMs === undefined ? {} : { probeIntervalMs: options.probeIntervalMs },
       onMessage: async message => {
         try {
-          const receipt = await receiveDingtalk(ctx, id, config, message)
+          const receipt = await receiveDingtalk(ctx, id, config, message,
+            options.fetchImpl ? { fetchImpl: options.fetchImpl } : {})
           if (receipt === 'received') counters.received += 1
           else if (receipt === 'duplicate') counters.duplicates += 1
           else counter(receipt)

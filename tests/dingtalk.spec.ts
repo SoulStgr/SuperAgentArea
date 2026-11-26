@@ -1,19 +1,23 @@
 /**
  * The DingTalk Source without DingTalk: message normalization, the token cache, the two reply transports over a fake
- * `fetch`, the Stream connection over a fake client, and the watch loop's health over a fake `SourceContext`. Nothing here
- * opens a socket or calls api.dingtalk.com.
+ * `fetch`, the Stream connection over a fake client, the attachment download and storage, and the watch loop's health over a
+ * fake `SourceContext`. Nothing here opens a socket, calls api.dingtalk.com or needs a real DingTalk file.
  */
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { key, type OutboundMessage, type Trigger } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { apply, dingtalkKind, dingtalkTrigger, receiveDingtalk, watchDingtalk, type DingtalkConfig,
-  type DingtalkWatchOptions } from '../src/sources/dingtalk.ts'
+import { apply, dingtalkAttachmentDirectory, dingtalkKind, dingtalkTrigger, receiveDingtalk, watchDingtalk,
+  type DingtalkConfig, type DingtalkSavedAttachment, type DingtalkWatchOptions } from '../src/sources/dingtalk.ts'
 import type { Health, SourceContext } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
-import { clearDingtalkTokens, dingtalkAccessToken, dingtalkFailureText, DingtalkApiError, DingtalkConnection,
-  DINGTALK_REPLY_CHARS, DINGTALK_TOPIC_ROBOT, DingtalkStreamError, normalizeDingtalkCallback, replyTargetOf,
-  sendDingtalkReply, splitDingtalkText, webhookExpired, type DingtalkMessage, type DingtalkReplyTarget, type DingtalkSkipEvent,
-  type DingtalkStream, type DingtalkStreamClient, type DingtalkStreamEnvelope, type DingtalkStreamFactory } from '../src/sources/im/dingtalk-transport.ts'
+import { clearDingtalkTokens, DINGTALK_ATTACHMENT_BYTES, DINGTALK_ATTACHMENTS_PER_MESSAGE, dingtalkAccessToken,
+  dingtalkFailureText, DingtalkApiError, DingtalkConnection, DINGTALK_REPLY_CHARS, DINGTALK_TOPIC_ROBOT, DingtalkStreamError,
+  normalizeDingtalkCallback, replyTargetOf, sendDingtalkReply, splitDingtalkText, trustedDingtalkDownloadUrl, webhookExpired,
+  type DingtalkMessage, type DingtalkReplyTarget, type DingtalkSkipEvent, type DingtalkStream, type DingtalkStreamClient,
+  type DingtalkStreamEnvelope, type DingtalkStreamFactory } from '../src/sources/im/dingtalk-transport.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 
 const WEBHOOK = 'https://oapi.dingtalk.com/robot/sendBySession?session=abc'
@@ -25,8 +29,8 @@ const future = (): string => new Date(Date.now() + 3_600_000).toISOString()
 const past = (): string => new Date(Date.now() - 3_600_000).toISOString()
 /** One normalized message, a group mention by default. */
 const message = (overrides: Partial<DingtalkMessage> = {}): DingtalkMessage => ({ messageId: 'msg-1', text: 'please fix the typo',
-  senderStaffId: 'staff-1', senderNick: 'Alice', conversationId: 'cid-1', conversationType: 'group', conversationTitle: 'Ops',
-  addressed: true, sessionWebhook: WEBHOOK, sessionWebhookExpiresAt: future(), robotCode: 'robot-1',
+  attachments: [], senderStaffId: 'staff-1', senderNick: 'Alice', conversationId: 'cid-1', conversationType: 'group',
+  conversationTitle: 'Ops', addressed: true, sessionWebhook: WEBHOOK, sessionWebhookExpiresAt: future(), robotCode: 'robot-1',
   openConversationId: 'cid-1', createdAt: '2026-11-26T00:00:00.000Z', ...overrides })
 /** One raw Stream callback payload, a group mention by default; tests change one field to exercise a skip. */
 const callback = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({ msgId: 'msg-1', senderStaffId: 'staff-1',
@@ -64,6 +68,56 @@ function fetchStub(handler: FetchHandler = defaultAnswer): { impl: typeof fetch;
 const tokenCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url.includes('oauth2/accessToken'))
 const webhookCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url === WEBHOOK)
 
+/** One recorded attachment-download call: its URL, HTTP method, parsed body and headers. */
+interface DownloadCall { url: string; method: string; body: unknown; headers: Record<string, string> }
+/** A fake `fetch` answering whole `Response` objects, so a download can carry real bytes and a binary Content-Type. */
+function responseStub(handler: (call: DownloadCall) => Response | 'network'): { impl: typeof fetch; calls: DownloadCall[] } {
+  const calls: DownloadCall[] = []
+  const spy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const call: DownloadCall = { url: String(input), method: init?.method ?? 'GET',
+      body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) as unknown,
+      headers: Object.fromEntries(new Headers(init?.headers).entries()) }
+    calls.push(call)
+    const answer = handler(call)
+    if (answer === 'network') throw new TypeError('fetch failed')
+    return answer
+  })
+  return { impl: spy as unknown as typeof fetch, calls }
+}
+const jsonResponse = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+const binaryResponse = (data: string | Uint8Array<ArrayBuffer>, type: string): Response =>
+  new Response(data, { status: 200, headers: { 'content-type': type } })
+/** A token answer for the download fakes; a download then answers the URL the handler builds. */
+const tokenAnswer = { accessToken: 'token-1', expireIn: 7_200 }
+/** One raw Stream callback payload for a picture, a file or a rich-text message, a group mention by default. */
+const pictureCallback = (overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+  callback({ msgtype: 'picture', text: undefined, content: { downloadCode: 'code-picture' }, ...overrides })
+const fileCallback = (overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+  callback({ msgtype: 'file', text: undefined, content: { downloadCode: 'code-file', fileName: 'report.pdf' }, ...overrides })
+const richTextCallback = (richText: unknown[], overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+  callback({ msgtype: 'richtext', text: undefined, content: { richText }, ...overrides })
+/** The normalized message of a callback, for the cases that drive `receiveDingtalk` directly. */
+function messageOf(payload: Record<string, unknown>): DingtalkMessage {
+  const inbound = normalizeDingtalkCallback(payload)
+  if ('skipped' in inbound) throw new Error(`The callback was skipped: ${inbound.skipped.reason}`)
+  return inbound.message
+}
+/** The attachments a Trigger carries for its worker. */
+const attachmentsOf = (trigger: Trigger): DingtalkSavedAttachment[] => trigger.meta.attachments as DingtalkSavedAttachment[]
+/** Runs one case with a fresh state directory, removed afterwards. */
+async function withStateDir(run: (stateDir: string) => Promise<void>): Promise<void> {
+  const stateDir = await mkdtemp(join(tmpdir(), 'dsh-dingtalk-'))
+  try { await run(stateDir) } finally { await rm(stateDir, { recursive: true, force: true }) }
+}
+/** A Source context that records the Triggers it receives and names one state directory for attachment downloads. */
+function attachmentSource(stateDir: string): { ctx: SourceContext; received: Trigger[]; receive: ReturnType<typeof vi.fn> } {
+  const received: Trigger[] = []
+  const receive = vi.fn((trigger: Trigger) => { received.push(trigger); return 'stored' as const })
+  const ctx = { deployment: { stateDir }, receive, threads: { describe: vi.fn() } } as unknown as SourceContext
+  return { ctx, received, receive }
+}
+
 /** A fake Stream client: a connect flag, one listener per topic, recorded acks and disconnects, and a way to push a callback. */
 interface FakeClient extends DingtalkStreamClient {
   listeners: Map<string, (envelope: DingtalkStreamEnvelope) => void>
@@ -98,7 +152,7 @@ function clientFactory(client: FakeClient): DingtalkStreamFactory {
 
 /** The health reports one fake Source context received, in order. */
 interface FakeSource { ctx: SourceContext; reports: { id: string; health: Health }[]; receive: ReturnType<typeof vi.fn> }
-function fakeSource(configs: DingtalkConfig[], options: { configured?: boolean; enabled?: boolean } = {}): FakeSource {
+function fakeSource(configs: DingtalkConfig[], options: { configured?: boolean; enabled?: boolean; stateDir?: string } = {}): FakeSource {
   const reports: { id: string; health: Health }[] = []
   const receive = vi.fn((_trigger: Trigger) => 'stored' as const)
   const instances = configs.map((value, index) => ({ id: index ? `dingtalk:ops-${index}` : 'dingtalk:ops', kind: 'dingtalk',
@@ -107,6 +161,7 @@ function fakeSource(configs: DingtalkConfig[], options: { configured?: boolean; 
     ready: Promise.resolve(),
     configured: () => options.configured ?? true,
     instances: () => instances,
+    deployment: { stateDir: options.stateDir ?? join(tmpdir(), 'dsh-dingtalk-fake-state') },
     report: (id: string, health: Health) => { reports.push({ id, health }) },
     receive,
     threads: { describe: vi.fn() },
@@ -186,15 +241,44 @@ describe('normalization', () => {
       atUsers: [{ dingtalkId: 'bot-user', staffId: 'staff-1' }] }))
     expect(byAtUser).toMatchObject({ message: { addressed: true } })
   })
-  it('skips a group message that does not mention the bot, the bot\'s own message, non-text and malformed callbacks', () => {
+  it('skips a group message that does not mention the bot, the bot\'s own message, unsupported and malformed callbacks', () => {
     const skipped = (payload: Record<string, unknown>): unknown => normalizeDingtalkCallback(payload)
     expect(skipped(callback({ isInAtList: false }))).toEqual({ skipped: { reason: 'not-addressed', messageId: 'msg-1', messageType: 'text' } })
     expect(skipped(callback({ senderStaffId: undefined, senderId: 'bot-user' }))).toEqual({ skipped: { reason: 'self', messageId: 'msg-1',
       messageType: 'text' } })
-    expect(skipped(callback({ msgtype: 'picture', text: undefined }))).toEqual({ skipped: { reason: 'non-text', messageId: 'msg-1',
-      messageType: 'picture' } })
+    // A medium this Source cannot read is still counted as non-text, like an empty rich-text card.
+    expect(skipped(callback({ msgtype: 'voice', text: undefined }))).toEqual({ skipped: { reason: 'non-text', messageId: 'msg-1',
+      messageType: 'voice' } })
+    expect(skipped(callback({ msgtype: 'richtext', text: undefined, content: { richText: [] } }))).toEqual({ skipped: { reason: 'non-text',
+      messageId: 'msg-1', messageType: 'richtext' } })
     expect(skipped(callback({ msgId: undefined }))).toEqual({ skipped: { reason: 'invalid', messageType: 'text' } })
     expect(normalizeDingtalkCallback('not an object')).toEqual({ skipped: { reason: 'invalid' } })
+  })
+  it('turns a picture, a file and a rich-text message into the attachments to download', () => {
+    expect(normalizeDingtalkCallback(pictureCallback())).toMatchObject({ message: {
+      text: '', attachments: [{ kind: 'image', downloadCode: 'code-picture', name: '' }] } })
+    // A picture callback may name its code `pictureDownloadCode`.
+    expect(normalizeDingtalkCallback(pictureCallback({ content: { pictureDownloadCode: 'code-fallback' } }))).toMatchObject({
+      message: { attachments: [{ kind: 'image', downloadCode: 'code-fallback' }] } })
+    expect(normalizeDingtalkCallback(fileCallback())).toMatchObject({ message: {
+      attachments: [{ kind: 'file', downloadCode: 'code-file', name: 'report.pdf' }] } })
+    expect(normalizeDingtalkCallback(fileCallback({ content: { downloadCode: 'code-file' } }))).toMatchObject({ message: {
+      attachments: [{ kind: 'file', downloadCode: 'code-file', name: '' }] } })
+    // The pictures of a rich-text message are attachments in order, and its text entries make the message text.
+    expect(normalizeDingtalkCallback(richTextCallback([
+      { type: 'text', text: 'look at these' }, { type: 'picture', downloadCode: 'code-image-1' },
+      { type: 'picture', pictureDownloadCode: 'code-image-2' }]))).toMatchObject({ message: { text: 'look at these', attachments: [
+      { kind: 'image', downloadCode: 'code-image-1' }, { kind: 'image', downloadCode: 'code-image-2' }] } })
+    // DingTalk may send the content as JSON text rather than as an object.
+    expect(normalizeDingtalkCallback(callback({ msgtype: 'richtext', text: undefined,
+      content: JSON.stringify({ richText: [{ type: 'picture', downloadCode: 'code-json' }] }) }))).toMatchObject({ message: {
+      text: '', attachments: [{ kind: 'image', downloadCode: 'code-json' }] } })
+  })
+  it('keeps every picture of a rich-text message, including more than one message may carry, for the Source to refuse', () => {
+    const pictures = Array.from({ length: DINGTALK_ATTACHMENTS_PER_MESSAGE + 1 }, (_, index) =>
+      ({ type: 'picture', downloadCode: `code-${index}` }))
+    expect(normalizeDingtalkCallback(richTextCallback(pictures))).toMatchObject({ message: {
+      attachments: pictures.map((_, index) => ({ kind: 'image', downloadCode: `code-${index}` })) } })
   })
   it('drops a reply address that is not a trusted DingTalk URL, and keeps DingTalk\'s expiry time', () => {
     const inbound = normalizeDingtalkCallback(callback({ sessionWebhook: 'http://evil.example/steal', sessionWebhookExpiredTime: 1_700_000_000_000 }))
@@ -236,6 +320,204 @@ describe('triggers', () => {
     expect(receive).toHaveBeenCalledTimes(2)
     expect(await receiveDingtalk(ctx, 'dingtalk:ops', config({ allowedUserIds: 'staff-2' }), message())).toBe('not-allowed')
     expect(receive).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('inbound attachments', () => {
+  it('accepts an HTTPS DingTalk or Alibaba CDN download address and refuses every other host', () => {
+    expect(trustedDingtalkDownloadUrl('https://static.dingtalk.com/a?sign=1')).toBe('https://static.dingtalk.com/a?sign=1')
+    expect(trustedDingtalkDownloadUrl('https://dingtalk.com/a')).toBe('https://dingtalk.com/a')
+    expect(trustedDingtalkDownloadUrl('https://media.alicdn.com/a')).toBe('https://media.alicdn.com/a')
+    expect(trustedDingtalkDownloadUrl('https://api.dingtalk.com/x')).toBe('https://api.dingtalk.com/x')
+    // Plain HTTP, another host and a host merely ending in the trusted name are all refused.
+    expect(trustedDingtalkDownloadUrl('http://static.dingtalk.com/a')).toBe('')
+    expect(trustedDingtalkDownloadUrl('https://evil.example/a')).toBe('')
+    expect(trustedDingtalkDownloadUrl('https://dingtalk.com.evil.example/a')).toBe('')
+    expect(trustedDingtalkDownloadUrl('https://user:pass@static.dingtalk.com/a')).toBe('')
+    expect(trustedDingtalkDownloadUrl('https://static.dingtalk.com:8443/a')).toBe('')
+    expect(trustedDingtalkDownloadUrl('not a url')).toBe('')
+  })
+  it('saves an inbound picture under the state directory and names its absolute path in the Trigger', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        if (call.url.endsWith('/v1.0/robot/messageFiles/download')) {
+          return jsonResponse({ downloadUrl: 'https://static.dingtalk.com/media/one.png?sign=abc' })
+        }
+        return binaryResponse('png-bytes', 'image/png')
+      })
+      const source = attachmentSource(stateDir)
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(pictureCallback()), { fetchImpl: stub.impl }))
+        .toBe('received')
+      expect(source.received).toHaveLength(1)
+      const trigger = source.received[0]!
+      const attachment = attachmentsOf(trigger)[0]!
+      expect(attachment).toMatchObject({ kind: 'image', name: 'image.png', mime: 'image/png', bytes: 9 })
+      expect(attachment.path).toBe(join(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'), 'image.png'))
+      expect(relative(stateDir, attachment.path).startsWith('..')).toBe(false)
+      expect(await readFile(attachment.path, 'utf8')).toBe('png-bytes')
+      expect(trigger.text).toBe(`收到图片/文件：${attachment.path}`)
+      // The download-address request names the reference DingTalk issued and carries the access token.
+      const addressRequest = stub.calls.find(call => call.url.endsWith('/v1.0/robot/messageFiles/download'))!
+      expect(addressRequest.body).toEqual({ downloadCode: 'code-picture', robotCode: 'robot-1' })
+      expect(addressRequest.headers['x-acs-dingtalk-access-token']).toBe('token-1')
+      // The bytes come from the signed DingTalk URL alone, and the reply route is unchanged.
+      expect(stub.calls.filter(call => call.method === 'GET').map(call => call.url))
+        .toEqual(['https://static.dingtalk.com/media/one.png?sign=abc'])
+      expect(trigger.channel!.address).toMatchObject({ conversationType: 'group', openConversationId: 'cid-1', robotCode: 'robot-1' })
+      expect(JSON.stringify(trigger)).not.toContain('token-1')
+    })
+  })
+  it('names a picture from its Content-Type and keeps an unknown type as .bin', async () => {
+    await withStateDir(async stateDir => {
+      let type = 'image/jpeg; charset=binary'
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        if (call.url.endsWith('/v1.0/robot/messageFiles/download')) {
+          return jsonResponse({ downloadUrl: 'https://static.dingtalk.com/media/x' })
+        }
+        return binaryResponse('x', type)
+      })
+      const source = attachmentSource(stateDir)
+      await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(pictureCallback()), { fetchImpl: stub.impl })
+      type = 'image/tiff'
+      await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(pictureCallback({ msgId: 'msg-2' })),
+        { fetchImpl: stub.impl })
+      expect(attachmentsOf(source.received[0]!)[0]).toMatchObject({ name: 'image.jpg', mime: 'image/jpeg' })
+      expect(attachmentsOf(source.received[1]!)[0]).toMatchObject({ name: 'image.bin', mime: 'image/tiff' })
+    })
+  })
+  it('saves a file under the name DingTalk sent, sanitized, and falls back to the message id', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        if (call.url.endsWith('/v1.0/robot/messageFiles/download')) {
+          return jsonResponse({ downloadUrl: 'https://media.dingtalk.com/file/x' })
+        }
+        return binaryResponse('%PDF-1.4', 'application/pdf')
+      })
+      const source = attachmentSource(stateDir)
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(fileCallback({
+        content: { downloadCode: 'code-file', fileName: '../../etc/passwd' } })), { fetchImpl: stub.impl })).toBe('received')
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(fileCallback({
+        msgId: 'msg-2', content: { downloadCode: 'code-file' } })), { fetchImpl: stub.impl })).toBe('received')
+      const first = attachmentsOf(source.received[0]!)[0]!
+      expect(first).toMatchObject({ kind: 'file', mime: 'application/pdf', bytes: 8 })
+      // The provider name is not trusted as a path: the saved name has no directory part, and the file stays in its directory.
+      expect(first.name).toBe('etc-passwd')
+      expect(relative(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'), first.path)).toBe(first.name)
+      expect(await readFile(first.path, 'utf8')).toBe('%PDF-1.4')
+      expect(attachmentsOf(source.received[1]!)[0]!.name).toBe('file-msg-2')
+    })
+  })
+  it('lists the original text and every attachment of a rich-text message, naming clashing files apart', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        if (call.url.endsWith('/v1.0/robot/messageFiles/download')) {
+          const body = call.body as { downloadCode: string }
+          return jsonResponse({ downloadUrl: `https://static.dingtalk.com/media/${body.downloadCode}` })
+        }
+        return binaryResponse(call.url.split('/').at(-1) ?? '', 'image/png')
+      })
+      const source = attachmentSource(stateDir)
+      const raw = richTextCallback([{ type: 'text', text: 'see the two pictures' },
+        { type: 'picture', downloadCode: 'code-a' }, { type: 'picture', downloadCode: 'code-b' }])
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(raw), { fetchImpl: stub.impl })).toBe('received')
+      const trigger = source.received[0]!
+      const attachments = attachmentsOf(trigger)
+      // Both are PNGs, so the second file keeps the same base name with a sequence number.
+      expect(attachments.map(attachment => attachment.name)).toEqual(['image.png', 'image-1.png'])
+      expect(await readFile(attachments[0]!.path, 'utf8')).toBe('code-a')
+      expect(await readFile(attachments[1]!.path, 'utf8')).toBe('code-b')
+      expect(attachmentsOf(trigger)).toEqual([
+        { path: join(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'), 'image.png'), kind: 'image',
+          name: 'image.png', mime: 'image/png', bytes: 6 },
+        { path: join(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'), 'image-1.png'), kind: 'image',
+          name: 'image-1.png', mime: 'image/png', bytes: 6 },
+      ])
+      expect(trigger.text).toBe(`see the two pictures\n附件：${attachments[0]!.path}（image/image/png）\n附件：${attachments[1]!.path}（image/image/png）`)
+    })
+  })
+  it('receives a text message as before, without an attachment directory', async () => {
+    await withStateDir(async stateDir => {
+      const source = attachmentSource(stateDir)
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), message())).toBe('received')
+      expect(source.received[0]!.text).toBe('please fix the typo')
+      expect(source.received[0]!.meta.attachments).toBeUndefined()
+      await expect(stat(join(stateDir, 'area'))).rejects.toThrow()
+    })
+  })
+  it('skips a picture with no download reference without contacting DingTalk', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => jsonResponse({}))
+      const source = attachmentSource(stateDir)
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(pictureCallback({ content: {} })),
+        { fetchImpl: stub.impl })).toBe('attachment-unavailable')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toEqual([])
+      await expect(stat(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('skips a message with more than five attachments instead of receiving part of it', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => jsonResponse({}))
+      const source = attachmentSource(stateDir)
+      const pictures = Array.from({ length: DINGTALK_ATTACHMENTS_PER_MESSAGE + 1 }, (_, index) => ({ type: 'picture',
+        downloadCode: `code-${index}` }))
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(richTextCallback(pictures)),
+        { fetchImpl: stub.impl })).toBe('attachment-count')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toEqual([])
+      await expect(stat(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('skips a message whose download fails, keeping no partial directory', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        return jsonResponse({ message: 'boom' }, 500)
+      })
+      const source = attachmentSource(stateDir)
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(pictureCallback()),
+        { fetchImpl: stub.impl })).toBe('attachment-download-failed')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls.some(call => call.method === 'GET')).toBe(false)
+      await expect(stat(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('refuses a file larger than 20 MiB and keeps none of it', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        if (call.url.endsWith('/v1.0/robot/messageFiles/download')) {
+          return jsonResponse({ downloadUrl: 'https://static.dingtalk.com/media/huge' })
+        }
+        return binaryResponse(new Uint8Array(DINGTALK_ATTACHMENT_BYTES + 1), 'application/octet-stream')
+      })
+      const source = attachmentSource(stateDir)
+      expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(), messageOf(fileCallback()),
+        { fetchImpl: stub.impl })).toBe('attachment-too-large')
+      expect(source.receive).not.toHaveBeenCalled()
+      await expect(stat(dingtalkAttachmentDirectory(stateDir, 'dingtalk:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('never fetches a download address outside DingTalk', async () => {
+    await withStateDir(async stateDir => {
+      for (const [index, downloadUrl] of ['http://static.dingtalk.com/media/x', 'https://evil.example/x',
+        'https://dingtalk.com.evil.example/x'].entries()) {
+        const stub = responseStub(call => {
+          if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+          return jsonResponse({ downloadUrl })
+        })
+        const source = attachmentSource(stateDir)
+        expect(await receiveDingtalk(source.ctx, 'dingtalk:ops', config(),
+          messageOf(pictureCallback({ msgId: `msg-evil-${index}` })), { fetchImpl: stub.impl })).toBe('attachment-untrusted')
+        expect(source.receive).not.toHaveBeenCalled()
+        expect(stub.calls.some(call => call.method === 'GET')).toBe(false)
+        expect(stub.calls.some(call => call.url === downloadUrl)).toBe(false)
+      }
+    })
   })
 })
 
@@ -500,6 +782,23 @@ describe('the plugin loop', () => {
       await vi.waitFor(() => expect(lastHealth(source, 'dingtalk:ops')).toMatchObject({ state: 'ready' }))
       await vi.waitFor(() => expect(lastHealth(source, 'dingtalk:ops-1')).toMatchObject({ state: 'ready' }))
       expect(clients).toHaveLength(2)
+    })
+  }, 20_000)
+  it('counts a message whose attachments cannot be downloaded in the health detail, without a Ticket', async () => {
+    await withStateDir(async stateDir => {
+      const clients: FakeClient[] = []
+      const source = fakeSource([config()], { stateDir })
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        return jsonResponse({ message: 'unavailable' }, 503)
+      })
+      await watching(source, { streamFactory: streamFactoryOf(clients), fetchImpl: stub.impl, probeIntervalMs: 2, backoffMs: [1],
+        reconcileSeconds: 0.05 }, async () => {
+        await vi.waitFor(() => expect(lastHealth(source)).toMatchObject({ state: 'ready' }))
+        clients[0]!.push({ headers: { messageId: 'envelope-picture' }, data: JSON.stringify(pictureCallback()) })
+        await vi.waitFor(() => expect(lastHealth(source)!.detail).toContain('skipped (attachment-download-failed 1)'))
+        expect(source.receive).not.toHaveBeenCalled()
+      })
     })
   }, 20_000)
   it('registers the kind and starts its loop from the plugin entry', async () => {

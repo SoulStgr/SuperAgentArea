@@ -1,11 +1,13 @@
 /**
- * DingTalk transport: the bot's Stream long connection, inbound message normalization, the access token cache and the two
- * reply transports — the message's own `sessionWebhook` first, the robot API once it expired.
+ * DingTalk transport: the bot's Stream long connection, inbound message normalization (including the attachments a picture,
+ * file or rich-text callback names and the download that turns one into bytes), the access token cache, the attachment
+ * download path and the two reply transports — the message's own `sessionWebhook` first, the robot API once it expired.
  *
  * Protocol details adapted from dsh-im (MIT, Copyright (c) 2026 xmanrui, upstream 5.10.0), files
- * `src/channels/dingtalk/dingtalk-runtime.mjs` and `src/channels/dingtalk/dingtalk-api.mjs`; see THIRD_PARTY_NOTICES.md.
- * Only the wire protocol is adapted: this module has no session, command, approval or workspace logic, and imports no part
- * of dsh-im.
+ * `src/channels/dingtalk/dingtalk-runtime.mjs`, `src/channels/dingtalk/dingtalk-api.mjs` and
+ * `src/channels/dingtalk/dingtalk-bridge.mjs` (the attachment references a callback names and the file download API); see
+ * THIRD_PARTY_NOTICES.md. Only the wire protocol is adapted: this module has no session, command, approval or workspace
+ * logic, and imports no part of dsh-im.
  *
  * Nothing here reads configuration: the credentials come from a caller that stores them (the Source instance), and the
  * clientSecret never appears in a transport error, a log line, a health detail or a Trigger.
@@ -21,7 +23,15 @@ export const DINGTALK_API_BASE = 'https://api.dingtalk.com/'
 export const DINGTALK_TEXT_CHARS = 8000
 /** The longest piece of reply text one DingTalk message may carry; a longer reply is sent as several messages. */
 export const DINGTALK_REPLY_CHARS = 4_000
+/** The largest attachment one DingTalk message may deliver; a larger file is skipped and counted in the instance's health. */
+export const DINGTALK_ATTACHMENT_BYTES = 20 * 1024 * 1024
+/** The most attachments one DingTalk message may carry; a message with more is skipped instead of partly received. */
+export const DINGTALK_ATTACHMENTS_PER_MESSAGE = 5
 const REQUEST_TIMEOUT_MS = 15_000
+/** How long the file bytes themselves may take to download; the download-address request keeps the API timeout. */
+const DOWNLOAD_TIMEOUT_MS = 30_000
+/** The hosts a DingTalk file download URL may name: DingTalk itself and the Alibaba CDN that serves its media. */
+const DINGTALK_DOWNLOAD_HOSTS = ['dingtalk.com', 'alicdn.com'] as const
 /** A cached token is refreshed this long before DingTalk expires it. */
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000
 const DEFAULT_TOKEN_SECONDS = 7_200
@@ -65,12 +75,39 @@ export class DingtalkStreamError extends Error {
 
 /** The two credentials every DingTalk API call needs; the app's Client ID and Client Secret. */
 export interface DingtalkCredentials { clientId: string; clientSecret: string }
-/** One inbound text message the bot received, normalized for the Source. */
+/** Why one attachment of an inbound message could not be fetched; the Source counts it in the instance's health. */
+export type DingtalkAttachmentFailure = 'unavailable' | 'too-large' | 'untrusted-url' | 'download-failed'
+/**
+ * A failed attachment download: its kind, plus what failed for a health detail. The message never carries the access token
+ * or the signed download URL, because neither may reach a log, a health detail or a Trigger.
+ */
+export class DingtalkAttachmentError extends Error {
+  readonly code: DingtalkAttachmentFailure
+  readonly status: number | undefined
+
+  constructor(code: DingtalkAttachmentFailure, message: string, options: { status?: number; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? {} : { cause: options.cause })
+    this.name = 'DingtalkAttachmentError'
+    this.code = code
+    this.status = options.status
+  }
+}
+/** One attachment a callback names, before its bytes are fetched: a picture, or a file with the name DingTalk sent. */
+export interface DingtalkAttachmentRef {
+  kind: 'image' | 'file'
+  /** The download code DingTalk issued; empty when the callback named none, which makes the attachment unavailable. */
+  downloadCode: string
+  /** The file name DingTalk sent for a file; empty when it sent none or for a picture. */
+  name: string
+}
+/** One inbound message the bot received, normalized for the Source. */
 export interface DingtalkMessage {
   /** The message id; a Trigger derives its id from it, so a redelivered callback is a duplicate. */
   messageId: string
   /** The message text as received, without trimming. */
   text: string
+  /** The attachments the callback names, in order; the Source fetches them before the message becomes work. */
+  attachments: DingtalkAttachmentRef[]
   /** The sender as the Policy's `allowed` list names people: senderStaffId, or senderId for a user outside the organization. */
   senderStaffId: string
   senderNick: string
@@ -144,6 +181,23 @@ function trustedDingtalkUrl(value: unknown): string {
   url.hash = ''
   return url.toString()
 }
+/**
+ * The trusted form of the file download URL DingTalk hands back: HTTPS on a DingTalk host or the Alibaba CDN that serves
+ * its media, no port beyond 443 and no credentials. The URL is the only place the download may go; an empty result means
+ * the Source refuses it, so a provider that answers an arbitrary host cannot redirect the download.
+ */
+export function trustedDingtalkDownloadUrl(value: unknown): string {
+  const text = nonEmpty(value)
+  if (!text) return ''
+  let url: URL
+  try { url = new URL(text) } catch { return '' }
+  if (url.protocol !== 'https:' || (url.port && url.port !== '443') || url.username || url.password) return ''
+  const host = url.hostname.toLowerCase().replace(/\.$/, '')
+  if (!DINGTALK_DOWNLOAD_HOSTS.some(domain => host === domain || host.endsWith(`.${domain}`))) return ''
+  // The query string is a signed download credential and is kept; the fragment means nothing to a download.
+  url.hash = ''
+  return url.toString()
+}
 /** The `senderStaffId` a callback names, falling back to `senderId` for a sender outside the organization. */
 function senderOf(payload: Record<string, unknown>): string {
   return nonEmpty(payload.senderStaffId) || nonEmpty(payload.senderId)
@@ -157,11 +211,63 @@ function atUsersOf(payload: Record<string, unknown>): string[] {
     return [nonEmpty(row.dingtalkId), nonEmpty(row.staffId), nonEmpty(row.userId)].filter(Boolean)
   })
 }
+/** The JSON object a callback carries in `content`; DingTalk sends picture, file and rich-text content as an object or JSON. */
+function contentOf(raw: Record<string, unknown>): Record<string, unknown> {
+  const content = raw.content
+  if (typeof content === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(content)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+    } catch { return {} }
+  }
+  return content && typeof content === 'object' && !Array.isArray(content) ? content as Record<string, unknown> : {}
+}
+/** The rich-text entries a rich-text content carries, whether DingTalk sent them as an array or as JSON text. */
+function richTextEntries(content: Record<string, unknown>): Record<string, unknown>[] {
+  const entries = content.richText ?? content.rich_text
+  return Array.isArray(entries) ? entries.filter((entry): entry is Record<string, unknown> =>
+    !!entry && typeof entry === 'object' && !Array.isArray(entry)) : []
+}
+/** The text of one rich-text entry: its `text` string, its nested `text.content`, or a text entry's `content`. */
+function richTextEntryText(entry: Record<string, unknown>): string {
+  const direct = nonEmpty(entry.text)
+  if (direct) return direct
+  if (entry.text && typeof entry.text === 'object') {
+    const nested = nonEmpty((entry.text as Record<string, unknown>).content)
+    if (nested) return nested
+  }
+  return String(entry.type ?? '').toLowerCase() === 'text' ? nonEmpty(entry.content) : ''
+}
+/** The download code a picture or file content names: `downloadCode`, or a picture's `pictureDownloadCode`. */
+function downloadCodeOf(content: Record<string, unknown>): string {
+  return nonEmpty(content.downloadCode) || nonEmpty(content.pictureDownloadCode)
+}
+/** The kind marker of a rich-text entry; a quoted entry names it `msgType` instead of `type`. */
+function richTextEntryType(entry: Record<string, unknown>): string {
+  return String(entry.type ?? entry.msgType ?? entry.msgtype ?? '').toLowerCase()
+}
+/**
+ * The attachments one callback names: the download reference of a picture, of a file, or the pictures a rich-text message
+ * carries in order. A file's name is kept as DingTalk sent it and sanitized only when it becomes a local path.
+ */
+function attachmentsOf(messageType: string, content: Record<string, unknown>): DingtalkAttachmentRef[] {
+  if (messageType === 'picture') return [{ kind: 'image', downloadCode: downloadCodeOf(content), name: '' }]
+  if (messageType === 'file') {
+    return [{ kind: 'file', downloadCode: nonEmpty(content.downloadCode),
+      name: nonEmpty(content.fileName) || nonEmpty(content.file_name) }]
+  }
+  if (messageType !== 'richtext') return []
+  return richTextEntries(content)
+    .filter(entry => richTextEntryType(entry) === 'picture')
+    .map(entry => ({ kind: 'image' as const, downloadCode: downloadCodeOf(entry), name: '' }))
+}
 /**
  * Normalizes one Stream callback payload (already parsed) into a message, or says why it is no message for this Source.
  * A direct message addresses the bot by construction; a group message only when DingTalk says it is in the at-list, which
- * is `isInAtList` or an `atUsers` entry naming the bot's own `chatbotUserId`. A callback from the bot itself, one that is
- * not text, and one with no sender, conversation or message id are skipped and never become a Trigger.
+ * is `isInAtList` or an `atUsers` entry naming the bot's own `chatbotUserId`. A callback from the bot itself, one of an
+ * unsupported type (voice, video, an empty rich-text card) and one with no sender, conversation or message id are skipped
+ * and never become a Trigger. A text message, a picture, a file and a rich-text message whose pictures it names all become
+ * a message; the attachments are references only, and the Source fetches their bytes before the message becomes work.
  */
 export function normalizeDingtalkCallback(payload: unknown): DingtalkInbound {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { skipped: { reason: 'invalid' } }
@@ -179,8 +285,14 @@ export function normalizeDingtalkCallback(payload: unknown): DingtalkInbound {
   const chatbotUserId = nonEmpty(raw.chatbotUserId)
   const senderId = nonEmpty(raw.senderId)
   if (chatbotUserId && (sender === chatbotUserId || senderId === chatbotUserId)) return skip('self')
-  const text = raw.text && typeof raw.text === 'object' ? nonEmpty((raw.text as Record<string, unknown>).content) : ''
-  if (messageType !== 'text' || !text.trim()) return skip('non-text')
+  const content = contentOf(raw)
+  const text = messageType === 'text'
+    ? nonEmpty(raw.text && typeof raw.text === 'object' ? (raw.text as Record<string, unknown>).content : '')
+    : messageType === 'richtext' ? richTextEntries(content).map(richTextEntryText).filter(Boolean).join('\n') : ''
+  const attachments = attachmentsOf(messageType, content)
+  const supported = messageType === 'text' || messageType === 'picture' || messageType === 'file'
+    || messageType === 'richtext'
+  if (!supported || (!text.trim() && !attachments.length)) return skip('non-text')
   const group = conversationType === '2'
   const mentioned = Array.isArray(raw.atUsers) ? atUsersOf(raw) : []
   const addressed = !group || raw.isInAtList === true || (!!chatbotUserId && mentioned.includes(chatbotUserId))
@@ -188,6 +300,7 @@ export function normalizeDingtalkCallback(payload: unknown): DingtalkInbound {
   return { message: {
     messageId,
     text,
+    attachments,
     senderStaffId: sender,
     senderNick: nonEmpty(raw.senderNick),
     conversationId,
@@ -333,6 +446,102 @@ export async function dingtalkAccessToken(credentials: DingtalkCredentials, opti
   const shared = request.finally(() => tokenRequests.delete(clientId))
   tokenRequests.set(clientId, shared)
   return shared
+}
+/** One attachment download request: the instance credentials, the robot and the reference to fetch. */
+export interface DingtalkAttachmentRequest extends DingtalkRequestOptions {
+  credentials: DingtalkCredentials
+  /** The robot the callback belongs to; DingTalk resolves the download code for it. */
+  robotCode: string
+  attachment: DingtalkAttachmentRef
+  /** The largest file accepted, in bytes; a larger one fails as `too-large` without any of it being kept. */
+  maxBytes?: number
+}
+/** One fetched attachment: its bytes, MIME type and the file name DingTalk sent (empty for a picture). */
+export interface DingtalkDownloadedFile { data: Buffer; mime: string; name: string }
+/** The MIME type a Content-Type names, without parameters; a missing or malformed one is a binary stream. */
+function mimeOf(value: string | null): string {
+  const text = (value ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(text) ? text : 'application/octet-stream'
+}
+/** Reads a response body, stopping as soon as it exceeds `maxBytes`; the rest of a too-large body is cancelled. */
+async function boundedBody(response: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new DingtalkAttachmentError('too-large', `The DingTalk attachment exceeds ${maxBytes} bytes`)
+  }
+  const body = response.body
+  if (!body) return Buffer.alloc(0)
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new DingtalkAttachmentError('too-large', `The DingTalk attachment exceeds ${maxBytes} bytes`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* A cancelled stream is already released. */ }
+  }
+  return Buffer.concat(chunks, total)
+}
+/**
+ * Fetches one inbound attachment: `messageFiles/download` turns the callback's download code into a signed download URL,
+ * which must be HTTPS on a DingTalk host — an answer naming any other host is refused and the URL is never followed —
+ * and a bounded 30 s GET then reads the bytes. Neither the access token nor the signed URL appears in a failure.
+ */
+export async function downloadDingtalkAttachment(request: DingtalkAttachmentRequest): Promise<DingtalkDownloadedFile> {
+  const { credentials, attachment, fetchImpl = fetch, signal } = request
+  const robotCode = nonEmpty(request.robotCode)
+  const downloadCode = nonEmpty(attachment.downloadCode)
+  if (!robotCode || !downloadCode) {
+    throw new DingtalkAttachmentError('unavailable', 'DingTalk delivered no download reference for the attachment')
+  }
+  const maxBytes = typeof request.maxBytes === 'number' && Number.isFinite(request.maxBytes) && request.maxBytes > 0
+    ? request.maxBytes : DINGTALK_ATTACHMENT_BYTES
+  let downloadUrl: string
+  try {
+    const token = await dingtalkAccessToken(credentials, request)
+    const answer = await postJson(new URL('v1.0/robot/messageFiles/download', DINGTALK_API_BASE).toString(),
+      { downloadCode, robotCode }, request, { 'x-acs-dingtalk-access-token': token })
+    const record = answer.body && typeof answer.body === 'object' ? answer.body as Record<string, unknown> : {}
+    const candidate = record.downloadUrl ?? record.download_url
+    downloadUrl = trustedDingtalkDownloadUrl(candidate)
+    if (!downloadUrl) {
+      if (!nonEmpty(candidate)) {
+        throw new DingtalkAttachmentError('download-failed', 'DingTalk returned no attachment download address')
+      }
+      throw new DingtalkAttachmentError('untrusted-url', 'DingTalk returned an untrusted attachment download address')
+    }
+  } catch (error) {
+    if (error instanceof DingtalkAttachmentError) throw error
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('The DingTalk attachment download was stopped')
+    throw new DingtalkAttachmentError('download-failed',
+      `The attachment download address could not be fetched: ${dingtalkFailureText(error)}`, { cause: error })
+  }
+  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+  let response: Response
+  try {
+    response = await fetchImpl(downloadUrl, { method: 'GET', redirect: 'error', signal: combined })
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('The DingTalk attachment download was stopped')
+    if (timeout.aborted) throw new DingtalkAttachmentError('download-failed', 'The DingTalk attachment download timed out', { cause: error })
+    throw new DingtalkAttachmentError('download-failed', 'The DingTalk attachment download failed', { cause: error })
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new DingtalkAttachmentError('download-failed', `DingTalk answered HTTP ${response.status} for the attachment`,
+      { status: response.status })
+  }
+  const data = await boundedBody(response, maxBytes)
+  return { data, mime: mimeOf(response.headers.get('content-type')), name: nonEmpty(attachment.name) }
 }
 /**
  * Sends one text piece to the message's own `sessionWebhook`, mentioning `atUserIds` natively with DingTalk's `at` field
