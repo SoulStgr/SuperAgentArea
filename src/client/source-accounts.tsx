@@ -117,7 +117,8 @@ function AddAccountDialog({ kind, open, onClose, onCreated }: {
       onClose()
     } catch (failure) { notify(errorText(failure)) } finally { setBusy(false) }
   }
-  return <Modal open={open} onClose={onClose} title={`${t('sourceAddAccount')} · ${localized(t, kind.title)}`} closeLabel={t('close')}
+  return <Modal open={open} onClose={onClose} className="dt-modal-mid"
+    title={`${t('sourceAddAccount')} · ${localized(t, kind.title)}`} closeLabel={t('close')}
     description={t('sourceAddAccountHint')} footer={<>
       <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
       <Button variant="primary" disabled={busy} onClick={() => { void submit() }}>{t('sourceCreateAccount')}</Button>
@@ -283,6 +284,7 @@ export function AddSourceDialog({ open, onClose, onCreated }: {
     navigate(sourceRoute(id))
   }
   return <Modal open={open} onClose={onClose} title={t('sourceAddTitle')} closeLabel={t('close')}
+    className={step === 1 ? 'dt-modal-wide' : 'dt-modal-mid'}
     description={step === 1 ? t('sourceAddHint') : t('sourceAddAccountHint')} footer={<>
       <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
       {step === 2 && mode === 'new' && <Button variant="primary" disabled={busy} onClick={() => { void submit() }}>
