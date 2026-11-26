@@ -43,21 +43,25 @@ it('returns to the exact page after a remount of the main panel', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
 })
 
-it('keeps four tabs, opens each page from them, and reaches Settings through the header gear', async () => {
+it('keeps five tabs with Settings after Artifacts, opens each page from them, and reaches Settings through the header gear', async () => {
   await mount()
-  expect(all('.dt-tabs [role="tab"]').map(item => item.textContent)).toEqual(['概览', '工单源', '工作站', '产物'])
+  expect(all('.dt-tabs [role="tab"]').map(item => item.textContent)).toEqual(['概览', '工单源', '工作站', '产物', '设置'])
   // The Prompt, Policy, Trigger, Eval and Execution tabs are gone; those pages are reached from links or the gear.
   expect(all('.dt-tabs [role="tab"]').map(item => item.getAttribute('id'))).toEqual(['dt-tab-overview', 'dt-tab-source',
-    'dt-tab-workstations', 'dt-tab-artifacts'])
-  // The gear opens Settings with the Routing and Eval, Executor and Deployment groups.
-  const gear = find(zh['tab.settings'], '.dt-head button')
-  await click(gear)
-  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.routing'],
+    'dt-tab-workstations', 'dt-tab-artifacts', 'dt-tab-settings'])
+  // The Settings tab opens the Source types by default; the gear opens the same page from another tab.
+  await click(tab(zh['tab.settings']))
+  expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
+  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.sources'], zh['settingsGroup.routing'],
     zh['settingsGroup.execution'], zh['settingsGroup.deployment']])
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.sources'])
+  await click(tab(zh['tab.overview']))
+  await click(find(zh['tab.settings'], '.dt-head button'))
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.sources'])
 })
 
-it('reopens the last Settings group from the gear, and falls back to Execution for a group that moved or no longer exists', async () => {
+it('reopens the last Settings group from the gear, and falls back to the Source types for a group that moved or no longer exists',
+  async () => {
   await mount()
   await click(find(zh['tab.settings'], '.dt-head button'))
   await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
@@ -65,10 +69,10 @@ it('reopens the last Settings group from the gear, and falls back to Execution f
   await click(tab(zh['tab.overview']))
   await click(find(zh['tab.settings'], '.dt-head button'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
-  // A group that is gone falls back to Execution; Eval settings moved to Routing and Eval.
+  // A group that is gone falls back to the Source types; Eval settings moved to Routing and Eval.
   at({ page: 'settings', query: { group: 'gone' } })
   await remount()
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.sources'])
   at({ page: 'settings', query: { group: 'eval' } })
   await remount()
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.routing'])
@@ -111,7 +115,7 @@ it('navigates to a workstation page from its card section, and remembers the sec
 
 it('shows domain terms in the interface language only and lists both languages in the (?) glossary', async () => {
   await mount(en)
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts'])
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Sources', 'Workstations', 'Artifacts', 'Settings'])
   await click('Glossary')
   const dialog = document.querySelector('[role="dialog"]')!
   const row = [...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Ticket'))!

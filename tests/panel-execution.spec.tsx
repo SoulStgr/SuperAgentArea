@@ -26,6 +26,7 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(all('.dt-status-line .dt-lv').map(item => item.textContent)).toEqual(['执行中 2 / 3', '排队 0'])
   // The pause is its own action: an Execution settings draft started before it still saves.
   await click(find(zh['tab.settings'], '.dt-head button'))
+  await click(find(zh['settingsGroup.execution'], '.dt-settings-link'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
   await type(field<HTMLInputElement>(zh.maxWorkers), '4')
   at({ page: 'execution' })
@@ -36,6 +37,7 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(text()).toContain(zh.processingPaused)
   expect(find(zh.resumeProcessing).textContent).toBe(zh.resumeProcessing)
   await click(find(zh['tab.settings'], '.dt-head button'))
+  await click(find(zh['settingsGroup.execution'], '.dt-settings-link'))
   await click(zh.save)
   expect(server.settings).toMatchObject({ paused: true, executor: { maxWorkers: 4 } })
 })
@@ -123,6 +125,7 @@ it('offers a Ticket awaiting review its review place and Session in the page hea
 it('keeps what a person types in the Execution settings, converting it once on save', async () => {
   await mount()
   await click(find(zh['tab.settings'], '.dt-head button'))
+  await click(find(zh['settingsGroup.execution'], '.dt-settings-link'))
   const blocked = () => field<HTMLInputElement>(zh.blockedCommands), root = () => field<HTMLInputElement>(zh.executionDirectory),
     workers = () => field<HTMLInputElement>(zh.maxWorkers)
   // A separator typed before the next command, a space inside a path and a cleared number stay as typed.

@@ -151,7 +151,7 @@ function Pages({ route, openTab, openSettings, deploymentForm }: { route: Route;
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
   useEffect(() => { document.getElementById(`dt-tab-${route.page}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route.page])
   const waiting = error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>
-  // Detail and internal pages (a Ticket, a Thread, Execution and Settings) have no tab of their own; the strip stays.
+  // Detail pages (a Ticket, a Thread, Execution) have no tab of their own; the Settings page has one after the 产物 tab.
   const active = TABS.find(tab => tab === route.page)
   const page = (() => {
     switch (route.page) {
@@ -194,7 +194,9 @@ export function App({ t, openSession, openProjectSession, deploymentForm }: AppP
   const navigate = useCallback((route: Route, replace = false) => move(current => ({ route,
     stack: replace ? current.stack : [...current.stack, current.route].slice(-20) })), [move])
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
-  const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: { page: tab } as Route })), [move])
+  // The Settings tab opens the group last left open; every other tab opens its page's root.
+  const openTab = useCallback((tab: Tab) => move(current => ({ stack: [],
+    route: tab === 'settings' ? settingsRoute(lastSettingsGroup(current)) : { page: tab } as Route })), [move])
   // The header gear opens Settings where it was left; clicking it there leaves the route as it is.
   const openSettings = useCallback(() => move(current => current.route.page === 'settings' ? { route: current.route, stack: current.stack }
     : { route: settingsRoute(lastSettingsGroup(current)), stack: [...current.stack, current.route].slice(-20) }), [move])

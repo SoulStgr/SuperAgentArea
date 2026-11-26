@@ -4,11 +4,16 @@ import type { SetupPlace } from '../setup.ts'
 import { DECISION_FILTERS, type DecisionFilter } from './api.ts'
 import type { T } from './text.ts'
 
-export const TABS = ['overview', 'source', 'workstations', 'artifacts'] as const
+export const TABS = ['overview', 'source', 'workstations', 'artifacts', 'settings'] as const
 export type Tab = typeof TABS[number]
-/** The Settings page's groups: routing and Eval, the Executor with its environment, and Deployment. */
-export const SETTINGS_GROUPS = ['routing', 'execution', 'deployment'] as const
+/**
+ * The Settings page's groups, the Source types and their accounts first: the accounts of every Source kind, routing and
+ * Eval, the Executor with its environment, and Deployment.
+ */
+export const SETTINGS_GROUPS = ['sources', 'routing', 'execution', 'deployment'] as const
 export type SettingsGroup = typeof SETTINGS_GROUPS[number]
+/** The group Settings opens when no group was left open: the Source types and their accounts. */
+export const DEFAULT_SETTINGS_GROUP: SettingsGroup = 'sources'
 /** The sections of one Source instance's page: its last day and its settings. Its Policy and prompts have a page of their own. */
 export const SOURCE_SEGMENTS = ['overview', 'config'] as const
 export type SourceSegment = typeof SOURCE_SEGMENTS[number]
@@ -64,7 +69,7 @@ function compact<Q extends object>(query: Q): Q | undefined {
  * moved off its page onto a page of their own: an old `source?segment=governance` opens that page. Prompts and Policy are
  * no longer pages: an old Prompts route opens the Sources, an old Policy route opens the Sources too (a Source owns its
  * rules) except its Eval section, which opens the Routing and Eval settings, and its Decisions, which keep their page. An
- * old Eval route opens the Decisions. A Settings group that moved or no longer exists opens Execution settings.
+ * old Eval route opens the Decisions. A Settings group that moved or no longer exists opens the Source types settings.
  */
 export function parseRoute(value: unknown): Route | undefined {
   const { page, id, query } = (value ?? {}) as { page?: unknown; id?: unknown; query?: Record<string, unknown> }
@@ -94,10 +99,11 @@ export function parseRoute(value: unknown): Route | undefined {
     case 'execution': return record ? { page, id: record } : { page, query: compact({ filter: pick(TICKET_FILTERS, query?.filter) }) }
     case 'settings': {
       const group = pick(SETTINGS_GROUPS, query?.group)
-      // Older groups: Eval settings live in Routing and Eval, and the Source and Prompts groups open the Sources page.
       if (group) return { page, query: { group } }
+      // Older groups: Eval settings live in Routing and Eval, and the Source and Prompts groups open the Source types.
       if (query?.group === 'eval') return settingsRoute('routing')
-      return query?.group === 'source' || query?.group === 'prompts' ? { page: 'source' } : settingsRoute('execution')
+      return query?.group === 'source' || query?.group === 'prompts' ? settingsRoute('sources')
+        : settingsRoute(DEFAULT_SETTINGS_GROUP)
     }
     default: return undefined
   }
@@ -106,7 +112,7 @@ export function parseRoute(value: unknown): Route | undefined {
 const ROUTE_KEY = 'dsh-superagent/route'
 export interface Location { route: Route; stack: Route[]; group?: SettingsGroup | undefined }
 export const lastSettingsGroup = ({ route, group }: Location): SettingsGroup => route.page === 'settings' ? route.query.group
-  : group ?? 'execution'
+  : group ?? DEFAULT_SETTINGS_GROUP
 export function initialLocation(): Location {
   try {
     const stored = JSON.parse(sessionStorage.getItem(ROUTE_KEY) ?? 'null') as { route?: unknown; stack?: unknown; group?: unknown } | null

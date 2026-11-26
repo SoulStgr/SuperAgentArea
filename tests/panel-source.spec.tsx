@@ -81,16 +81,21 @@ it('invites the first Source when none is configured', async () => {
   expect(dialog().textContent).toContain(zh.sourceAddTitle)
 })
 
-it('adds a folder Source from the page, keyed as the host normalizes it', async () => {
+const pick = (name: string) => all('.dt-source-pick').find(button => button.textContent?.includes(name))!
+
+it('adds a folder Source from the page, choosing the Source type and then creating an account', async () => {
   await mount()
   await click(zh['tab.source'])
   await click(find(zh.sourceAdd, '.dt-status-head button'))
   expect(dialog().textContent).toContain(zh.sourceAddTitle)
-  await type(field<HTMLSelectElement>(zh.sourceKind), 'folder')
+  // Step one lists the ten Source types; step two offers the chosen type's accounts and a new account.
+  expect(all('.dt-source-pick')).toHaveLength(10)
+  await click(pick('本地文件夹'))
+  expect(dialog().textContent).toContain(zh.sourceNewAccount)
   await type(field<HTMLInputElement>(zh.sourceKey), 'News Ops')
   await type(field<HTMLInputElement>('收件目录'), '/srv/in-news')
   await type(field<HTMLInputElement>('交付目录'), '/srv/out-news')
-  await click([...dialog().querySelectorAll('button')].find(button => button.textContent === zh.sourceAdd)!)
+  await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
   expect(server.requests.filter(request => request.path === 'sources' && request.method === 'POST').at(-1))
     .toMatchObject({ method: 'POST', body: { kind: 'folder', key: 'News Ops',
       config: expect.objectContaining({ inbox: '/srv/in-news', outbox: '/srv/out-news' }) } })
@@ -98,6 +103,51 @@ it('adds a folder Source from the page, keyed as the host normalizes it', async 
   expect(all('.dt-source-card').map(item => item.querySelector('.dt-source-title')?.textContent))
     .toEqual(['飞书', 'GitHub', '本地文件夹 · news-ops'])
   expect(server.settings.sources['folder:news-ops']).toBeDefined()
+})
+
+it('enables a disabled account chosen in the Add Source dialog, so it becomes a card', async () => {
+  server.settings = { ...server.settings, sources: { ...server.settings.sources, 'folder:dev': { kind: 'folder', enabled: false,
+    config: { inbox: '/srv/in-dev', outbox: '/srv/out-dev', operator: 'bob' }, label: '开发投件' } } }
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh.sourceAdd, '.dt-status-head button'))
+  await click(pick('本地文件夹'))
+  // The dialog lists the type's accounts, disabled ones included.
+  await click([...dialog().querySelectorAll<HTMLElement>('.dt-list button')].find(button => button.textContent === '开发投件')!)
+  expect(server.requests.find(request => request.path === 'sources/folder:dev')).toMatchObject({ method: 'PATCH',
+    body: { enabled: true } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent)
+    .toBe(zh.sourceAccountEnabledToast.replace('{name}', '开发投件'))
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  expect(card('开发投件').querySelector('.dt-status-text')?.textContent).not.toBe(zh.sourceOff)
+})
+
+it('says the account chosen in the Add Source dialog is already in the Sources, and opens its page', async () => {
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh.sourceAdd, '.dt-status-head button'))
+  await click(pick('GitHub'))
+  // GitHub already has an account, so the dialog opens on the existing accounts.
+  await click([...dialog().querySelectorAll<HTMLElement>('.dt-list button')].find(button => button.textContent === 'GitHub')!)
+  expect(dialog().textContent).toContain(zh.sourceAlreadyInHint.replace('{name}', 'GitHub'))
+  await click(find(zh.sourceOpen, '[role="dialog"] button'))
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('GitHub')
+})
+
+it('creates a placeholder type\'s account in the Add Source dialog and marks it as coming soon', async () => {
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh.sourceAdd, '.dt-status-head button'))
+  expect(pick('QQ').textContent).toContain(zh.sourceComingSoonTag)
+  await click(pick('QQ'))
+  expect(dialog().textContent).toContain(zh.sourceComingSoonHint)
+  await type(field<HTMLInputElement>(zh.sourceKey), 'bot')
+  await type(field<HTMLInputElement>('AppID'), 'app-1')
+  await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
+  expect(server.requests.filter(request => request.path === 'sources' && request.method === 'POST').at(-1))
+    .toMatchObject({ body: { kind: 'qq', key: 'bot', config: expect.objectContaining({ appId: 'app-1' }) } })
+  expect(server.settings.sources['qq:bot']).toBeDefined()
+  expect(all('.dt-source-card').map(item => item.querySelector('.dt-source-title')?.textContent)).toContain('QQ · bot')
 })
 
 it('opens an instance page at its overview and its settings, saving its configuration against its own revision', async () => {

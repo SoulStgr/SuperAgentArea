@@ -9,11 +9,12 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
-/** Opens the header gear's Settings page at one of its groups. */
+/** Opens the header gear's Settings page at one of its groups; the gear opens the Source types by default. */
 async function open_group(name: string = zh['settingsGroup.routing']) {
   await click(find(zh['tab.settings'], '.dt-head button'))
-  if (name !== zh['settingsGroup.execution']) await click(find(name, '.dt-settings-link'))
+  await click(find(name, '.dt-settings-link'))
 }
+const dialog = () => document.querySelector('[role="dialog"]')!
 
 it('keeps a person\'s own value where another save changed the same setting, and says so', async () => {
   await mount()
@@ -120,13 +121,13 @@ it('gives the focus back to the field that had it once a block\'s save ends', as
   expect(document.activeElement).toBe(input)
 })
 
-it('opens Settings from the gear with the Routing and Eval, Executor and Deployment groups, and returns to the last group opened',
+it('opens Settings from the gear with the Source types, Routing and Eval, Executor and Deployment groups, and returns to the last group opened',
   async () => {
   await mount()
   await click(find(zh['tab.settings'], '.dt-head button'))
-  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.routing'],
+  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual([zh['settingsGroup.sources'], zh['settingsGroup.routing'],
     zh['settingsGroup.execution'], zh['settingsGroup.deployment']])
-  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.execution'])
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.sources'])
   await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
   await click(tab(zh['tab.overview']))
@@ -136,4 +137,89 @@ it('opens Settings from the gear with the Routing and Eval, Executor and Deploym
   await remount()
   await click(find(zh['tab.settings'], '.dt-head button'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
+})
+
+it('lists the ten Source types with their account counts and coming-soon marks, and adds an account of a placeholder type',
+  async () => {
+  await mount()
+  await open_group(zh['settingsGroup.sources'])
+  expect(all('.dt-source-kind .dt-source-kind-name').map(item => item.textContent)).toEqual(['飞书', 'GitHub', '本地文件夹', 'Gitee',
+    '微信', '钉钉', 'QQ', 'Telegram', '企业微信应用', '邮箱'])
+  // The two configured accounts are counted under their types; the seven types still being built carry the mark.
+  expect(all('.dt-source-kind').map(button => button.querySelector('.dt-count')?.textContent)).toEqual(['1', '1', '0', '0', '0', '0',
+    '0', '0', '0', '0'])
+  expect(all('.dt-source-kind .dt-tag').map(tag => tag.textContent)).toEqual(Array(7).fill(zh.sourceComingSoonTag))
+  // The selected type is Feishu: its account shows its settings summary, and an implemented type offers its Policy and prompts.
+  expect(all('.dt-source-account')).toHaveLength(1)
+  expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceAccountOn)
+  expect(all('.dt-source-account')[0]!.querySelector('.dt-account-summary')?.textContent).toContain('机器人的 lark-cli：lark-bot')
+  expect(find(zh.sourcePolicyPrompts, '.dt-source-account button')).toBeTruthy()
+  // A placeholder type explains the coming-soon state and creates its account anyway.
+  await click(all('.dt-source-kind').find(button => button.textContent?.includes('Gitee'))!)
+  expect(text()).toContain(zh.sourceComingSoonHint)
+  expect(text()).toContain(zh.sourceAccountsEmpty)
+  await click(find(zh.sourceAddAccount, '.dt-source-kind-body button'))
+  expect(dialog().textContent).toContain(zh.sourceComingSoonHint)
+  await type(field<HTMLInputElement>(zh.sourceLabel), '发布机器人')
+  await type(field<HTMLInputElement>('私人令牌'), 'gitee-token')
+  await click(find(zh.sourceCreateAccount, '[role="dialog"] button'))
+  expect(server.requests.filter(request => request.path === 'sources' && request.method === 'POST').at(-1))
+    .toMatchObject({ method: 'POST', body: { kind: 'gitee', label: '发布机器人', config: expect.objectContaining({ token: 'gitee-token' }) } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAdded.replace('{name}', '发布机器人'))
+  // The new account is listed under its type, marked as coming soon and without a Policy and prompts entry.
+  expect(all('.dt-source-account')).toHaveLength(1)
+  expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceComingSoonTag)
+  expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceAccountOn)
+  expect([...all('.dt-source-account')[0]!.querySelectorAll('button')].every(button => button.textContent !== zh.sourcePolicyPrompts))
+    .toBe(true)
+  expect(all('.dt-source-kind').find(button => button.textContent?.includes('Gitee'))?.querySelector('.dt-count')?.textContent).toBe('1')
+})
+
+it('edits an account\'s own settings and switches it off from the Sources settings group', async () => {
+  await mount()
+  await open_group(zh['settingsGroup.sources'])
+  const row = () => all('.dt-source-account')[0]!
+  await click(find(zh.sourceEditConfig, '.dt-source-account button'))
+  expect(all('.dt-source-account form.dt-card')).toHaveLength(1)
+  await click(find('仅 @', '.dt-source-account .dt-field-segmented [role="tab"]'))
+  await click(find(zh.save, '.dt-source-account button'))
+  expect(server.requests.find(request => request.path === 'settings/source:feishu')).toMatchObject({ method: 'PUT',
+    body: { revision: 0, value: { enabled: true, config: expect.objectContaining({ otherChats: 'mentions' }) } } })
+  expect(server.settings.sources.feishu!.config).toMatchObject({ otherChats: 'mentions' })
+  // The account form carries its own configuration history, listing the saves of its `source:<id>` block.
+  await click(find(zh.configHistory, '.dt-source-account [data-disclosure-row]'))
+  expect(server.requests.some(request => request.path === 'policy/history')).toBe(true)
+  expect(text()).toContain('第 4 次保存 · 管理页')
+  expect(text()).toContain('飞书 · 接收的群 新增：团队群')
+  await click(find(zh.sourceEnable.replace('{name}', '飞书'), '.dt-source-account [role="switch"]'))
+  expect(server.requests.find(request => request.path === 'sources/feishu' && request.method === 'PATCH'))
+    .toMatchObject({ body: { enabled: false } })
+  expect(row().textContent).toContain(zh.sourceAccountOff)
+  // The account's Policy and prompts stay a page of their own, reached from the account.
+  await click(find(zh.sourcePolicyPrompts, '.dt-source-account button'))
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('飞书')
+  expect(all('.dt-governance-parts [role="tab"]').map(item => item.textContent)).toEqual([zh.sourceGovernancePolicy,
+    zh.sourceGovernancePrompts])
+})
+
+it('deletes accounts from the Sources settings group, refusing one whose Tickets are still open', async () => {
+  await mount()
+  await open_group(zh['settingsGroup.sources'])
+  // The Feishu account still has an open Ticket, so the host refuses its deletion with the reason the panel words.
+  await click(find(zh.sourceDeleteAccount, '.dt-source-account button'))
+  expect(dialog().textContent).toContain(zh.sourceDeleteMessage.replace('{name}', '飞书'))
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(server.requests.some(request => request.path === 'sources/feishu' && request.method === 'DELETE')).toBe(true)
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent)
+    .toBe(zh['userError.sourceInUse'].replace('{source}', 'feishu').replace('{count}', '1'))
+  expect(all('.dt-source-account')).toHaveLength(1)
+  await click(find(zh.cancel, '[role="dialog"] button'))
+  // A GitHub account with no open Ticket is deleted, and the type then lists no account.
+  await click(all('.dt-source-kind').find(button => button.textContent?.includes('GitHub'))!)
+  await click(find(zh.sourceDeleteAccount, '.dt-source-account button'))
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(server.settings.sources.github).toBeUndefined()
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceDeleted.replace('{name}', 'GitHub'))
+  expect(all('.dt-source-account')).toHaveLength(0)
+  expect(text()).toContain(zh.sourceAccountsEmpty)
 })

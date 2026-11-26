@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, openOrCreateSession, projectSessionId } from '../src/navigation.ts'
-import { initialLocation, parseRoute, remember, setupPage } from '../src/client/route.ts'
+import { initialLocation, lastSettingsGroup, parseRoute, remember, setupPage } from '../src/client/route.ts'
 const id = 'orchestrator-test' as SessionId
 function fixture(ready = false) {
   const pending = Promise.withResolvers<void>()
@@ -145,11 +145,16 @@ it('reads each page a tab remembered with the parameters it takes, and leaves ou
   // A part the panel does not know is left out, opening the Policy; a page without its Source opens the Sources.
   expect(parseRoute({ page: 'governance', id: 'feishu', query: { part: 'gone' } })).toEqual({ page: 'governance', id: 'feishu' })
   expect(parseRoute({ page: 'governance' })).toEqual({ page: 'source' })
-  // The Settings page keeps its three groups; a removed one opens the page its work moved to.
-  expect(parseRoute({ page: 'settings', query: { group: 'source', source: 'feishu' } })).toEqual({ page: 'source' })
+  // The Settings page keeps its four groups, the Source types first; an older group opens the page its work moved to.
+  expect(parseRoute({ page: 'settings', query: { group: 'sources' } })).toEqual({ page: 'settings', query: { group: 'sources' } })
+  expect(parseRoute({ page: 'settings', query: { group: 'source', source: 'feishu' } }))
+    .toEqual({ page: 'settings', query: { group: 'sources' } })
+  expect(parseRoute({ page: 'settings', query: { group: 'prompts' } })).toEqual({ page: 'settings', query: { group: 'sources' } })
   expect(parseRoute({ page: 'settings', query: { group: 'eval' } })).toEqual({ page: 'settings', query: { group: 'routing' } })
-  expect(parseRoute({ page: 'settings', query: { group: 'gone' } })).toEqual({ page: 'settings', query: { group: 'execution' } })
+  expect(parseRoute({ page: 'settings', query: { group: 'gone' } })).toEqual({ page: 'settings', query: { group: 'sources' } })
   expect(parseRoute({ page: 'settings', query: { group: 'deployment' } })).toEqual({ page: 'settings', query: { group: 'deployment' } })
+  // Settings opens the Source types when no group was left open.
+  expect(lastSettingsGroup({ route: { page: 'overview' }, stack: [] })).toBe('sources')
   expect([parseRoute('overview'), parseRoute(null)]).toEqual([undefined, undefined])
 })
 it('opens the settings that fix each setup problem: the Deployment group, or the settings of the Source it names', () => {

@@ -1,11 +1,8 @@
 /** 工单源 page: one card per Source instance with its last day and execution state, adding Sources, an instance's page with its sections, and Project answer dialogs. */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { AnswerProject } from '../app/api.ts'
-import type { FieldSpec } from '../sources/kind.ts'
-import { usePoll, type DroppedReply, type PendingProject, type SourceDetailView, type SourceKindRow, type SourceStatusRow,
-  type TicketRow } from './api.ts'
+import { usePoll, type DroppedReply, type PendingProject, type SourceStatusRow, type TicketRow } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag } from './controls.tsx'
-import { SaveBar, useDraft } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { SourcePolicyEditor } from './policy.tsx'
 import { usePanel, usePanelData } from './provider.tsx'
@@ -13,7 +10,8 @@ import { SourcePrompts } from './prompts.tsx'
 import { TicketLine } from './rows.tsx'
 import { governanceRoute, setupPage, sourceRoute, SOURCE_SEGMENTS, type GovernancePart, type Route,
   type SourceSegment } from './route.ts'
-import { ConfigHistory, Fields, SettingsProvider, SourceField } from './settings-kit.tsx'
+import { AddSourceDialog, SourceConfigForm } from './source-accounts.tsx'
+import { ConfigHistory, SettingsProvider } from './settings-kit.tsx'
 import { actorName, errorText, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { CheckSetupButton, Hint, LabelValue, LoadState, PageHead, Section, SetupMessage, StatusHead, When } from './widgets.tsx'
 
@@ -300,96 +298,6 @@ function SourceDetailPage({ id, segment }: { id: string; segment: SourceSegment 
     {question && <AnswerProjectDialog question={question} onClose={() => setQuestion(undefined)}
       onAnswered={async () => { setQuestion(undefined); setExtra({ items: [], next: null }); await reload() }} />}
   </div>
-}
-
-/** One instance's configuration form, saved as its own settings block against the revision the page read. */
-function SourceConfigForm({ source, reload }: { source: SourceDetailView; reload: () => Promise<unknown> }) {
-  const { t, call, notify } = usePanel()
-  const { running, state } = usePanelData()
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-  const refreshLabels = async () => {
-    const { added } = await call('POST sources/:id/labels', { id: source.id }); await reload(); return added
-  }
-  const draft = useDraft({
-    key: `dsh-superagent/draft/${state?.masterId ?? ''}/source:${source.id}`,
-    saved: source.value, revision: source.revision, reload,
-    save: async (value, from) => {
-      const result = await call('PUT settings/:block', { block: `source:${source.id}`, body: { value, revision: from } })
-      notify(t(result.restarting ? 'savedRestarting' : 'saved'))
-      return result
-    },
-  })
-  const value = draft.value
-  const changed = (key: string) => String(value.config[key] ?? '') !== String(source.value.config[key] ?? '')
-  const restarts = draft.dirty && source.restarts.some(changed)
-  const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
-    saved={source.value.config[spec.key]} labels={source.labels} refreshLabels={refreshLabels}
-    fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
-    onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
-  const advanced = source.fields.filter(spec => spec.advanced)
-  return <form className="dt-card" id={`dt-source-${source.id}`} onSubmit={event => { void draft.submit(event) }}>
-    <Fields disabled={draft.busy}>
-      <div className="dt-card-head"><div className="dt-row-main"><div className="dt-row-title">
-        <span className="dt-card-title">{t('sourceConfigTitle')}</span>
-        <InfoTip text={localized(t, source.description)} />
-      </div></div></div>
-      {source.fields.filter(spec => !spec.advanced).map(field)}
-      {advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
-        onToggle={() => setAdvancedOpen(!advancedOpen)}><div className="dt-disclosure-body">{advanced.map(field)}</div></DisclosureRow>}
-    </Fields>
-    <SaveBar {...draft} status={restarts && running > 0 ? t('restartInterrupts', { count: running }) : undefined}
-      onDiscard={draft.discard} />
-  </form>
-}
-
-/** The form a person adds a Source with: its kind, an optional key and label, and the kind's fields. */
-function AddSourceDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => Promise<void> }) {
-  const { t, call, notify } = usePanel()
-  const [kinds, setKinds] = useState<SourceKindRow[]>()
-  const [kind, setKind] = useState('')
-  const [key, setKey] = useState('')
-  const [label, setLabel] = useState('')
-  const [config, setConfig] = useState<Record<string, unknown>>({})
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    if (!open) return
-    setKind(''); setKey(''); setLabel(''); setConfig({})
-    call('GET source-kinds').then(setKinds, failure => notify(errorText(failure)))
-  }, [open, call, notify])
-  const selected = kinds?.find(item => item.kind === kind)
-  const submit = async () => {
-    setBusy(true)
-    try {
-      await call('POST sources', { body: { kind, ...key.trim() ? { key: key.trim() } : {}, ...label.trim() ? { label: label.trim() } : {},
-        config } })
-      notify(t('sourceAdded', { name: label.trim() || key.trim() || kind }))
-      await onCreated()
-      onClose()
-    } catch (failure) { notify(errorText(failure)) } finally { setBusy(false) }
-  }
-  return <Modal open={open} onClose={onClose} title={t('sourceAddTitle')} closeLabel={t('close')} description={t('sourceAddHint')}
-    footer={<>
-      <Button variant="ghost" onClick={onClose}>{t('cancel')}</Button>
-      <Button variant="primary" disabled={busy || !selected} onClick={() => { void submit() }}>{t('sourceAdd')}</Button>
-    </>}>
-    <div className="dt-source-answer">
-      <label className="dt-field"><span className="dt-field-head">{t('sourceKind')}</span>
-        <select className="dt-select" aria-label={t('sourceKind')} value={kind}
-          onChange={event => { setKind(event.target.value); setConfig(kinds?.find(item => item.kind === event.target.value)?.defaults ?? {}) }}>
-          <option value="" disabled>{t('sourceKindChoose')}</option>
-          {(kinds ?? []).map(item => <option key={item.kind} value={item.kind}>{localized(t, item.title)}</option>)}
-        </select></label>
-      <label className="dt-field"><span className="dt-field-head">{t('sourceKey')}<InfoTip text={t('sourceKeyHint')} /></span>
-        <span className="dt-input"><input aria-label={t('sourceKey')} value={key} placeholder="ops" spellCheck={false}
-          onChange={event => setKey(event.target.value)} /></span></label>
-      <label className="dt-field"><span className="dt-field-head">{t('sourceLabel')}</span>
-        <span className="dt-input"><input aria-label={t('sourceLabel')} value={label}
-          onChange={event => setLabel(event.target.value)} /></span></label>
-      {selected?.fields.map(field => <SourceField key={field.key} field={field} value={config[field.key]}
-        saved={selected.defaults[field.key]} labels={{}} fact={undefined}
-        onChange={next => setConfig(current => ({ ...current, [field.key]: next }))} />)}
-    </div>
-  </Modal>
 }
 
 /** The 工单源 page: every instance as a card, with the action that adds one. */

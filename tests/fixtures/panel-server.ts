@@ -20,12 +20,13 @@ import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { AdmissionTableSchema, EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, RuleArraySchema, SettingsSchema }
   from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
+import { connectorKinds } from '../../src/sources/connectors.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { folderKind } from '../../src/sources/folder.ts'
 import { githubKind } from '../../src/sources/github.ts'
-import type { Health } from '../../src/sources/host.ts'
+import { health as healthEntry, type Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
 
@@ -122,8 +123,9 @@ export interface ProjectFixture {
 /** The key a Project's name gives it, as the host's `projectKey` does. */
 const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
   .slice(0, 60) || 'station'
-// The kinds' configurations differ, and the fake reads them only as the records the views carry.
-const KINDS = [feishuKind, githubKind, folderKind] as unknown as SourceKind[]
+// The kinds' configurations differ, and the fake reads them only as the records the views carry. The placeholder
+// connectors are listed last, after the kinds the fake's default instances use, so instance order stays as it was.
+const KINDS = [feishuKind, githubKind, folderKind, ...connectorKinds] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
@@ -240,11 +242,15 @@ function sourceStatuses(): SourceStatusRow[] {
   return instances.map(instance => {
     const kind = KINDS.find(item => item.kind === instance.kind)!
     const enabled = instance.enabled
+    // A placeholder kind runs nothing yet: its instance shows the fixed coming-soon state, as on the host.
+    const placeholder = kind.placeholder === true
     // Each instance has its own entry, named by its id; the kind's other entries are shared.
-    const health = [instance.id, ...kind.health.filter(name => name !== kind.kind)].map(name => ({ name, ...healthOf(name) }))
+    const health = placeholder ? [{ name: instance.id, ...healthEntry('paused', 'placeholder') }]
+      : [instance.id, ...kind.health.filter(name => name !== kind.kind)].map(name => ({ name, ...healthOf(name) }))
     const problem = problemOf_(instance.id) ?? problemOf_(kind.kind)
-    const state = !enabled ? 'off' : problem || health.some(item => item.state === 'error') ? 'error' : server.setup.problem ? 'setup'
-      : health.some(item => item.state === 'starting') ? 'starting' : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
+    const state = !enabled ? 'off' : placeholder ? 'paused' : problem || health.some(item => item.state === 'error') ? 'error'
+      : server.setup.problem ? 'setup' : health.some(item => item.state === 'starting') ? 'starting'
+        : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
     const title = instance.label ? { zh: instance.label, en: instance.label }
       : instance.id.startsWith(`${kind.kind}:`) ? { zh: `${kind.title.zh} · ${instance.id.slice(kind.kind.length + 1)}`,
         en: `${kind.title.en} · ${instance.id.slice(kind.kind.length + 1)}` }
