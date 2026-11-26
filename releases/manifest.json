@@ -276,7 +276,7 @@
     },
     {
       "version": "0.3.13",
-      "tgz": "dsh-superagent-0.3.13.tgz",
+      "tgz": "history/dsh-superagent-0.3.13.tgz",
       "bytes": 491481,
       "sha256": "e079dfa9a13e1bed1ed7c0e0c3cb5ed1374eda8d80a61527b58e3a1e5f3e43f5",
       "date": "2026-11-26",
@@ -284,7 +284,19 @@
       "recordedCommit": "b29abae233724a946192da1aaf9d594dc9e2259f",
       "stateSchema": 12,
       "architecture": "eleven source kinds; attachments both ways on DingTalk and inbound on WeChat/QQ",
-      "comparison": "DingTalk sends a ticket's deliverables back as file/image messages after the text reply, through the core OutboundMessage.attachments path; other channels ignore attachments for now",
+      "comparison": "DingTalk sends a ticket's deliverables back as file/image messages after the text reply, through the core OutboundMessage.attachments path; other channels ignore attachments for now"
+    },
+    {
+      "version": "0.3.14",
+      "tgz": "dsh-superagent-0.3.14.tgz",
+      "bytes": 510789,
+      "sha256": "3c8dfddb28ba8d2c03537a3034df4f155a870d7068dbbf402607a8d094b7798a",
+      "date": "2026-11-26",
+      "sourceCommit": "125103cb9dc00f9f8823b6649de500da964adea8",
+      "recordedCommit": "125103cb9dc00f9f8823b6649de500da964adea8",
+      "stateSchema": 12,
+      "architecture": "twelve source kinds incl. web feed monitor",
+      "comparison": "Web page/feed Source (RSS/Atom/JSON, baseline, dedupe, SSRF guards) at order 3; DingTalk scan-to-create onboarding with server-side account creation; WeChat QR image fix; QQ scan tab marked under development while manual stays; bot creation links and steps",
       "note": "current latest"
     }
   ]
