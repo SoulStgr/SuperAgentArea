@@ -377,8 +377,9 @@ describe('the plugin loop', () => {
     inboxFile('ok.txt', 'work')
     inboxFile('big.bin', 'B'.repeat(2048))
     await watching(h, async () => {
+      // The first round spawns the fake SFTP program; under a full parallel suite on Windows that can pass the default 1 s.
       await vi.waitFor(() => expect(h.health['remote:ops'])
-        .toMatchObject({ state: 'ready', detail: '2 entries, 1 new drops; skipped big.bin (2048 bytes over the limit)' }))
+        .toMatchObject({ state: 'ready', detail: '2 entries, 1 new drops; skipped big.bin (2048 bytes over the limit)' }), { timeout: 10_000 })
       expect(h.receive).toHaveBeenCalledTimes(1)
     })
   })
