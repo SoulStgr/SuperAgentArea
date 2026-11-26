@@ -18,6 +18,7 @@
     "./feishu-watch": "./lib/feishu-watch.js",
     "./folder-watch": "./lib/folder-watch.js",
     "./remote-watch": "./lib/remote-watch.js",
+    "./web-watch": "./lib/web-watch.js",
     "./qq-watch": "./lib/qq-watch.js",
     "./dingtalk-watch": "./lib/dingtalk-watch.js",
     "./wechat-watch": "./lib/wechat-watch.js",

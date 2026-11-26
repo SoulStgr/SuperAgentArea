@@ -143,8 +143,8 @@ export class SourceRegistry implements SourceScope {
   }
   /** Every installed kind in id order, with the form a new instance of it is configured by, as the panel's add-Source form reads it. */
   catalog(): { kind: string; title: Localized; description: Localized; fields: FieldSpec[]; defaults: Record<string, unknown>; placeholder: boolean }[] {
-    // The panel lists the kinds in this order: the numbered ones first (local folder, remote folder, the IM kinds, mail,
-    // Feishu, the code hosts), then any kind without an `order`, in id order.
+    // The panel lists the kinds in this order: the numbered ones first (local folder, remote folder, the web page/feed,
+    // the IM kinds, mail, Feishu, the code hosts), then any kind without an `order`, in id order.
     return [...this.kinds.values()]
       .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER) || a.kind.localeCompare(b.kind))
       .map(kind => ({ kind: kind.kind, title: kind.title, description: kind.description, fields: kind.fields,

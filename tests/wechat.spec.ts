@@ -170,8 +170,8 @@ describe('configuration', () => {
     expect(config({ botType: '7' }).botType).toBe('7')
     expect(() => config({ botType: 'abc' })).toThrow()
     expect(() => wechatKind.schema.parse({ appId: 'a', appSecret: 'b' })).toThrow()
-    // The kind is a real one: order 5, one health entry, a Channel and a Policy, and no placeholder mark.
-    expect(wechatKind).toMatchObject({ kind: 'wechat', order: 5, health: ['wechat'] })
+    // The kind is a real one: order 6, one health entry, a Channel and a Policy, and no placeholder mark.
+    expect(wechatKind).toMatchObject({ kind: 'wechat', order: 6, health: ['wechat'] })
     expect(wechatKind.placeholder).toBeUndefined()
     expect(wechatKind.channel).toBeDefined()
     expect(wechatKind.policy?.explicit.en).toBeTruthy()

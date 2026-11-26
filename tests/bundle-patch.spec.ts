@@ -29,11 +29,12 @@ const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.confi
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
   expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-folder',
-    'dsh-superagent-remote', 'dsh-superagent-qq', 'dsh-superagent-dingtalk', 'dsh-superagent-wechat', 'dsh-superagent-connectors',
-    'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
-  // Every Source kind is always listed: the default folder, the remote folder, QQ, DingTalk and WeChat (an account is added
-  // from the panel and a WeChat account is signed in there), Feishu and the placeholder kinds; none of these rows is disabled.
-  for (const id of ['dsh-superagent-folder', 'dsh-superagent-remote', 'dsh-superagent-qq', 'dsh-superagent-dingtalk',
+    'dsh-superagent-remote', 'dsh-superagent-web', 'dsh-superagent-qq', 'dsh-superagent-dingtalk', 'dsh-superagent-wechat',
+    'dsh-superagent-connectors', 'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
+  // Every Source kind is always listed: the default folder, the remote folder, the web page/feed, QQ, DingTalk and WeChat
+  // (an account is added from the panel and a WeChat account is signed in there), Feishu and the placeholder kinds; none of
+  // these rows is disabled.
+  for (const id of ['dsh-superagent-folder', 'dsh-superagent-remote', 'dsh-superagent-web', 'dsh-superagent-qq', 'dsh-superagent-dingtalk',
     'dsh-superagent-wechat', 'dsh-superagent-feishu', 'dsh-superagent-connectors']) {
     expect(rows.find(row => row.id === id)?.disabled, id).toBeUndefined()
   }

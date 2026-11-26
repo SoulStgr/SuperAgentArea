@@ -276,7 +276,7 @@ const PolicySchema = z.object({
 
 export const wechatKind: SourceKind<WechatConfig> = {
   kind: 'wechat',
-  order: 5,
+  order: 6,
   title: { zh: '微信', en: 'WeChat' },
   description: { zh: '用手机微信扫码登录一个个人微信号，接收白名单私聊的文字、图片与文件消息并回到同一会话；群消息暂不接收，个人号自动化有封号风险。',
     en: 'Signs one personal WeChat account in by scanning a QR code with the phone, receives text messages, pictures and files from allowed direct chats and replies in the same conversation. Group messages are not received yet, and automating a personal account risks a ban.' },

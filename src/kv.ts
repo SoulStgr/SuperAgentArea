@@ -84,6 +84,13 @@ export const KV = {
    */
   remote: { seen: family<Record<string, string>, [instance: string]>('remote-seen:') },
   /**
+   * Web page/feed Source: the id of every item already received, with when it was first seen, so an item is received once
+   * and pruned after seven days (as many as 1,000 are kept); and whether the first poll has run, which the `latest`
+   * baseline needs so it records the items already present without starting work.
+   */
+  web: { seen: family<Record<string, string>, [instance: string]>('web-seen:'),
+    initialized: family<boolean, [instance: string]>('web-initialized:') },
+  /**
    * Artifacts: the deliverables earlier versions collected from a ticket's `deliver/` directory, oldest collection last.
    * Since P6c only the schema 12 migration reads them, to index them in the artifact table; nothing writes them any more.
    */

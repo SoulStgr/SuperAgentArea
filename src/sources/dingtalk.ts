@@ -274,7 +274,7 @@ const PolicySchema = z.object({
 
 export const dingtalkKind: SourceKind<DingtalkConfig> = {
   kind: 'dingtalk',
-  order: 4,
+  order: 5,
   title: { zh: '钉钉', en: 'DingTalk' },
   description: { zh: '接收钉钉企业自建应用机器人收到的私聊与群 @ 消息（文字、图片、文件），并回到原会话；完成工单的产物文件作为图片/文件一并回传。长连接（Stream 模式），不需要公网回调地址。',
     en: 'Receives the direct messages and group mentions of an enterprise DingTalk bot — text, pictures and files — and replies in the same conversation over Stream mode, sending a ready ticket\'s deliverable files back as pictures or files; no public callback URL is needed.' },

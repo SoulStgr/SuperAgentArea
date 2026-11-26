@@ -15,8 +15,9 @@ import { HEALTH_TEXT } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
 import { qqKind } from '../src/sources/qq.ts'
 import { remoteKind } from '../src/sources/remote.ts'
-import { wechatKind } from '../src/sources/wechat.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
+import { webKind } from '../src/sources/web.ts'
+import { wechatKind } from '../src/sources/wechat.ts'
 
 const directories: string[] = []
 const stores: Store[] = []
@@ -51,21 +52,25 @@ describe('placeholder Source kinds', () => {
       expect(kind.threadContext, kind.kind).toBeUndefined()
     }
   })
-  it('offers the eleven kinds in the catalog, in plan order, marking the four placeholders', () => {
+  it('offers the twelve kinds in the catalog, in plan order, marking the four placeholders', () => {
     const store = storeOf()
     const sources = new SourceRegistry(() => store.settings())
-    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, qqKind, dingtalkKind, wechatKind, ...connectorKinds] as SourceKind[]) {
+    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, webKind, qqKind, dingtalkKind, wechatKind, ...connectorKinds] as SourceKind[]) {
       sources.register(kind)
     }
     const catalog = sources.catalog()
     expect(catalog.map(kind => kind.kind))
-      .toEqual(['folder', 'remote', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
+      .toEqual(['folder', 'remote', 'web', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
+    expect(catalog).toHaveLength(12)
     expect(catalog.filter(kind => kind.placeholder).map(kind => kind.kind))
       .toEqual(['wecom', 'email', 'gitee', 'telegram'])
     // The implemented kinds stay non-placeholder and keep their form defaults.
     expect(catalog.find(kind => kind.kind === 'folder')).toMatchObject({ placeholder: false, defaults: { pollSeconds: 10 } })
     expect(catalog.find(kind => kind.kind === 'remote'))
       .toMatchObject({ placeholder: false, defaults: { port: 22, pollSeconds: 30, maxFileBytes: 1048576 } })
+    // The web Source is read-only and polls a public address on its own, with `latest` as the first-poll baseline.
+    expect(catalog.find(kind => kind.kind === 'web')).toMatchObject({ placeholder: false, defaults: { url: '', format: 'auto',
+      pollSeconds: 300, baseline: 'latest', maxItemsPerPoll: 10, jsonItemsPath: 'items', operator: 'web' } })
     expect(catalog.find(kind => kind.kind === 'qq')).toMatchObject({ placeholder: false,
       defaults: { appId: '', appSecret: '', allowedUserIds: [], sandbox: false } })
     expect(catalog.find(kind => kind.kind === 'dingtalk')).toMatchObject({ placeholder: false,

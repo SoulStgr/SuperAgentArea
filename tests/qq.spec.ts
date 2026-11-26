@@ -169,8 +169,8 @@ describe('configuration', () => {
     expect(() => qqKind.schema.parse({ appSecret: 'secret-1' })).toThrow()
     expect(() => qqKind.schema.parse({ appId: ' ', appSecret: 's' })).toThrow()
     expect(() => qqKind.schema.parse({ appId: 'a', appSecret: 'b', unexpected: 1 })).toThrow()
-    // The kind is a real one: order 3, one health entry, a Channel and a Policy, and no placeholder mark.
-    expect(qqKind).toMatchObject({ kind: 'qq', order: 3, health: ['qq'] })
+    // The kind is a real one: order 4, one health entry, a Channel and a Policy, and no placeholder mark.
+    expect(qqKind).toMatchObject({ kind: 'qq', order: 4, health: ['qq'] })
     expect(qqKind.placeholder).toBeUndefined()
     expect(qqKind.channel).toBeDefined()
     expect(qqKind.policy?.explicit.en).toBeTruthy()

@@ -8,7 +8,7 @@ const raw = { name: 'raw',
     : undefined }
 export default defineConfig([
   { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'folder-watch': 'src/sources/folder.ts',
-    'remote-watch': 'src/sources/remote.ts', 'qq-watch': 'src/sources/qq.ts', 'dingtalk-watch': 'src/sources/dingtalk.ts',
+    'remote-watch': 'src/sources/remote.ts', 'web-watch': 'src/sources/web.ts', 'qq-watch': 'src/sources/qq.ts', 'dingtalk-watch': 'src/sources/dingtalk.ts',
     'wechat-watch': 'src/sources/wechat.ts',
     connectors: 'src/sources/connectors.ts' },
     outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true,

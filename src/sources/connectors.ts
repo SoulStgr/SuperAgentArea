@@ -1,5 +1,5 @@
 /**
- * Placeholder Source kinds for the eleven-kind catalog: Gitee, Telegram, WeCom app and Email are listed so a person can
+ * Placeholder Source kinds for the twelve-kind catalog: Gitee, Telegram, WeCom app and Email are listed so a person can
  * create and keep their accounts now, while each kind only validates and stores its credentials. None of them watches
  * anything, has a Channel, or reports health beyond the fixed paused "coming soon" state the Source views give a
  * placeholder kind's instances.
@@ -22,7 +22,7 @@ function placeholderKind(spec: { kind: string; title: Localized; description: Lo
 const GiteeConfig = z.object({ token: secret, repository: secret, apiBase: z.string().trim().default('https://gitee.com/api/v5') }).strict()
 const giteeKind = placeholderKind({
   kind: 'gitee',
-  order: 10,
+  order: 11,
   title: { zh: 'Gitee', en: 'Gitee' },
   description: { zh: '接收 Gitee 仓库里的 Issue 与 PR 讨论（接入开发中）。', en: 'Receives Issues and pull-request discussion in a Gitee repository (coming soon).' },
   schema: GiteeConfig,
@@ -34,7 +34,7 @@ const giteeKind = placeholderKind({
 const TelegramConfig = z.object({ botToken: secret }).strict()
 const telegramKind = placeholderKind({
   kind: 'telegram',
-  order: 11,
+  order: 12,
   title: { zh: 'Telegram', en: 'Telegram' },
   description: { zh: '接收 Telegram 机器人的私聊与群消息（接入开发中）。', en: 'Receives a Telegram bot\'s direct and group messages (coming soon).' },
   schema: TelegramConfig,
@@ -44,7 +44,7 @@ const telegramKind = placeholderKind({
 const WecomConfig = z.object({ corpId: secret, agentId: secret, secret: secret, token: secret, aesKey: secret }).strict()
 const wecomKind = placeholderKind({
   kind: 'wecom',
-  order: 6,
+  order: 7,
   title: { zh: '企业微信应用', en: 'WeCom app' },
   description: { zh: '接收企业微信自建应用的消息回调（接入开发中）。', en: 'Receives the message callback of a WeCom self-built app (coming soon).' },
   schema: WecomConfig,
@@ -56,7 +56,7 @@ const wecomKind = placeholderKind({
 const EmailConfig = z.object({ imapHost: secret, smtpHost: secret, user: secret, secret: secret }).strict()
 const emailKind = placeholderKind({
   kind: 'email',
-  order: 7,
+  order: 8,
   title: { zh: '邮箱', en: 'Email' },
   description: { zh: '接收发到邮箱的邮件，并以邮件回复（接入开发中）。', en: 'Receives mail sent to a mailbox and replies by mail (coming soon).' },
   schema: EmailConfig,
@@ -69,7 +69,7 @@ export const connectorKinds = [giteeKind, telegramKind, wecomKind, emailKind] as
 
 export const name = 'dsh-superagent-connectors'
 export const inject = ['orchestrator']
-/** Registers each placeholder kind, so the catalog lists eleven kinds while only folder, remote, QQ, DingTalk, WeChat, GitHub and Feishu receive work. */
+/** Registers each placeholder kind, so the catalog lists twelve kinds while only folder, remote, web, QQ, DingTalk, WeChat, GitHub and Feishu receive work. */
 export function apply(ctx: Context): void {
   for (const kind of connectorKinds) {
     ctx.effect(() => ctx.orchestrator.sources.register(kind), `${kind.kind}: placeholder source kind`)

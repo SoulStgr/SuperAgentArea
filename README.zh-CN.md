@@ -14,13 +14,13 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 ## 它能做什么
 
-- **监听** 默认监听本地文件夹投件；添加远程文件夹账号后，通过 SFTP 监听另一台机器的收件目录；GitHub（issue、评论、pull request）、飞书群聊、QQ、钉钉会话与微信私聊在添加账号后监听。来源 *kind* 是可复用的实现，来源 *实例* 是它的一个具体监听配置，例如 `github:owner/name`、`folder:ops`。来源目录共十一类：本地文件夹、远程文件夹、GitHub、飞书、QQ、钉钉、微信已实现；Gitee、Telegram、企业微信应用、邮箱为「接入开发中」，账号可先保存。
+- **监听** 默认监听本地文件夹投件；添加远程文件夹账号后，通过 SFTP 监听另一台机器的收件目录；添加网页/地址账号后，定时拉取公开的 RSS/Atom 或 JSON 地址并监听新条目（只读，不回帖）；GitHub（issue、评论、pull request）、飞书群聊、QQ、钉钉会话与微信私聊在添加账号后监听。来源 *kind* 是可复用的实现，来源 *实例* 是它的一个具体监听配置，例如 `github:owner/name`、`folder:ops`。来源目录共十二类：本地文件夹、远程文件夹、网页/地址、GitHub、飞书、QQ、钉钉、微信已实现；Gitee、Telegram、企业微信应用、邮箱为「接入开发中」，账号可先保存。
 - **默认从本地文件夹开始。** 新安装会播种一个 `folder` 实例：收件目录与交付目录在状态目录下（`<stateDir>/area/local/`），操作系统用户名即允许投件的操作者。只播种一次，删除后不会再出现。
 - **先判断再行动。** 不调模型的规则门禁按来源、发送人、事件类型、授权范围与去重先筛一遍；再由模型在主 Session 上判定「接单 / 停止 / 忽略 / 未完成」。主动工作分 `off`、`observe`、`auto` 三档，`observe` 只记录「本来会做什么」，不真的做。
 - **开的是工单，不是聊天会话。** 接单会同时生成一份不可变授权（Mandate，说明谁可以提、这件事能做到哪一步）和一个工单；工单持有自己的订阅、输入、派工与产物。
 - **在自己的地方干活。** 每个工单跑在独立的执行器 Session 与目录里，按生产线提示词工作，能跨重启恢复，也能交还、重试或续做。
 - **交付文件，而不只是回帖。** worker 把交付物写进 `deliver/`；报 `ready` 时执行器把文件提升、建立索引、在结果回复里点名，面板可直接下载。
-- **只展示需要人的事。** 概览、工单源、工作站、产物、设置五个页；每个来源的「策略提示配置」在它的卡片、详情页与设置的工单源里；设置分四组：工单源（十一类来源项与账号）、路由与评估、执行器与执行环境、部署。
+- **只展示需要人的事。** 概览、工单源、工作站、产物、设置五个页；每个来源的「策略提示配置」在它的卡片、详情页与设置的工单源里；设置分四组：工单源（十二类来源项与账号）、路由与评估、执行器与执行环境、部署。
 
 ## 架构：把生产线装进 Super-agent
 
@@ -50,7 +50,7 @@ SuperAgentArea 是面向团队「进来的一摊活」的主动式智能体，�
 
 ### 本分支在原型之上补了什么
 
-- **多来源、多实例。** 每种来源 kind 都能开多个具名实例，各自有健康条目、Setup 校验、统计、配置与迁移。本地文件夹来源（inbox → `TASK.md` → 工单 → outbox）已是默认来源：新安装会播种一个 `folder` 实例，收件/交付目录在 `<stateDir>/area/local/` 下，操作系统用户名可投件。来源目录共十一类：本地文件夹、远程文件夹、GitHub、飞书、QQ、钉钉、微信，以及接入开发中的 Gitee、Telegram、企业微信应用、邮箱（账号可保存，暂不接收消息）。远程文件夹 kind 通过 SFTP 监听另一台主机的收件目录，只用密钥认证并强校验主机密钥（见 [docs/006-deployment.md](docs/006-deployment.md#remote-folder-over-sftp)）；QQ kind 通过机器人网关 WebSocket 长连接 QQ 开放平台机器人，无需公网回调地址，接收私聊与群 @ 消息（文字、图片、文件），把入站附件保存到 `<stateDir>/area/attachments/qq/` 随工单交给 worker 读取，并以带 `msg_id` 的被动回复在原会话以文字回帖（见 [docs/006-deployment.md](docs/006-deployment.md#qq-bot-optional-bot-gateway)）；钉钉 kind 通过 Stream 模式长连接企业机器人，无需公网回调地址，接收私聊与群 @ 消息（文字、图片、文件），把入站附件保存到 `<stateDir>/area/attachments/dingtalk/` 随工单交给 worker 读取，并在原会话回帖，同时把工单 ready 时收集的产物文件作为图片/文件一并回传（其余 IM 渠道暂只回文字，见 [docs/006-deployment.md](docs/006-deployment.md#dingtalk-bot-optional-stream-mode)）；微信 kind 用一个独立个人号扫码登录，接收策略 allowed 名单里的人在私聊发的文字、图片与文件消息，把入站附件保存到 `<stateDir>/area/attachments/wechat/` 随工单交给 worker 读取，并在原会话以文字回帖（见 [docs/006-deployment.md](docs/006-deployment.md#wechat-account-optional-ilink-qr-sign-in)）。
+- **多来源、多实例。** 每种来源 kind 都能开多个具名实例，各自有健康条目、Setup 校验、统计、配置与迁移。本地文件夹来源（inbox → `TASK.md` → 工单 → outbox）已是默认来源：新安装会播种一个 `folder` 实例，收件/交付目录在 `<stateDir>/area/local/` 下，操作系统用户名可投件。来源目录共十二类：本地文件夹、远程文件夹、网页/地址、GitHub、飞书、QQ、钉钉、微信，以及接入开发中的 Gitee、Telegram、企业微信应用、邮箱（账号可保存，暂不接收消息）。网页/地址 kind 定时拉取公开的 RSS/Atom 或 JSON 地址，新条目只读建单、不回帖（见 [docs/006-deployment.md](docs/006-deployment.md#web-page-or-feed)）；远程文件夹 kind 通过 SFTP 监听另一台主机的收件目录，只用密钥认证并强校验主机密钥（见 [docs/006-deployment.md](docs/006-deployment.md#remote-folder-over-sftp)）；QQ kind 通过机器人网关 WebSocket 长连接 QQ 开放平台机器人，无需公网回调地址，接收私聊与群 @ 消息（文字、图片、文件），把入站附件保存到 `<stateDir>/area/attachments/qq/` 随工单交给 worker 读取，并以带 `msg_id` 的被动回复在原会话以文字回帖（见 [docs/006-deployment.md](docs/006-deployment.md#qq-bot-optional-bot-gateway)）；钉钉 kind 通过 Stream 模式长连接企业机器人，无需公网回调地址，接收私聊与群 @ 消息（文字、图片、文件），把入站附件保存到 `<stateDir>/area/attachments/dingtalk/` 随工单交给 worker 读取，并在原会话回帖，同时把工单 ready 时收集的产物文件作为图片/文件一并回传（其余 IM 渠道暂只回文字，见 [docs/006-deployment.md](docs/006-deployment.md#dingtalk-bot-optional-stream-mode)）；微信 kind 用一个独立个人号扫码登录，接收策略 allowed 名单里的人在私聊发的文字、图片与文件消息，把入站附件保存到 `<stateDir>/area/attachments/wechat/` 随工单交给 worker 读取，并在原会话以文字回帖（见 [docs/006-deployment.md](docs/006-deployment.md#wechat-account-optional-ilink-qr-sign-in)）。
 - **每源策略与提示词。** 每个来源实例拥有自己的接单规则与提示词配置，入口在它卡片/详情页的「策略提示配置」；没保存过的实例继承安装默认。worker 读的是它工单来源的那份配置与该来源 kind 的默认技能，主 Session 读安装默认加已配置来源 kind 的默认技能并集；新的来源 kind 只需按 `skills/dsh-superagent-<kind>/SKILL.md` 提供自己的默认技能。
 - **项目组（工作站）成为一等对象。** 活归属于工作站；项目未注册时由 Eval 拒绝并反问（`needsProject`），人回答后重新评估；内置 `workspace` 承接无归属的临时工单。
 - **产物成为一等结果。** 交付文件在 `ready` 时收集、提升到工作站成果目录、按 hash 与大小建索引、随结果回复交付、面板可下载，并可 **产物 → 工单 → 派工 → worker Session** 逐级反查。

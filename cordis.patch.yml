@@ -18,6 +18,11 @@
     # until a person adds an account; the default local folder keeps needing no setup.
     - id: dsh-superagent-remote
       name: dsh-superagent/remote-watch
+    # The web page/feed Source: one public RSS/Atom or JSON address per instance, polled over http(s) with the Source's
+    # SSRF checks. It is read-only — items start work but cannot be replied to — and stays quiet until a person adds an
+    # account with an address.
+    - id: dsh-superagent-web
+      name: dsh-superagent/web-watch
     # The QQ Source: one QQ open-platform bot per instance over the bot gateway's WebSocket long connection (no public
     # callback URL). It stays quiet until a person adds an account with the bot's AppID and AppSecret.
     - id: dsh-superagent-qq
@@ -31,7 +36,7 @@
     # an instance with no sign-in yet reports paused. It stays quiet until a person adds an account and signs it in.
     - id: dsh-superagent-wechat
       name: dsh-superagent/wechat-watch
-    # Placeholder Source kinds (Gitee, Telegram, WeCom app, Email) in the eleven-kind catalog: accounts may be created and
+    # Placeholder Source kinds (Gitee, Telegram, WeCom app, Email) in the twelve-kind catalog: accounts may be created and
     # saved, while the connection itself is still being developed.
     - id: dsh-superagent-connectors
       name: dsh-superagent/connectors

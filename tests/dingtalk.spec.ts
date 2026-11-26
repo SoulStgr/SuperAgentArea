@@ -209,8 +209,8 @@ describe('configuration', () => {
     expect(() => dingtalkKind.schema.parse({ clientId: 'client-1', clientSecret: 'secret-1' })).toThrow()
     expect(() => dingtalkKind.schema.parse({ clientId: ' ', clientSecret: 's', robotCode: 'r' })).toThrow()
     expect(() => dingtalkKind.schema.parse({ clientId: 'c', clientSecret: 's', robotCode: 'r', unexpected: 1 })).toThrow()
-    // The kind is a real one: order 4, one health entry, a Channel and a Policy, and no placeholder mark.
-    expect(dingtalkKind).toMatchObject({ kind: 'dingtalk', order: 4, health: ['dingtalk'] })
+    // The kind is a real one: order 5, one health entry, a Channel and a Policy, and no placeholder mark.
+    expect(dingtalkKind).toMatchObject({ kind: 'dingtalk', order: 5, health: ['dingtalk'] })
     expect(dingtalkKind.placeholder).toBeUndefined()
     expect(dingtalkKind.channel).toBeDefined()
     expect(dingtalkKind.policy?.explicit.en).toBeTruthy()

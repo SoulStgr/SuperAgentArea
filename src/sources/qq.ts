@@ -273,7 +273,7 @@ const PolicySchema = z.object({
 
 export const qqKind: SourceKind<QqConfig> = {
   kind: 'qq',
-  order: 3,
+  order: 4,
   title: { zh: 'QQ', en: 'QQ' },
   description: { zh: '接收 QQ 开放平台机器人收到的私聊与群 @ 消息（文字、图片、文件），并回到原会话；长连接（WebSocket 网关），不需要公网回调地址。',
     en: 'Receives the direct messages and group mentions of a QQ open-platform bot — text, pictures and files — and replies in the same conversation over the bot gateway\'s WebSocket; no public callback URL is needed.' },
