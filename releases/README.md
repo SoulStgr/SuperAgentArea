@@ -10,30 +10,30 @@
 
 ## 1. 版本索引
 
-| 版本 | 打包日期 | 包（仓库根） | 大小 | SHA-256（前 16 位） | 源提交 | 主题 |
+| 版本 | 打包日期 | 包路径 | 大小 | SHA-256（前 16 位） | 源提交 | 主题 |
 |---|---|---|---|---|---|---|
-| 0.1.0 | 2026-11-24 | `dsh-superagent-0.1.0.tgz` | 315,209 | `9c9ccf8fed52f103` | `73dfd0f`（压平，见注） | 本地文件夹源 + 产物交付（阶段 1） |
-| 0.1.1 | 2026-11-24 | `dsh-superagent-0.1.1.tgz` | 315,294 | `ab7a52ffbc7e2e29` | 同上（压平） | DSH 0.2.2 subagent seam 适配、停止失败诊断 |
-| 0.1.2 | 2026-11-24 | `dsh-superagent-0.1.2.tgz` | 315,661 | `8d574b6de76d7c11` | 同上（压平） | 中文编码修复（文本投件进 Trigger） |
-| 0.1.3 | 2026-11-24 | `dsh-superagent-0.1.3.tgz` | 315,739 | `805bd66519f3d2bd` | 同上（压平） | GitHub 部署可选（无 gh 也能安装） |
-| 0.1.4 | 2026-11-25 | `dsh-superagent-0.1.4.tgz` | 315,875 | `9ced85badce056a0` | `e69bdfe` | 正式命名 SuperAgentArea（面板/侧栏） |
-| 0.1.5 | 2026-11-25 | `dsh-superagent-0.1.5.tgz` | 315,995 | `f564b7edcc45be4e` | `e69bdfe` | DSH 插件列表标题/描述更名 |
-| 0.2.0 | 2026-11-25 | `dsh-superagent-0.2.0.tgz` | 367,302 | `99796d69c8410faf` | `70a42be` | P1–P4：schema 12、多实例、项目归属、工单源页、工作站页 |
-| 0.2.1 | 2026-11-25 | `dsh-superagent-0.2.1.tgz` | 375,550 | `0923795f5b18ba41` | `82554a5` | P5：产物页、下载、产物→worker 反查 |
-| 0.2.2 | 2026-11-25 | `dsh-superagent-0.2.2.tgz` | 378,207 | `e99d98690c626c7a` | `f52b079` | P6a：项目历史、项目会话、agent 段 |
-| 0.2.3 | 2026-11-25 | `dsh-superagent-0.2.3.tgz` | 378,443 | `79e4171feca80832` | `90d8f6f` | P6b：六 Tab、提示词/策略一级、设置齿轮 |
-| 0.3.0 | 2026-11-25 | `dsh-superagent-0.3.0.tgz` | 379,980 | `a95e65ad803f9407` | `ef8f4b4` | P6c：实例级健康、具名 Setup 校验、KV 清理（P1–P6 完成） |
-| 0.3.2 | 2026-11-26 | `dsh-superagent-0.3.2.tgz` | 396,272 | `f5a6b73103ab8688` | `62ff18a`（等价树 `f25ce6a`） | 每源提示词/策略下沉、默认技能按 kind、治理页、四 Tab |
-| 0.3.3 | 2026-11-26 | `dsh-superagent-0.3.3.tgz` | 405,377 | `ebb700f316810dbc` | `85622d7`（构建）+ `0fb3f7b`（入库） | P7：设置 Tab、工单源设置页（10 类来源/多账号）、两步添加来源、默认本地文件夹、删除来源 |
-| 0.3.4 | 2026-11-26 | `dsh-superagent-0.3.4.tgz` | 405,422 | `93d1302fb0209115` | `0fb3f7b` | 飞书列为常驻来源项（账号按需添加） |
-| 0.3.5 | 2026-11-26 | `dsh-superagent-0.3.5.tgz` | 405,998 | `dc6a22e17f6ddea3` | `255d98c` | 添加来源类型改为四列 flex 卡片（宽弹窗、紧凑卡片） |
-| 0.3.6 | 2026-11-26 | `dsh-superagent-0.3.6.tgz` | 418,625 | `ec5f999ce09976e8` | `8c7108f` | 远程文件夹（SFTP/SSH，仅密钥 + known_hosts 强校验）、11 类来源顺序 |
-| 0.3.7 | 2026-11-26 | `dsh-superagent-0.3.7.tgz` | 435,560 | `efcc3b0a7f7ba01b` | `1c6d61c` | 钉钉 Stream 来源（真实收发、token/@、每实例健康；不依赖 dsh-im） |
-| 0.3.8 | 2026-11-26 | `dsh-superagent-0.3.8.tgz` | 451,819 | `135773948bf91092` | `9450a36` | QQ 机器人网关来源（私聊/群 @、被动回复、健康） |
-| 0.3.9 | 2026-11-26 | `dsh-superagent-0.3.9.tgz` | 469,236 | `d4af66c82d52d1eb` | `047437c` | 微信 iLink 来源（扫码登录、白名单私聊、token 本地存储） |
-| 0.3.10 | 2026-11-26 | `dsh-superagent-0.3.10.tgz` | 474,980 | `7b270de4db7e7848` | `c292ecd` | 钉钉入站图片/文件附件（下载落盘、随 Trigger 交给 Worker） |
-| 0.3.11 | 2026-11-26 | `dsh-superagent-0.3.11.tgz` | 480,502 | `38983fece03ed7ff` | `cc48e6f` | QQ 入站图片/文件附件（主机白名单、限额、落盘） |
-| 0.3.12 | 2026-11-26 | `dsh-superagent-0.3.12.tgz` | 487,824 | `fbd0ffae136ad8bd` | `a6455b6` | 微信入站图片/文件附件（CDN + AES 解密、落盘） |
+| 0.1.0 | 2026-11-24 | `history/dsh-superagent-0.1.0.tgz` | 315,209 | `9c9ccf8fed52f103` | `73dfd0f`（压平，见注） | 本地文件夹源 + 产物交付（阶段 1） |
+| 0.1.1 | 2026-11-24 | `history/dsh-superagent-0.1.1.tgz` | 315,294 | `ab7a52ffbc7e2e29` | 同上（压平） | DSH 0.2.2 subagent seam 适配、停止失败诊断 |
+| 0.1.2 | 2026-11-24 | `history/dsh-superagent-0.1.2.tgz` | 315,661 | `8d574b6de76d7c11` | 同上（压平） | 中文编码修复（文本投件进 Trigger） |
+| 0.1.3 | 2026-11-24 | `history/dsh-superagent-0.1.3.tgz` | 315,739 | `805bd66519f3d2bd` | 同上（压平） | GitHub 部署可选（无 gh 也能安装） |
+| 0.1.4 | 2026-11-25 | `history/dsh-superagent-0.1.4.tgz` | 315,875 | `9ced85badce056a0` | `e69bdfe` | 正式命名 SuperAgentArea（面板/侧栏） |
+| 0.1.5 | 2026-11-25 | `history/dsh-superagent-0.1.5.tgz` | 315,995 | `f564b7edcc45be4e` | `e69bdfe` | DSH 插件列表标题/描述更名 |
+| 0.2.0 | 2026-11-25 | `history/dsh-superagent-0.2.0.tgz` | 367,302 | `99796d69c8410faf` | `70a42be` | P1–P4：schema 12、多实例、项目归属、工单源页、工作站页 |
+| 0.2.1 | 2026-11-25 | `history/dsh-superagent-0.2.1.tgz` | 375,550 | `0923795f5b18ba41` | `82554a5` | P5：产物页、下载、产物→worker 反查 |
+| 0.2.2 | 2026-11-25 | `history/dsh-superagent-0.2.2.tgz` | 378,207 | `e99d98690c626c7a` | `f52b079` | P6a：项目历史、项目会话、agent 段 |
+| 0.2.3 | 2026-11-25 | `history/dsh-superagent-0.2.3.tgz` | 378,443 | `79e4171feca80832` | `90d8f6f` | P6b：六 Tab、提示词/策略一级、设置齿轮 |
+| 0.3.0 | 2026-11-25 | `history/dsh-superagent-0.3.0.tgz` | 379,980 | `a95e65ad803f9407` | `ef8f4b4` | P6c：实例级健康、具名 Setup 校验、KV 清理（P1–P6 完成） |
+| 0.3.2 | 2026-11-26 | `history/dsh-superagent-0.3.2.tgz` | 396,272 | `f5a6b73103ab8688` | `62ff18a`（等价树 `f25ce6a`） | 每源提示词/策略下沉、默认技能按 kind、治理页、四 Tab |
+| 0.3.3 | 2026-11-26 | `history/dsh-superagent-0.3.3.tgz` | 405,377 | `ebb700f316810dbc` | `85622d7`（构建）+ `0fb3f7b`（入库） | P7：设置 Tab、工单源设置页（10 类来源/多账号）、两步添加来源、默认本地文件夹、删除来源 |
+| 0.3.4 | 2026-11-26 | `history/dsh-superagent-0.3.4.tgz` | 405,422 | `93d1302fb0209115` | `0fb3f7b` | 飞书列为常驻来源项（账号按需添加） |
+| 0.3.5 | 2026-11-26 | `history/dsh-superagent-0.3.5.tgz` | 405,998 | `dc6a22e17f6ddea3` | `255d98c` | 添加来源类型改为四列 flex 卡片（宽弹窗、紧凑卡片） |
+| 0.3.6 | 2026-11-26 | `history/dsh-superagent-0.3.6.tgz` | 418,625 | `ec5f999ce09976e8` | `8c7108f` | 远程文件夹（SFTP/SSH，仅密钥 + known_hosts 强校验）、11 类来源顺序 |
+| 0.3.7 | 2026-11-26 | `history/dsh-superagent-0.3.7.tgz` | 435,560 | `efcc3b0a7f7ba01b` | `1c6d61c` | 钉钉 Stream 来源（真实收发、token/@、每实例健康；不依赖 dsh-im） |
+| 0.3.8 | 2026-11-26 | `history/dsh-superagent-0.3.8.tgz` | 451,819 | `135773948bf91092` | `9450a36` | QQ 机器人网关来源（私聊/群 @、被动回复、健康） |
+| 0.3.9 | 2026-11-26 | `history/dsh-superagent-0.3.9.tgz` | 469,236 | `d4af66c82d52d1eb` | `047437c` | 微信 iLink 来源（扫码登录、白名单私聊、token 本地存储） |
+| 0.3.10 | 2026-11-26 | `history/dsh-superagent-0.3.10.tgz` | 474,980 | `7b270de4db7e7848` | `c292ecd` | 钉钉入站图片/文件附件（下载落盘、随 Trigger 交给 Worker） |
+| 0.3.11 | 2026-11-26 | `history/dsh-superagent-0.3.11.tgz` | 480,502 | `38983fece03ed7ff` | `cc48e6f` | QQ 入站图片/文件附件（主机白名单、限额、落盘） |
+| 0.3.12 | 2026-11-26 | `history/dsh-superagent-0.3.12.tgz` | 487,824 | `fbd0ffae136ad8bd` | `a6455b6` | 微信入站图片/文件附件（CDN + AES 解密、落盘） |
 | 0.3.13 | 2026-11-26 | `dsh-superagent-0.3.13.tgz` | 491,481 | `e079dfa9a13e1bed` | `b29abae` | 钉钉出站产物附件（工单产物回传为文件/图片） |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
@@ -183,7 +183,7 @@
 ### 3.1 安装某个已归档的包
 
 ```powershell
-Copy-Item .\dsh-superagent-0.3.2.tgz "$env:USERPROFILE\.dsh\profiles\desktop\vendor\"
+Copy-Item .\history\dsh-superagent-0.3.2.tgz "$env:USERPROFILE\.dsh\profiles\desktop\vendor\"
 # 然后用 DSH 的 plugin_manager 安装：
 # plugin_manager install_bundle file:vendor/dsh-superagent-0.3.2.tgz
 ```
