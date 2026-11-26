@@ -1,7 +1,7 @@
 # 23 工作站 Agent 要求与对话
 
 > 需求（2026-11-26）：每个工作站（Project）的 agent 段要能由操作者填写「要求与规则」（人设 / 强制方向），可新增、编辑、删除；工作站要有一个「会话」入口，**一键进入该工作站的会话**，复用 DeepSeek Harness 的对话，不再出现「新建会话 / 选择工作区」的强制步骤；不新建多个会话，重复点击进入同一个确定性会话 `project-<projectId>`。
-> 状态：已完成。0.3.17 的首版与 0.3.18 的二次调整（删除工作站 / 删除会话 / 规则编辑布局 / 发布包入 `history/`，见 §14）均以本工作区代码为准；验证见 §13 与 §14.6。
+> 状态：已完成。0.3.17 的首版、0.3.18 的二次调整（删除工作站 / 删除会话 / 规则编辑布局 / 发布包入 `history/`，见 §14）与 0.3.19 的会话直达修复（见 §15）均以本工作区代码为准；验证见 §13、§14.6 与 §15.5。
 
 ## 1. 背景与问题
 
@@ -288,4 +288,56 @@ openProjectConversation({ sessions, workspaces?, open }, { id, conversationDir }
 - 本次复核：`tests/docs.spec.ts`、`tests/class-docs.spec.ts`、`tests/locales.spec.ts`、`tests/projects.spec.ts`、`tests/resolve.spec.ts`、`tests/navigation.spec.ts`、`tests/panel-workstations.spec.tsx`、`tests/panel-panel.spec.tsx` 共 **8 文件 / 74 项全过**。
 - 全量 `pnpm check` 与桌面 profile 手工验证由 Lead 收口，测试总数以收口时为准。
 - 已知限制：只有「从未产生工单/产物」的工作站可删除；同名重建的会话 id 可能与旧归档会话同名（见 §14.2）；发布包移动是发布流程的手工步骤，不在代码中自动完成。
+
+## 15. 0.3.19 会话直达修复与 agent 段精简
+
+> 来源：用户反馈「打开工作站会话后对话页仍要求选择一个工作区」与 agent 段信息过载。服务端无需改动；导航、面板入口与宿主 Workspace 交互已落地，以本工作区最终代码为准。
+
+### 15.1 根因：DSH 对话页的 workspace chip
+
+- DSH 的对话页在**客户端本地 `workspaces` 快照**里决定会话的工作区 chip：找 `workspaces.items.find(w => w.sessionIds.includes(sessionId))`。
+  - 命中：chip 显示该 Workspace 的标题，会话以它作为工作区，composer 正常可输入。
+  - 未命中：composer 回落为「选择一个工作区开始」（空态），即使 host 侧该会话其实已经创建在某个 Workspace 里。
+- 0.3.17/0.3.18 只做了两步：`workspaces.create({ path })`（登记目录、把 Workspace 行合并进本地快照）和 `sessions.create({ sessionId, workspaceId })`。Workspace 行被合并时**还没有**把该会话写进它的 `sessionIds`（会话是随后才创建的），而客户端没有在会话创建后刷新这条 Workspace 行——于是本地快照里的 `sessionIds` 不含该会话，chip 落空，仍要求选择工作区。
+- 另一类历史数据同样不满足条件：0.3.17 之前（以及 0.3.17 的部分路径）在 `scratchDir` 里创建、从未挂进 Workspace 的 `project-<id>` 会话。
+
+### 15.2 修复：创建后 rename，用返回的 Workspace 行合并本地快照
+
+`openProjectConversation` 改为「创建 Workspace → 创建会话 → rename Workspace → 核对归属」：
+
+1. `workspaces.create({ path: conversationDir })` 得到 `workspaceId`（失败或没有 Workspace 服务 → 会话以目录为 cwd 创建，后述步骤跳过）。
+2. 按 generation 创建或采纳会话 `project-<id>[-<n>]`；`sessions.refresh()` 让目录列出它。
+3. `workspaces.rename(workspaceId, 'SAA-<工作站名称>')`。host 的 rename 返回**更新后的 Workspace 行**（含该 Workspace 的 `sessionIds` 与 `title`），客户端 workspace model 立即把这一行 upsert 到本地快照——此时 `sessionIds` 已包含刚创建的会话，对话页 chip 命中、显示 `SAA-<名称>`，不再出现「选择一个工作区开始」。
+4. rename 失败或客户端没有 rename 能力 → 再 `workspaces.create({ path })` 取一次 Workspace 行（同样立即合并），尽力刷新 `sessionIds`。
+5. 若拿到的 Workspace 行仍不包含该 `sessionId`，且 host 提供了 `reset` 回调 → 自动走 §15.3 的 reset 回退，用下一代会话重复上述 rename。
+
+类型随之扩展：
+
+- `ProjectConversation` 增加 `name`（工作站名称，用于标题）。
+- `WorkspaceController`：`create()` 返回 `WorkspaceView { workspaceId, title?, sessionIds? }`，新增可选 `rename(workspaceId, title): Promise<WorkspaceView>`。
+- `ConversationHost` 新增可选 `reset(projectId): Promise<number>`（返回新的会话代数）。
+- `conversationWorkspaceTitle(project) = 'SAA-' + (project.name.trim() || project.id)`。
+
+### 15.3 自动 reset 回退：迁移旧会话
+
+- 触发条件：`workspace.sessionIds` 仍不含当前会话 id，且 host 提供 `reset`。
+- 做法：调用 `POST projects/:id/conversation/reset` 把会话代数 +1，再按 §15.2 用新 id `project-<id>-<n>` 创建会话并 rename Workspace。新会话在 Workspace 内创建，随后 rename 的返回行自然包含它。
+- 用途：旧版本遗留在 Workspace 之外的 `project-<id>` 会话无法在客户端「补挂」（客户端没有 attach 接口）；与其打开一个 chip 落空的会话，不如直接开启下一代——旧会话保留在 DSH（不删除，可在 DSH 里按旧 id 找到），新会话是新的 DSH 对话。
+- 已知限制：reset 不迁移历史，旧会话的内容不进入新会话；reset 本身失败时尽力打开已有会话，并让 DSH 自己提示。
+
+### 15.4 agent 段精简与页头删除会话
+
+- **agent 段**移除整块「工作站会话」（原有的「打开会话 / 删除会话」Section）：agent 段只保留「Agent 的要求与规则」与 工单历史 / 修改历史（产物）/ 最近报告。
+- **打开会话**入口只保留两处：工作站卡片的「会话」按钮、详情页页头的「打开会话」。
+- **删除会话**移到详情页页头，与「打开会话」并列（确认框沿用原文案）：确认后 `POST projects/:id/conversation/reset` → 尽力归档旧会话（`uiWorkspace.archiveSession(旧 id, {stopActivity:true})`）→ 重新读取详情（generation 变化）→ notify；下一次打开进入新代数会话。
+- 打开/删除/重置会话的调用都补 `name`（卡片 `project.name`、详情 `data.project.value.name`），Workspace 标题才是 `SAA-<工作站名称>`。
+- 布局：agent 段更短，规则编辑区与历史之间不再夹一个会话块；页头「打开会话 / 删除会话 / 归档 / 删除工作站」按操作分组排列。
+
+### 15.5 验证与限制（0.3.19）
+
+- `tests/navigation.spec.ts` 覆盖：rename 标题 `SAA-<name>` 且返回带 `sessionIds` 的 Workspace 行时打开同一会话；rename 失败回落到 `create({path})`；会话不在 `sessionIds` 时调用 `reset`（`projects/:id/conversation/reset`）并以新代数 id 打开；没有 Workspace 服务时回退 cwd；已有会话被采纳、被取代的点击不做任何事；`conversationWorkspaceTitle` 为 `SAA-<name>`。
+- `tests/panel-workstations.spec.tsx` 覆盖：agent 段不再有「工作站会话」块；页头「打开会话 + 删除会话」流程（POST reset + 归档旧 id + 新代数打开 + Workspace 标题与 sessionIds）；卡片/页头打开会话传入 `name`（fixture 的 Workspace 断言标题 `SAA-aps` 与 `sessionIds`）；既有删除工作站测试保持。
+- 本次复核：`tests/docs.spec.ts`、`tests/class-docs.spec.ts`、`tests/locales.spec.ts`、`tests/navigation.spec.ts`、`tests/panel-workstations.spec.tsx`、`tests/panel-panel.spec.tsx` 共 **6 文件 / 64 项全过**。
+- 全量 `pnpm check` 与桌面 profile 手工验证由 Lead 收口。
+- 已知限制：旧会话内容不迁移（§15.3）；host 必须支持 Workspace `rename` 才能稳定修好 chip，不支持时只能回退 `create` 刷新，且没有 `reset` 回调时旧版本遗留在 Workspace 外的会话仍会直接打开（chip 可能再次落空）；Workspace 标题统一为 `SAA-<工作站名称>`，同一名称的两个工作站（理论上不允许同名）不会冲突；`SAA-` 前缀是固定命名，不是可配置项。
 

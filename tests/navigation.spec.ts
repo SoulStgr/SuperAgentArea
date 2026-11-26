@@ -2,7 +2,8 @@
 import { expect, it, vi } from 'vitest'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { archiveProjectSession, openKnownSession, openProjectConversation, projectSessionId } from '../src/navigation.ts'
+import { archiveProjectSession, conversationWorkspaceTitle, openKnownSession, openProjectConversation, projectSessionId }
+  from '../src/navigation.ts'
 import { initialLocation, lastSettingsGroup, parseRoute, remember, setupPage } from '../src/client/route.ts'
 const id = 'orchestrator-test' as SessionId
 function fixture(ready = false) {
@@ -39,71 +40,114 @@ it('does not navigate after the panel unmounts or a newer request supersedes it'
   controller.abort(); state.phase = 'ready'; state.byId[id] = {}; pending.resolve()
   await expect(navigation).resolves.toBe(false); expect(open).not.toHaveBeenCalled()
 })
-/** A sessions service whose create fills the host and catalog, refusing an id it already holds, as the host resumes one. */
-function conversationFixture(workspace?: { workspaceId: string } | 'fail') {
+type FixtureWorkspace = { workspaceId: string }
+/**
+ * A sessions service and Workspace Controller as the plugin entry passes them, with the host's Workspace row, its reset, and
+ * the catalog: `rename` answers with the host's Sessions unless it is told to fail or to omit them, as a stale row does.
+ */
+function conversationFixture(options: {
+  workspace?: 'none' | 'fail' | FixtureWorkspace
+  rename?: 'ok' | 'fail' | 'stale'
+  /** Sessions the host already holds before the click, which the catalog has not listed yet. */
+  sessions?: string[]
+  /** The generation the host's conversation reset answers. */
+  generation?: number
+} = {}) {
   const catalog: { phase: string; byId: Record<string, object> } = { phase: 'ready', byId: {} }
-  const host = new Set<string>()
+  const host = new Set(options.sessions ?? [])
   const sessions = {
     list: { getSnapshot: () => catalog },
     refresh: vi.fn(async () => { for (const sessionId of host) catalog.byId[sessionId] = {} }),
-    create: vi.fn(async (options: { sessionId?: SessionId; cwd?: string; workspaceId?: string }) => {
-      if (host.has(options.sessionId!)) throw new Error(`session create failed: session/conflict: ${options.sessionId}`)
-      host.add(options.sessionId!); catalog.byId[options.sessionId!] = {}
-      return options.sessionId
+    create: vi.fn(async (request: { sessionId?: SessionId; cwd?: string; workspaceId?: string }) => {
+      if (host.has(request.sessionId!)) throw new Error(`session create failed: session/conflict: ${request.sessionId}`)
+      host.add(request.sessionId!); catalog.byId[request.sessionId!] = {}
+      return request.sessionId
     }),
   } as unknown as Pick<ISessions, 'create' | 'list' | 'refresh'>
-  const workspaces = workspace === undefined ? undefined : {
+  const workspaceId = typeof options.workspace === 'object' ? options.workspace.workspaceId : 'ws-aps'
+  const workspaces = options.workspace === 'none' ? undefined : {
     create: vi.fn(async () => {
-      if (workspace === 'fail') throw new Error('the directory cannot be owned')
-      return workspace
+      if (options.workspace === 'fail') throw new Error('the directory cannot be owned')
+      return { workspaceId, title: 'aps', sessionIds: [...host] }
+    }),
+    rename: vi.fn(async (_workspaceId: string, title: string) => {
+      if (options.rename === 'fail') throw new Error('the Workspace cannot be renamed')
+      return { workspaceId, title, sessionIds: options.rename === 'stale' ? [] : [...host] }
     }),
   }
-  return { sessions, workspaces, catalog, host }
+  const reset = vi.fn(async () => options.generation ?? 1)
+  return { sessions, workspaces, reset, catalog, host }
 }
-const project = { id: 'prj_aps', conversationDir: '/srv/aps' }
-it('opens a Project conversation under a Workspace it creates for the Project directory, and never asks for a workspace', async () => {
-  const { sessions, workspaces, catalog } = conversationFixture({ workspaceId: 'ws-aps' })
+const project = { id: 'prj_aps', name: 'aps', conversationDir: '/srv/aps' }
+it('opens a Project conversation in a Workspace named SAA-<name>, whose reply lists the Session so no picker appears', async () => {
+  const { sessions, workspaces, reset, catalog } = conversationFixture({ workspace: { workspaceId: 'ws-aps' } })
   const open = vi.fn()
-  await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
+  await expect(openProjectConversation({ sessions, workspaces, open, reset }, project, new AbortController().signal)).resolves.toBe(true)
+  expect(conversationWorkspaceTitle(project)).toBe('SAA-aps')
   expect(workspaces!.create).toHaveBeenCalledExactlyOnceWith({ path: '/srv/aps' })
-  expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: projectSessionId('prj_aps'), workspaceId: 'ws-aps' })
+  expect(workspaces!.rename).toHaveBeenCalledExactlyOnceWith('ws-aps', 'SAA-aps')
+  expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: 'project-prj_aps', workspaceId: 'ws-aps' })
   // The catalog is refreshed before the UI opens it, so its tree lists the Session.
   expect(sessions.refresh).toHaveBeenCalled()
-  expect(catalog.byId[projectSessionId('prj_aps')]).toEqual({})
-  expect(open).toHaveBeenCalledExactlyOnceWith(projectSessionId('prj_aps'))
+  expect(catalog.byId['project-prj_aps']).toEqual({})
+  expect(reset).not.toHaveBeenCalled()
+  expect(open).toHaveBeenCalledExactlyOnceWith('project-prj_aps')
   // Opening it again lists it and creates nothing.
-  await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
+  await expect(openProjectConversation({ sessions, workspaces, open, reset }, project, new AbortController().signal)).resolves.toBe(true)
   expect(sessions.create).toHaveBeenCalledOnce()
   expect(open).toHaveBeenCalledTimes(2)
 })
+it('falls back to creating the Workspace again when renaming it fails, and still opens the Session', async () => {
+  const { sessions, workspaces, catalog } = conversationFixture({ workspace: { workspaceId: 'ws-aps' }, rename: 'fail' })
+  const open = vi.fn()
+  await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
+  expect(workspaces!.rename).toHaveBeenCalledOnce()
+  // The create fallback answers the Workspace row with the Session the host filed there.
+  expect(workspaces!.create).toHaveBeenCalledTimes(2)
+  expect(catalog.byId['project-prj_aps']).toEqual({})
+  expect(open).toHaveBeenCalledExactlyOnceWith('project-prj_aps')
+})
+it('starts a Session the Workspace reply does not list over with the next generation', async () => {
+  const { sessions, workspaces, reset } = conversationFixture({ workspace: { workspaceId: 'ws-aps' }, rename: 'stale', generation: 2 })
+  const open = vi.fn()
+  await expect(openProjectConversation({ sessions, workspaces, open, reset }, project, new AbortController().signal)).resolves.toBe(true)
+  expect(reset).toHaveBeenCalledExactlyOnceWith('prj_aps')
+  expect(sessions.create).toHaveBeenNthCalledWith(1, { sessionId: 'project-prj_aps', workspaceId: 'ws-aps' })
+  expect(sessions.create).toHaveBeenNthCalledWith(2, { sessionId: 'project-prj_aps-2', workspaceId: 'ws-aps' })
+  // The new generation is renamed again before it opens, so its Workspace carries the Session.
+  expect(workspaces!.rename).toHaveBeenCalledTimes(2)
+  expect(workspaces!.rename).toHaveBeenLastCalledWith('ws-aps', 'SAA-aps')
+  expect(open).toHaveBeenCalledExactlyOnceWith('project-prj_aps-2')
+})
 it('creates the Project Session with its directory when no Workspace Controller is at hand or it refuses', async () => {
-  for (const workspaces of [undefined, conversationFixture('fail').workspaces]) {
-    const { sessions } = conversationFixture()
+  for (const workspace of ['none', 'fail'] as const) {
+    const { sessions } = conversationFixture({ workspace })
     const open = vi.fn()
-    await expect(openProjectConversation({ sessions, workspaces, open }, project, new AbortController().signal)).resolves.toBe(true)
-    expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: projectSessionId('prj_aps'), cwd: '/srv/aps' })
-    expect(open).toHaveBeenCalledExactlyOnceWith(projectSessionId('prj_aps'))
+    await expect(openProjectConversation({ sessions, open }, project, new AbortController().signal)).resolves.toBe(true)
+    expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: 'project-prj_aps', cwd: '/srv/aps' })
+    expect(open).toHaveBeenCalledExactlyOnceWith('project-prj_aps')
   }
 })
-it('opens a Project Session whose catalog row had not arrived when creating it was refused, and reports an unexplained failure', async () => {
-  const { sessions, catalog, host } = conversationFixture()
+it('adopts a Session the host already holds whose catalog row had not arrived, and reports an unexplained failure', async () => {
+  const { sessions, workspaces, reset, catalog } = conversationFixture({ workspace: { workspaceId: 'ws-aps' },
+    sessions: ['project-prj_aps'] })
   const open = vi.fn()
-  const sessionId = projectSessionId('prj_aps')
-  host.add(sessionId)
-  await expect(openProjectConversation({ sessions, open }, project, new AbortController().signal)).resolves.toBe(true)
+  await expect(openProjectConversation({ sessions, workspaces, open, reset }, project, new AbortController().signal)).resolves.toBe(true)
+  // Creating it is refused as a conflict; the refreshed catalog explains that it already existed.
   expect(sessions.create).toHaveBeenCalledOnce()
-  expect(open).toHaveBeenCalledExactlyOnceWith(sessionId)
-  expect(catalog.byId[sessionId]).toEqual({})
+  expect(catalog.byId['project-prj_aps']).toEqual({})
+  expect(reset).not.toHaveBeenCalled()
+  expect(open).toHaveBeenCalledExactlyOnceWith('project-prj_aps')
   // A creation failure the refreshed catalog does not explain is the failure the click reports.
   const failure = new Error('cwd unusable')
-  const refused = conversationFixture()
+  const refused = conversationFixture({ workspace: 'none' })
   vi.spyOn(refused.sessions, 'create').mockRejectedValueOnce(failure)
-  await expect(openProjectConversation({ sessions: refused.sessions, open }, { id: 'prj_new', conversationDir: '/srv/new' },
+  await expect(openProjectConversation({ sessions: refused.sessions, open }, { id: 'prj_new', name: 'new', conversationDir: '/srv/new' },
     new AbortController().signal)).rejects.toBe(failure)
   expect(refused.sessions.refresh).toHaveBeenCalledOnce()
 })
 it('does nothing for a Project conversation click that was superseded before it started', async () => {
-  const { sessions, workspaces } = conversationFixture({ workspaceId: 'ws-aps' })
+  const { sessions, workspaces } = conversationFixture({ workspace: { workspaceId: 'ws-aps' } })
   const controller = new AbortController(); controller.abort()
   const open = vi.fn()
   await expect(openProjectConversation({ sessions, workspaces, open }, project, controller.signal)).resolves.toBe(false)
@@ -117,7 +161,7 @@ it('names a Project conversation by its generation: the first one and one starte
   expect(projectSessionId('prj_aps', 2)).toBe('project-prj_aps-2')
 })
 it('opens the conversation of the generation the Project is on', async () => {
-  const { sessions, catalog } = conversationFixture()
+  const { sessions, catalog } = conversationFixture({ workspace: 'none' })
   const open = vi.fn()
   await expect(openProjectConversation({ sessions, open }, { ...project, conversationGeneration: 2 },
     new AbortController().signal)).resolves.toBe(true)

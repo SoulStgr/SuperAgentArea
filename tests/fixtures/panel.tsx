@@ -20,7 +20,7 @@ export const translator = (dictionary: Record<string, string>): T => ((key: stri
   const template = dictionary[key] ?? key
   return params ? template.replace(/\{(\w+)\}/g, (match, name: string) => name in params ? String(params[name]) : match) : template
 }) as T
-/** The fake Client sessions service: creating adds the Session to the host and its catalog, and an id the host holds is refused. */
+/** The fake Client sessions service: creating adds the Session to the host, its catalog, and the Workspace it was filed under. */
 function projectSessions(): Pick<ISessions, 'create' | 'list' | 'refresh'> {
   return {
     list: { getSnapshot: () => ({ phase: 'ready' as const, byId: Object.fromEntries([...server.sessions].map(id => [id, {}])) }) },
@@ -33,18 +33,36 @@ function projectSessions(): Pick<ISessions, 'create' | 'list' | 'refresh'> {
       if (server.hostSessions.has(sessionId)) throw new Error(`session create failed: session/conflict: ${sessionId}`)
       server.hostSessions.add(sessionId)
       server.sessions.add(sessionId)
+      // The host files the Session under its Workspace, which the rename reply then carries.
+      const workspace = server.workspaces.find(item => item.workspaceId === String(options.workspaceId))
+      if (workspace && !workspace.sessionIds.includes(sessionId)) workspace.sessionIds.push(sessionId)
       return sessionId
     },
   } as unknown as Pick<ISessions, 'create' | 'list' | 'refresh'>
 }
-/** The fake Client Workspace Controller: creating records a new directory and answers its Workspace id, reusing one already owned. */
-function projectWorkspaces(): Pick<WorkspaceController, 'create'> {
+/**
+ * The fake Client Workspace Controller: creating records a new directory and answers its Workspace, and renaming returns the
+ * Workspace row whose `sessionIds` the host filed the Session under, reusing one already owned.
+ */
+function projectWorkspaces(): WorkspaceController {
   return {
     create: async (input: { path: string }) => {
       await server.conversationWait?.()
       if (server.workspaceError) throw new Error(server.workspaceError)
-      if (!server.workspaces.includes(input.path)) server.workspaces.push(input.path)
-      return { workspaceId: `ws:${input.path}` }
+      let workspace = server.workspaces.find(item => item.path === input.path)
+      if (!workspace) {
+        workspace = { workspaceId: `ws:${input.path}`, path: input.path,
+          title: input.path.split('/').filter(Boolean).at(-1) ?? input.path, sessionIds: [] }
+        server.workspaces.push(workspace)
+      }
+      return { workspaceId: workspace.workspaceId, title: workspace.title, sessionIds: [...workspace.sessionIds] }
+    },
+    rename: async (workspaceId: string, title: string) => {
+      const workspace = server.workspaces.find(item => item.workspaceId === String(workspaceId))
+      if (!workspace) throw new Error(`unknown workspace ${workspaceId}`)
+      if (server.workspaceRenameError) throw new Error(server.workspaceRenameError)
+      workspace.title = title
+      return { workspaceId: workspace.workspaceId, title, sessionIds: server.workspaceStaleSessionIds ? [] : [...workspace.sessionIds] }
     },
   }
 }
@@ -69,8 +87,16 @@ function Panel({ t }: { t: T }) {
   }
   return <App t={t} openSession={async id => { server.opened.push(id) }}
     openProjectConversation={async (project: ProjectConversation) => {
-      await openProjectConversation({ sessions, workspaces: projectWorkspaces(), open: target => { server.opened.push(target) } },
-        project, new AbortController().signal)
+      await openProjectConversation({
+        sessions,
+        workspaces: projectWorkspaces(),
+        open: target => { server.opened.push(target) },
+        // The host resets the conversation's generation when a Session an earlier version left outside its Workspace is replaced.
+        reset: async projectId => {
+          const { project } = await call('POST projects/:id/conversation/reset', { id: projectId })
+          return project.value.conversationGeneration ?? 0
+        },
+      }, project, new AbortController().signal)
     }} deleteProject={deleteProject} resetProjectConversation={resetProjectConversation} deploymentForm={usePageForm(server.form)} />
 }
 let root: Root | undefined

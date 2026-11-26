@@ -188,13 +188,15 @@ it('opens a workstation page with its six sections: Sources, Threads, Decisions,
   expect(field<HTMLInputElement>(zh.projectName).value).toBe('aps')
   expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagent/area/aps.work',
     '/srv/dsh-superagent/area/aps.work/rules'])
-  // agent: its agent's requirements and rules, its conversation, and the history of its Tickets, artifacts and reports.
+  // agent: only its agent's requirements and rules, and the history of its Tickets, artifacts and reports.
   await click(segment(zh['projectSegment.agent']))
   expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentRulesTitle,
-    zh.projectConversationTitle, `${zh.projectAgentTickets}1`, `${zh.projectAgentChanges}1`, `${zh.projectAgentReports}1`])
+    `${zh.projectAgentTickets}1`, `${zh.projectAgentChanges}1`, `${zh.projectAgentReports}1`])
   expect(text()).toContain(zh.projectAgentRulesIntro)
   expect(text()).toContain(zh.projectAgentRulesNone)
-  expect(find(zh.projectConversationOpen, '.dt-section button').matches(':disabled')).toBe(false)
+  // The agent section has no conversation block: opening and deleting the conversation live in the page head.
+  expect(all('.dt-section button').map(button => button.textContent)).not.toContain(zh.projectConversationOpen)
+  expect(all('.dt-section button').map(button => button.textContent)).not.toContain(zh.projectConversationDelete)
   expect(section(zh.projectAgentTickets).textContent).toContain('修复回归')
   expect(section(zh.projectAgentTickets).textContent).toContain(zh['stage.working'])
   expect(section(zh.projectAgentTickets).textContent).toContain(zh.projectReporter)
@@ -262,44 +264,52 @@ it('opens the Source page a workstation\'s Source names', async () => {
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('飞书')
 })
 
-it('opens a workstation\'s conversation from its card and its page head, creating its Workspace once', async () => {
+/** The page head's conversation buttons; the agent section no longer has a conversation block. */
+const conversationButton = (name: string) => find(name, '.dt-page-title button')
+
+it('opens a workstation\'s conversation from its card and its page head, naming its Workspace SAA-<name>', async () => {
   await mount()
   await click(zh['tab.workstations'])
   const apsConversation = () => [...card('aps').querySelectorAll<HTMLButtonElement>('.dt-project-segments button')]
     .find(button => button.textContent === zh.projectConversation)!
-  // The card's own button creates the Workspace for the station's folder and the Session under it, then opens it.
+  // The card's button creates the Workspace under the station folder, names it SAA-aps, and opens the Session it filed.
   await click(apsConversation())
-  expect(server.workspaces).toEqual(['/srv/aps'])
+  expect(server.workspaces).toEqual([{ workspaceId: 'ws:/srv/aps', path: '/srv/aps', title: 'SAA-aps',
+    sessionIds: ['project-prj_aps'] }])
   expect(server.created).toEqual([{ sessionId: 'project-prj_aps', workspaceId: 'ws:/srv/aps' }])
   expect(server.opened).toEqual(['project-prj_aps'])
-  // The page head opens the same conversation; the listed Session is not created again.
+  // The page head opens the same conversation; the listed Session is not created again and its Workspace keeps its title.
   await click(card('aps').querySelector('.dt-project-title')!)
-  await click(find(zh.projectConversationOpen, '.dt-page-title button'))
+  await click(conversationButton(zh.projectConversationOpen))
   expect(server.created).toHaveLength(1)
   expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps'])
-  expect(server.workspaces).toEqual(['/srv/aps'])
+  expect(server.workspaces[0]!.title).toBe('SAA-aps')
 })
 
-it('opens a workstation conversation without a Workspace when it cannot be created, and reopens one the catalog had not listed',
-  async () => {
+it('opens a workstation conversation without a Workspace when it cannot be created', async () => {
   server.workspaceError = 'the directory cannot be owned'
-  await openProject('aps', zh['projectSegment.agent'])
-  await click(find(zh.projectConversationOpen, '.dt-section button'))
+  await openProject('aps')
+  await click(conversationButton(zh.projectConversationOpen))
   // The Session falls back to the Project's conversation directory as its cwd, and still opens.
   expect(server.created).toEqual([{ sessionId: 'project-prj_aps', cwd: '/srv/aps' }])
   expect(server.opened).toEqual(['project-prj_aps'])
-  // A Session the host holds but the catalog has not listed yet is refused by create and still opens after the refresh.
-  server.workspaceError = undefined
-  server.sessions.delete('project-prj_aps')
-  await click(find(zh.projectConversationOpen, '.dt-section button'))
-  expect(server.created).toHaveLength(2)
-  expect(server.opened).toEqual(['project-prj_aps', 'project-prj_aps'])
-  expect(server.sessions.has('project-prj_aps')).toBe(true)
+  expect(server.workspaces).toEqual([])
+})
+
+it('starts a conversation its Workspace does not list over with the next generation', async () => {
+  // A Session an earlier version created outside its Workspace is listed, but no Workspace carries it.
+  server.hostSessions.add('project-prj_aps'); server.sessions.add('project-prj_aps')
+  await openProject('aps')
+  await click(conversationButton(zh.projectConversationOpen))
+  expect(server.requests.some(request => request.path === 'projects/prj_aps/conversation/reset' && request.method === 'POST')).toBe(true)
+  expect(server.created.at(-1)).toEqual({ sessionId: 'project-prj_aps-1', workspaceId: 'ws:/srv/aps' })
+  expect(server.workspaces[0]!.sessionIds).toEqual(['project-prj_aps-1'])
+  expect(server.opened.at(-1)).toBe('project-prj_aps-1')
 })
 
 it('shows the conversation button busy while it opens, and reports a failure it cannot recover from', async () => {
-  await openProject('aps', zh['projectSegment.agent'])
-  const button = () => find(zh.projectConversationOpen, '.dt-section button')
+  await openProject('aps')
+  const button = () => conversationButton(zh.projectConversationOpen)
   // A slow Workspace creation keeps the button disabled until the conversation opens.
   const waiting = Promise.withResolvers<void>()
   server.conversationWait = () => waiting.promise
@@ -319,10 +329,11 @@ it('shows the conversation button busy while it opens, and reports a failure it 
   expect(button().matches(':disabled')).toBe(false)
 })
 
-it('deletes a workstation\'s conversation, archiving the old Session and opening the next generation', async () => {
-  await openProject('aps', zh['projectSegment.agent'])
-  const open = () => find(zh.projectConversationOpen, '.dt-section button')
-  const remove = () => find(zh.projectConversationDelete, '.dt-section button')
+it('deletes a workstation\'s conversation from the page head, archiving the old Session and opening the next generation',
+  async () => {
+  await openProject('aps')
+  const open = () => conversationButton(zh.projectConversationOpen)
+  const remove = () => conversationButton(zh.projectConversationDelete)
   // The first conversation is the unnumbered id; deleting it archives it and advances the generation.
   await click(open())
   expect(server.created).toEqual([{ sessionId: 'project-prj_aps', workspaceId: 'ws:/srv/aps' }])
@@ -334,10 +345,11 @@ it('deletes a workstation\'s conversation, archiving the old Session and opening
   expect(server.archivedSessions).toEqual([{ id: 'project-prj_aps', stopActivity: true }])
   expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectConversationDeleted)
   expect(server.projects.find(project => project.id === 'prj_aps')!.conversationGeneration).toBe(1)
-  // The next open creates the numbered Session of the generation the page reloaded.
+  // The next open creates the numbered Session of the generation the page reloaded, which its Workspace then lists.
   await click(open())
   expect(server.created.at(-1)).toEqual({ sessionId: 'project-prj_aps-1', workspaceId: 'ws:/srv/aps' })
-  // Deleting the conversation again archives the second Session and opens the third one.
+  expect(server.workspaces[0]!.sessionIds).toEqual(['project-prj_aps', 'project-prj_aps-1'])
+  // Deleting the conversation again archives the numbered Session and opens the next one.
   await click(remove())
   await click(find(zh.confirm, '[role="dialog"] button'))
   expect(server.archivedSessions.at(-1)).toEqual({ id: 'project-prj_aps-1', stopActivity: true })
@@ -346,18 +358,19 @@ it('deletes a workstation\'s conversation, archiving the old Session and opening
 })
 
 it('deletes a workstation conversation that was never opened, and a card opens the generation it lists', async () => {
-  await openProject('aps', zh['projectSegment.agent'])
-  await click(find(zh.projectConversationDelete, '.dt-section button'))
+  await openProject('aps')
+  await click(conversationButton(zh.projectConversationDelete))
   await click(find(zh.confirm, '[role="dialog"] button'))
   expect(server.requests.some(request => request.path === 'projects/prj_aps/conversation/reset' && request.method === 'POST')).toBe(true)
   expect(server.projects.find(project => project.id === 'prj_aps')!.conversationGeneration).toBe(1)
   expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectConversationDeleted)
-  // The list's card names the generation too, so its conversation creates the numbered Session.
+  // The list's card names the generation too, so its conversation creates the numbered Session and its Workspace.
   server.projects.find(project => project.id === 'prj_aps')!.conversationGeneration = 3
   await click(zh['tab.workstations'])
   await click([...card('aps').querySelectorAll<HTMLButtonElement>('.dt-project-segments button')]
     .find(button => button.textContent === zh.projectConversation)!)
   expect(server.created.at(-1)).toEqual({ sessionId: 'project-prj_aps-3', workspaceId: 'ws:/srv/aps' })
+  expect(server.workspaces[0]!.title).toBe('SAA-aps')
 })
 
 it('edits a workstation agent\'s requirements and rules, saving them trimmed and without repetitions', async () => {
@@ -420,7 +433,8 @@ it('says the agent history is empty for a workstation without work', async () =>
   expect(text()).toContain(zh.projectTicketsNone)
   expect(text()).toContain(zh.projectArtifactsNone)
   expect(text()).toContain(zh.projectAgentNoReports)
-  expect(find(zh.projectConversationOpen, '.dt-section button').matches(':disabled')).toBe(false)
+  // The page head still opens the conversation of a workstation without work.
+  expect(conversationButton(zh.projectConversationOpen).matches(':disabled')).toBe(false)
 })
 
 it('keeps a workstation page and its section after the panel is remounted', async () => {

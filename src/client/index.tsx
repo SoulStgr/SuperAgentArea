@@ -48,18 +48,24 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
       await openKnownSession(ctx.sessions, id as SessionId, target => { ctx.uiWorkspace.openSession(target) }, request.signal)
     } catch (error) { throw navigationFailure(t, error) }
   }, [ctx, t])
-  // A Project's conversation opens in its own directory without asking for a workspace: its Workspace is created for it first.
+  // A Project's conversation opens in its own Workspace without asking for a workspace: the Workspace is created and named
+  // SAA-<Project> first, then held in the client snapshot so the DSH conversation shows it instead of a picker.
   const openProjectConversation = useCallback(async (project: ProjectConversation) => {
     pending.current?.abort()
     const request = new AbortController(); pending.current = request
     try {
       await openConversation({
         sessions: ctx.sessions,
-        workspaces: ctx.get('workspaces') as Pick<WorkspaceController, 'create'> | undefined,
+        workspaces: ctx.get('workspaces') as WorkspaceController | undefined,
         open: target => { ctx.uiWorkspace.openSession(target) },
+        // A Session an earlier version left outside its Workspace is started over under the next generation.
+        reset: async projectId => {
+          const result = await call('POST projects/:id/conversation/reset', { id: projectId })
+          return result.project.value.conversationGeneration ?? 0
+        },
       }, project, request.signal)
     } catch (error) { throw navigationFailure(t, error) }
-  }, [ctx, t])
+  }, [call, ctx, t])
   // Deleting a Project archives the conversation it leaves behind; the archive is best effort and never fails the deletion.
   const deleteProject = useCallback(async (project: ProjectConversation) => {
     await call('DELETE projects/:id', { id: project.id })

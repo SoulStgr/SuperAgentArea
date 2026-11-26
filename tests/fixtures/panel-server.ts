@@ -191,10 +191,14 @@ export interface PanelServer {
   sessions: Set<string>
   /** The Project Sessions the panel asked to create, in order, with the Workspace or directory they were filed under. */
   created: { sessionId: string; cwd?: string; workspaceId?: string }[]
-  /** The directories the panel asked the Workspace Controller to create, in order. */
-  workspaces: string[]
+  /** The Workspaces the fake client owns, as the Workspace Controller's replies merge them into its snapshot. */
+  workspaces: { workspaceId: string; path: string; title: string; sessionIds: string[] }[]
   /** When set, the Workspace Controller's create fails with this message, as a directory that cannot be owned does. */
   workspaceError?: string
+  /** When set, the Workspace Controller's rename fails with this message, so the panel falls back to create. */
+  workspaceRenameError?: string
+  /** When set, the Workspace Controller's rename reply lists no Session, as a Workspace the host did not update. */
+  workspaceStaleSessionIds?: boolean
   /** When set, the Workspace Controller's create waits for it, letting a test watch the conversation button while it is busy. */
   conversationWait?: () => Promise<void>
   /** When set, creating a Session fails with this message before the host records it. */
