@@ -288,7 +288,7 @@
     },
     {
       "version": "0.3.14",
-      "tgz": "dsh-superagent-0.3.14.tgz",
+      "tgz": "history/dsh-superagent-0.3.14.tgz",
       "bytes": 510789,
       "sha256": "3c8dfddb28ba8d2c03537a3034df4f155a870d7068dbbf402607a8d094b7798a",
       "date": "2026-11-26",
@@ -296,7 +296,19 @@
       "recordedCommit": "125103cb9dc00f9f8823b6649de500da964adea8",
       "stateSchema": 12,
       "architecture": "twelve source kinds incl. web feed monitor",
-      "comparison": "Web page/feed Source (RSS/Atom/JSON, baseline, dedupe, SSRF guards) at order 3; DingTalk scan-to-create onboarding with server-side account creation; WeChat QR image fix; QQ scan tab marked under development while manual stays; bot creation links and steps",
+      "comparison": "Web page/feed Source (RSS/Atom/JSON, baseline, dedupe, SSRF guards) at order 3; DingTalk scan-to-create onboarding with server-side account creation; WeChat QR image fix; QQ scan tab marked under development while manual stays; bot creation links and steps"
+    },
+    {
+      "version": "0.3.15",
+      "tgz": "dsh-superagent-0.3.15.tgz",
+      "bytes": 514490,
+      "sha256": "96f5bcb100fd12ac9b4c9bace5da4aa0c2e2e95815d3866c90ae5736cf08ce4d",
+      "date": "2026-11-26",
+      "sourceCommit": "2da92fe714552db119a482d55c063269fa57ecf8",
+      "recordedCommit": "2da92fe714552db119a482d55c063269fa57ecf8",
+      "stateSchema": 12,
+      "architecture": "twelve source kinds; QQ scan onboarding",
+      "comparison": "QQ scan-to-create onboarding reimplemented from the public bind protocol (create_bind_task, AES-256-GCM secret decrypt) without the UNLICENSED connector; server creates the QQ account and seeds the scanner openid into the allow-list; secret never returns to the browser",
       "note": "current latest"
     }
   ]
