@@ -54,7 +54,7 @@ it('shows one card per workstation with its address, counts and latest reporter,
   expect(all('.dt-empty button').map(button => button.textContent)).toContain(zh.projectAddFirst)
 })
 
-it('counts the same artifacts on a workstation\'s card, its page and its agent history', async () => {
+it('counts the same artifacts on a workstation\'s card and its page', async () => {
   // An artifact saved before Projects existed has no Project column; the workspace counts it everywhere.
   const workspace = server.projects.find(project => project.kind === 'workspace')!
   workspace.artifacts = [{ id: 'a-old', name: 'old.csv', size: 3, at: '2026-09-20T00:00:00Z', ticket: 't0', source: 'github',
@@ -66,9 +66,9 @@ it('counts the same artifacts on a workstation\'s card, its page and its agent h
   expect(countOf(zh.projectArtifacts, card('workspace'))).toBe('1')
   await click(card('workspace').querySelector('.dt-project-title')!)
   expect(countOf(zh.projectArtifacts, document.querySelector('.dt-main')!)).toBe('1')
+  // The agent section lists no work history: Tickets, artifacts and reports have their own pages.
   await click(segment(zh['projectSegment.agent']))
-  expect(section(zh.projectAgentChanges).querySelector('.dt-count')?.textContent).toBe('1')
-  expect(section(zh.projectAgentChanges).textContent).toContain('old.csv')
+  expect(text()).not.toContain(zh.projectAgentChanges)
 })
 
 it('keeps archived workstations out of the list until a person asks to see them', async () => {
@@ -188,20 +188,17 @@ it('opens a workstation page with its six sections: Sources, Threads, Decisions,
   expect(field<HTMLInputElement>(zh.projectName).value).toBe('aps')
   expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagent/area/aps.work',
     '/srv/dsh-superagent/area/aps.work/rules'])
-  // agent: only its agent's requirements and rules, and the history of its Tickets, artifacts and reports.
+  // agent: only its agent's requirements and rules; the work history lives on the Tickets and artifacts pages.
   await click(segment(zh['projectSegment.agent']))
-  expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentRulesTitle,
-    `${zh.projectAgentTickets}1`, `${zh.projectAgentChanges}1`, `${zh.projectAgentReports}1`])
+  expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentRulesTitle])
   expect(text()).toContain(zh.projectAgentRulesIntro)
   expect(text()).toContain(zh.projectAgentRulesNone)
   // The agent section has no conversation block: opening and deleting the conversation live in the page head.
   expect(all('.dt-section button').map(button => button.textContent)).not.toContain(zh.projectConversationOpen)
   expect(all('.dt-section button').map(button => button.textContent)).not.toContain(zh.projectConversationDelete)
-  expect(section(zh.projectAgentTickets).textContent).toContain('修复回归')
-  expect(section(zh.projectAgentTickets).textContent).toContain(zh['stage.working'])
-  expect(section(zh.projectAgentTickets).textContent).toContain(zh.projectReporter)
-  expect(section(zh.projectAgentChanges).textContent).toContain('abcdef0123456789')
-  expect(section(zh.projectAgentReports).textContent).toContain('working')
+  expect(text()).not.toContain(zh.projectAgentTickets)
+  expect(text()).not.toContain(zh.projectAgentChanges)
+  expect(text()).not.toContain(zh.projectAgentReports)
 })
 
 it('opens the Thread and the Ticket a workstation\'s sections list', async () => {
@@ -411,28 +408,14 @@ it('edits a workstation agent\'s requirements and rules, saving them trimmed and
   expect(text()).toContain(zh.projectAgentRulesNone)
 })
 
-it('opens the Ticket a workstation\'s agent history names', async () => {
-  await openProject('aps', zh['projectSegment.agent'])
-  await click(section(zh.projectAgentTickets).querySelector('.dt-open')!)
-  expect(server.requests.some(request => request.path === 'tickets/t1')).toBe(true)
-  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
-})
-
-it('opens the artifact a workstation\'s change history names', async () => {
-  server.artifactDetails = { a1: artifactDetail() }
-  await openProject('aps', zh['projectSegment.agent'])
-  await click(section(zh.projectAgentChanges).querySelector('button')!)
-  expect(server.requests.some(request => request.path === 'artifacts/a1')).toBe(true)
-  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('report.md')
-})
-
-it('says the agent history is empty for a workstation without work', async () => {
+it('leaves work history to its own pages and still opens a workstation\'s conversation', async () => {
   const aps = server.projects.find(project => project.id === 'prj_aps')!
   aps.tickets = []; aps.artifacts = []; aps.threads = []
   await openProject('aps', zh['projectSegment.agent'])
-  expect(text()).toContain(zh.projectTicketsNone)
-  expect(text()).toContain(zh.projectArtifactsNone)
-  expect(text()).toContain(zh.projectAgentNoReports)
+  // The agent section lists rules only; the empty work history is not part of it.
+  expect(text()).not.toContain(zh.projectAgentTickets)
+  expect(text()).not.toContain(zh.projectAgentChanges)
+  expect(text()).not.toContain(zh.projectAgentReports)
   // The page head still opens the conversation of a workstation without work.
   expect(conversationButton(zh.projectConversationOpen).matches(':disabled')).toBe(false)
 })

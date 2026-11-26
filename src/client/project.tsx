@@ -2,16 +2,15 @@
 import { useState } from 'react'
 import type { NewProject, ProjectPatch } from '../app/api.ts'
 import type { ProjectLocation } from '../core/index.ts'
-import { usePoll, type DecisionRow, type ProjectDetailView, type ProjectHistoryView, type ProjectRecord, type ProjectRow,
+import { usePoll, type DecisionRow, type ProjectDetailView, type ProjectRecord, type ProjectRow,
   type ProjectSourceRow, type ThreadRow, type TicketRow } from './api.ts'
-import { sizeText } from './artifacts.tsx'
 import { Button, Dot, Icon, InfoTip, Modal, Pill, SegmentedControl, Tag } from './controls.tsx'
-import { sourceMark, ticketStageMark } from './marks.ts'
+import { sourceMark } from './marks.ts'
 import { useAction, usePanel } from './provider.tsx'
 import { PROJECT_SEGMENTS, type ProjectSegment } from './route.ts'
 import { DecisionLine, ThreadLine, TicketLine } from './rows.tsx'
 import { actorName, errorText, localized, valueLabel } from './text.ts'
-import { ConfirmButton, Hint, KeyValues, LabelValue, LoadMore, LoadState, PageHead, Section, StageMark, When } from './widgets.tsx'
+import { ConfirmButton, Hint, KeyValues, LabelValue, LoadMore, LoadState, PageHead, Section, When } from './widgets.tsx'
 
 /** Whether an address names a repository rather than a local folder, by its protocol or scp form. */
 const repositoryAddress = (address: string): boolean => /^(?:https|ssh|file):\/\/|^[\w.-]+@[\w.-]+:/.test(address.trim())
@@ -271,69 +270,12 @@ function ProjectSettings({ project, reload }: { project: ProjectRecord; reload: 
   </Section>
 }
 
-/** One Ticket of a Project's history: its stage and outcome, who reported it, and how much work it collected. */
-function HistoryTicketLine({ ticket }: { ticket: ProjectHistoryView['tickets'][number] }) {
-  const { t, navigate } = usePanel()
-  const mark = ticketStageMark(t, { stage: ticket.stage, action: ticket.action, outcome: ticket.ended?.outcome })
-  return <li className="dt-row dt-link dt-ticket">
-    <div className="dt-ticket-stage"><StageMark state={mark.dot} icon={mark.icon}
-      label={ticket.stage === 'ended' ? t('ticket.ended') : mark.label} /></div>
-    <div className="dt-ticket-body">
-      <div className="dt-row-title"><button type="button" className="dt-open"
-        onClick={() => navigate({ page: 'execution', id: ticket.id })}>{ticket.title}</button></div>
-      <div className="dt-row-meta">
-        {ticket.ended && <LabelValue label={t('projectAgentOutcome')} value={valueLabel(t, 'outcome', ticket.ended.outcome)} />}
-        {ticket.reporter && <LabelValue label={t('projectReporter')} value={actorName(t, ticket.reporter)} />}
-        <LabelValue label={t('projectAgentAssignments')} value={ticket.assignments} />
-        <LabelValue label={t('projectArtifacts')} value={ticket.artifacts} />
-        <When at={ticket.updatedAt} />
-      </div>
-    </div>
-  </li>
-}
-
-/** One delivered artifact of a Project's history: its file, the Ticket that delivered it, its size and hash. */
-function HistoryArtifactLine({ artifact }: { artifact: ProjectHistoryView['artifacts'][number] }) {
-  const { t, navigate } = usePanel()
-  return <li className="dt-row dt-link">
-    <div className="dt-row-main">
-      <div className="dt-row-title"><button type="button" className="dt-open dt-mono"
-        onClick={() => navigate({ page: 'artifacts', id: artifact.id })}>{artifact.name}</button></div>
-      <div className="dt-row-meta">
-        <LabelValue label={t('artifactTicket')} value={<button type="button" className="dt-textlink"
-          onClick={() => navigate({ page: 'execution', id: artifact.ticket })}>{artifact.ticketTitle}</button>} />
-        <span>{sizeText(artifact.size)}</span>
-        <span className="dt-mono" title={artifact.hash}>{artifact.hash}</span>
-        <When at={artifact.at} />
-      </div>
-    </div>
-  </li>
-}
-
-/** One recent Assignment report of a Project's history: its Ticket, state, the first two summary lines and its time. */
-function HistoryReportLine({ report }: { report: ProjectHistoryView['reports'][number] }) {
-  const { t, navigate } = usePanel()
-  const summary = report.summary.split('\n').map(line => line.trim()).filter(Boolean).slice(0, 2).join('\n')
-  return <li className="dt-row">
-    <div className="dt-row-main">
-      <div className="dt-row-title"><button type="button" className="dt-open"
-        onClick={() => navigate({ page: 'execution', id: report.ticketId })}>{report.ticketTitle}</button></div>
-      {summary && <div className="dt-report-summary">{summary}</div>}
-      <div className="dt-row-meta">
-        <LabelValue label={t('term.assignment')} value={<span className="dt-mono">{report.assignmentId}</span>} />
-        <LabelValue label={t('term.report')} value={valueLabel(t, 'report', report.state)} />
-        <When at={report.at} />
-      </div>
-    </div>
-  </li>
-}
-
 /** Most rules a Project's agent may be given, and the most one may say; the host refuses more. */
 const AGENT_RULES_MAX = 50
 const AGENT_RULE_MAX_LENGTH = 2000
 /**
  * The agent section of a Project: the requirements and rules its conversations and its Tickets' workers follow, edited as a
- * list and saved together, and the Ticket, change and report history it collects.
+ * list and saved together. The Tickets, artifacts and reports have their own pages.
  */
 function ProjectAgent({ project, reload }: { project: ProjectRecord; reload: () => Promise<unknown> }) {
   const { t, call, notify } = usePanel()
@@ -354,7 +296,6 @@ function ProjectAgent({ project, reload }: { project: ProjectRecord; reload: () 
       await reload()
     } catch (failure) { setError(errorText(failure)) } finally { setBusy(false) }
   }
-  const { data, error: historyError } = usePoll(() => call('GET projects/:id/history', { id: project.id }), [project.id])
   return <>
     <Section title={t('projectAgentRulesTitle')} hint={t('projectAgentRulesHint')}>
       <p className="dt-hint">{t('projectAgentRulesIntro')}</p>
@@ -380,21 +321,6 @@ function ProjectAgent({ project, reload }: { project: ProjectRecord; reload: () 
         <Button variant="primary" size="sm" disabled={busy || !dirty} onClick={() => { void save() }}>{t('save')}</Button>
       </div>
     </Section>
-    <LoadState error={historyError} loading={!data} />
-    {data && <>
-      <Section title={t('projectAgentTickets')} count={data.tickets.length}>
-        {data.tickets.length ? <ul className="dt-list">{data.tickets.map(ticket => <HistoryTicketLine key={ticket.id}
-          ticket={ticket} />)}</ul> : <Hint>{t('projectTicketsNone')}</Hint>}
-      </Section>
-      <Section title={t('projectAgentChanges')} count={data.artifacts.length}>
-        {data.artifacts.length ? <ul className="dt-list">{data.artifacts.map(artifact => <HistoryArtifactLine key={artifact.id}
-          artifact={artifact} />)}</ul> : <Hint>{t('projectArtifactsNone')}</Hint>}
-      </Section>
-      <Section title={t('projectAgentReports')} count={data.reports.length}>
-        {data.reports.length ? <ul className="dt-list">{data.reports.map(report => <HistoryReportLine
-          key={`${report.ticketId}:${report.assignmentId}`} report={report} />)}</ul> : <Hint>{t('projectAgentNoReports')}</Hint>}
-      </Section>
-    </>}
   </>
 }
 

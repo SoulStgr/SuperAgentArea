@@ -1,7 +1,7 @@
 # 23 工作站 Agent 要求与对话
 
 > 需求（2026-11-26）：每个工作站（Project）的 agent 段要能由操作者填写「要求与规则」（人设 / 强制方向），可新增、编辑、删除；工作站要有一个「会话」入口，**一键进入该工作站的会话**，复用 DeepSeek Harness 的对话，不再出现「新建会话 / 选择工作区」的强制步骤；不新建多个会话，重复点击进入同一个确定性会话 `project-<projectId>`。
-> 状态：已完成。0.3.17 的首版、0.3.18 的二次调整（删除工作站 / 删除会话 / 规则编辑布局 / 发布包入 `history/`，见 §14）与 0.3.19 的会话直达修复（见 §15）均以本工作区代码为准；验证见 §13、§14.6 与 §15.5。
+> 状态：已完成。0.3.17 的首版、0.3.18 的二次调整（删除工作站 / 删除会话 / 规则编辑布局 / 发布包入 `history/`，见 §14）、0.3.19 的会话直达修复（见 §15）与 0.3.20 的 agent 段再精简（见 §16）均以本工作区代码为准；验证见 §13、§14.6、§15.5 与 §16.5。
 
 ## 1. 背景与问题
 
@@ -159,7 +159,7 @@ openProjectConversation({ sessions, workspaces?, open }, { id, conversationDir }
 - **agent 段：** 改为「工作站 Agent 的要求与规则」+「工作站会话」两段：
   - **Agent 的要求与规则：** 标题、说明（这些要求进入该工作站会话与它工单执行器的系统提示）、逐条要求编辑（每条一个多行输入，`要求 N`；可删除）、「新增要求」（达到 50 条上限后禁用）、保存按钮（无改动时禁用）与错误提示；没有规则时显示「还没有要求或规则。」
   - **工作站会话：** 会话说明与会话 id 说明（`project-<项目 id>`，首次点击创建、之后直接打开，不再询问工作区），以及「打开会话」按钮。
-  - 原有历史（工单历史、修改历史（产物）、最近报告）保留。
+  - 原有历史（工单历史、修改历史（产物）、最近报告）保留。（后续 0.3.20 又把这三份历史移出 agent 段，见 §16。）
 - 规则为空时：保存后该工作站不再有要求段；工单 worker 在下一次模型请求生效，已打开的工作站会话在下次创建或恢复时生效（见 §5.3）。
 
 ## 11. 实施切分
@@ -327,7 +327,7 @@ openProjectConversation({ sessions, workspaces?, open }, { id, conversationDir }
 
 ### 15.4 agent 段精简与页头删除会话
 
-- **agent 段**移除整块「工作站会话」（原有的「打开会话 / 删除会话」Section）：agent 段只保留「Agent 的要求与规则」与 工单历史 / 修改历史（产物）/ 最近报告。
+- **agent 段**移除整块「工作站会话」（原有的「打开会话 / 删除会话」Section）：agent 段只保留「Agent 的要求与规则」与 工单历史 / 修改历史（产物）/ 最近报告。（0.3.20 进一步移除这三份历史，见 §16。）
 - **打开会话**入口只保留两处：工作站卡片的「会话」按钮、详情页页头的「打开会话」。
 - **删除会话**移到详情页页头，与「打开会话」并列（确认框沿用原文案）：确认后 `POST projects/:id/conversation/reset` → 尽力归档旧会话（`uiWorkspace.archiveSession(旧 id, {stopActivity:true})`）→ 重新读取详情（generation 变化）→ notify；下一次打开进入新代数会话。
 - 打开/删除/重置会话的调用都补 `name`（卡片 `project.name`、详情 `data.project.value.name`），Workspace 标题才是 `SAA-<工作站名称>`。
@@ -340,4 +340,37 @@ openProjectConversation({ sessions, workspaces?, open }, { id, conversationDir }
 - 本次复核：`tests/docs.spec.ts`、`tests/class-docs.spec.ts`、`tests/locales.spec.ts`、`tests/navigation.spec.ts`、`tests/panel-workstations.spec.tsx`、`tests/panel-panel.spec.tsx` 共 **6 文件 / 64 项全过**。
 - 全量 `pnpm check` 与桌面 profile 手工验证由 Lead 收口。
 - 已知限制：旧会话内容不迁移（§15.3）；host 必须支持 Workspace `rename` 才能稳定修好 chip，不支持时只能回退 `create` 刷新，且没有 `reset` 回调时旧版本遗留在 Workspace 外的会话仍会直接打开（chip 可能再次落空）；Workspace 标题统一为 `SAA-<工作站名称>`，同一名称的两个工作站（理论上不允许同名）不会冲突；`SAA-` 前缀是固定命名，不是可配置项。
+
+## 16. 0.3.20 agent 段再精简：移除工作站侧的工作历史
+
+> 来源：用户继续反馈——agent 段里的「工单历史 / 修改历史（产物）/ 最近报告」不属于 agent 功能。本轮**只改面板**：服务端 API 与视图未删除。
+
+### 16.1 需求与判断
+
+- agent 段应只回答「这个工作站的 agent 被要求做什么」；工单进度属于执行页 / Ticket 详情，交付文件属于产物页，派工报告属于 Ticket / Assignment 详情。把三份历史塞进 agent 段，会让它变成「工作站大杂烩」，与 0.3.18 / 0.3.19 的精简方向相反。
+- 因此 agent 段只保留「Agent 的要求与规则」；工单、产物、报告各自回到它们的归属页面查看。
+
+### 16.2 实现
+
+- `src/client/project.tsx`：删除 `HistoryTicketLine` / `HistoryArtifactLine` / `HistoryReportLine` 三个行组件；`ProjectAgent` 不再 `usePoll(GET projects/:id/history)`，也不再渲染 `LoadState` 与三个历史 Section；同步清理未用的 import（`sizeText`、`ticketStageMark`、`ProjectHistoryView`、`StageMark` 等）。
+- `ProjectAgent` 现在只有一个 Section：「Agent 的要求与规则」（规则列表 + 新增要求/保存在底部一行）；`reload` 仅用于规则保存后刷新页面。
+- `tests/panel-workstations.spec.tsx`：agent 段的 Section 标题断言只有 `projectAgentRulesTitle`；删除/替换「从 agent 历史打开 Ticket/产物」「agent 历史为空」三个用例，改为「工作历史只在各自页面；无工单的工作站仍能打开会话」。
+
+### 16.3 服务端保留（API 未删）
+
+- `GET projects/:id/history` 路由（`src/app/http.ts`）与 `projectHistory` 视图（`src/app/views/projects.ts`）**仍然存在**，本轮只停止面板调用它；API 使用方与其他视图不受影响，文档不写成「API 已删除」。
+- 面板里其余入口不变：Workstations 卡片的 artifact 计数仍打开产物索引，Tickets 仍从 Execution 页进入，Assignment 报告仍在 Ticket 详情。
+
+### 16.4 agent 段最终形态
+
+- agent 段 = 一块「Agent 的要求与规则」：逐条编辑、新增要求、保存（仅 dirty 可用）、空列表提示。
+- 工作历史各自归属：工单 → Execution / Ticket；产物 → Artifacts / Project 卡片与页面的 artifact 计数；派工报告 → Ticket / Assignment 详情。
+- 页头「打开会话 / 删除会话」「删除工作站」与 0.3.19 一致，不变。
+
+### 16.5 验证与限制（0.3.20）
+
+- `tests/panel-workstations.spec.tsx` 覆盖：agent 段只有规则 Section；不再出现工单 / 修改（产物）/ 报告历史；无工单工作站仍能打开会话；删除工作站、会话、规则编辑等既有用例保持。
+- 本次复核：`tests/docs.spec.ts`、`tests/class-docs.spec.ts`、`tests/locales.spec.ts`，以及 `tests/panel-workstations.spec.tsx`（具体数字见收口复跑）。
+- 全量 `pnpm check` 与桌面 profile 手工验证由 Lead 收口。
+- 已知限制：`GET projects/:id/history` 暂时成为「无面板入口」的 API（保留给后续使用或外部调用）；locales 中历史相关文案键暂未删除（已无引用，可后续清理）；工单 / 产物 / 报告的入口分散在各自页面，agent 段不再汇总。
 
