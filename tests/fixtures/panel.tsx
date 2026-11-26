@@ -3,11 +3,14 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { expect, vi } from 'vitest'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import { caller } from '../../src/client/api.ts'
 import { App } from '../../src/client/app.tsx'
 import { usePageForm } from '../../src/client/deployment.tsx'
 import { zh } from '../../src/client/locales.ts'
+import { panelMessages } from '../../src/client/provider.tsx'
 import type { T } from '../../src/client/text.ts'
-import { openProjectConversation, type ProjectConversation, type WorkspaceController } from '../../src/navigation.ts'
+import { archiveProjectSession, openProjectConversation, projectSessionId, type ProjectConversation,
+  type SessionArchiver, type WorkspaceController } from '../../src/navigation.ts'
 import { server, usePanelServer } from './panel-server.ts'
 
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -45,13 +48,30 @@ function projectWorkspaces(): Pick<WorkspaceController, 'create'> {
     },
   }
 }
+/** The fake DSH workspace UI as the panel reaches it: a Session opens, and one is archived best effort. */
+function projectUi(): Pick<SessionArchiver, 'archiveSession'> {
+  return {
+    archiveSession: async (id, options) => { server.archivedSessions.push({ id: String(id), ...options }) },
+  }
+}
 function Panel({ t }: { t: T }) {
   const sessions = projectSessions()
+  const call = caller(() => panelMessages(t))
+  /** Deletes a Project, then archives the conversation Session it leaves behind, as the plugin entry does. */
+  const deleteProject = async (project: ProjectConversation) => {
+    await call('DELETE projects/:id', { id: project.id })
+    await archiveProjectSession(projectUi(), projectSessionId(project.id, project.conversationGeneration ?? 0))
+  }
+  /** Starts a Project's conversation over, then archives its old Session, as the plugin entry does. */
+  const resetProjectConversation = async (project: ProjectConversation) => {
+    await call('POST projects/:id/conversation/reset', { id: project.id })
+    await archiveProjectSession(projectUi(), projectSessionId(project.id, project.conversationGeneration ?? 0))
+  }
   return <App t={t} openSession={async id => { server.opened.push(id) }}
     openProjectConversation={async (project: ProjectConversation) => {
       await openProjectConversation({ sessions, workspaces: projectWorkspaces(), open: target => { server.opened.push(target) } },
         project, new AbortController().signal)
-    }} deploymentForm={usePageForm(server.form)} />
+    }} deleteProject={deleteProject} resetProjectConversation={resetProjectConversation} deploymentForm={usePageForm(server.form)} />
 }
 let root: Root | undefined
 let container: HTMLElement | undefined

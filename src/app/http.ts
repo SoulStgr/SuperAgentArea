@@ -47,7 +47,7 @@ export interface HttpHost {
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   /** Project ownership answers: the pending question of a Trigger, the Project a person answered with, and the panel's own workstations. */
-  readonly projects: Pick<ProjectService, 'answer' | 'pending' | 'createStation' | 'update'>
+  readonly projects: Pick<ProjectService, 'answer' | 'pending' | 'createStation' | 'update' | 'delete' | 'resetConversation'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -429,6 +429,9 @@ function routes(runtime: HttpHost): Routes {
       return { project: runtime.projects.createStation({ name: request.name, location: request.location,
         ...request.kind ? { kind: request.kind } : {} }) }
     },
+    // A workstation may be deleted when it owns no work, and its conversation may be started over.
+    'DELETE projects/:id': ({ params }) => { runtime.projects.delete(project(params.id)); return { deleted: true } },
+    'POST projects/:id/conversation/reset': ({ params }) => ({ project: runtime.projects.resetConversation(project(params.id)) }),
     'PATCH projects/:id': async ({ params, body }) =>
       ({ project: runtime.projects.update(project(params.id), ProjectPatchRequest.parse(await body())) }),
     // The artifact index: one page of delivered files, filtered by Project, Source, Ticket or a name or hash; and one

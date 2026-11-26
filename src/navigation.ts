@@ -22,10 +22,24 @@ export async function openKnownSession(sessions: Pick<ISessions, 'list' | 'refre
   return true
 }
 
-/** The deterministic id of a Project's conversation Session: opening the conversation again opens the same one. */
-export const projectSessionId = (projectId: string): SessionId => `project-${projectId}` as SessionId
-/** A Project as its conversation opens: the id its Session is named after, and the directory the conversation works in. */
-export interface ProjectConversation { id: string; conversationDir: string }
+/** The deterministic id of a Project's conversation Session: opening the conversation again opens the same one, and starting
+ * the conversation over (a later generation) names a new one. */
+export const projectSessionId = (projectId: string, generation = 0): SessionId =>
+  (generation > 0 ? `project-${projectId}-${generation}` : `project-${projectId}`) as SessionId
+/**
+ * A Project as its conversation opens: the id its Session is named after, the directory the conversation works in, and the
+ * generation of the conversation (the first unless a person started it over).
+ */
+export interface ProjectConversation { id: string; conversationDir: string; conversationGeneration?: number }
+/** The UI workspace call that archives a Session: the panel uses it when a Project or its conversation is deleted. */
+export interface SessionArchiver { archiveSession(id: SessionId, options: { stopActivity: boolean }): Promise<unknown> }
+/**
+ * Archive a Project's conversation Session, best effort: the Project or its conversation is already deleted, so a Session
+ * that cannot be archived (already gone, or the host is busy) must not turn the successful deletion into a failure.
+ */
+export async function archiveProjectSession(ui: Pick<SessionArchiver, 'archiveSession'>, sessionId: SessionId): Promise<void> {
+  try { await ui.archiveSession(sessionId, { stopActivity: true }) } catch { /* The old conversation stays in DSH as it is. */ }
+}
 /**
  * The client Workspace Controller as the panel reaches it through `ctx.get('workspaces')`: creating a Workspace for an
  * existing directory registers it and merges it into the local snapshot at once, so a Session filed under it shows up
@@ -47,7 +61,7 @@ export interface ConversationHost {
 export async function openProjectConversation(host: ConversationHost, project: ProjectConversation,
   signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false
-  const sessionId = projectSessionId(project.id)
+  const sessionId = projectSessionId(project.id, project.conversationGeneration ?? 0)
   // The Workspace files the conversation under the Project's directory at once; without one its cwd carries the directory.
   type WorkspaceId = NonNullable<Parameters<ISessions['create']>[0]>['workspaceId']
   let workspaceId: WorkspaceId

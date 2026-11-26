@@ -246,6 +246,14 @@ it('creates, renames, aliases and archives a Project from the panel, refusing a 
   const restored = projects.update(aps.id, { archived: false })
   expect(restored).toMatchObject({ id: aps.id, status: 'active' })
   expect(restored.value).not.toHaveProperty('archivedAt')
+  // Starting the conversation over advances its generation, so the next open names another Session id.
+  expect(projects.resetConversation(aps.id).value.conversationGeneration).toBe(1)
+  expect(projects.resetConversation(aps.id).value.conversationGeneration).toBe(2)
+  // A Project with no work is deletable; the built-in workspace and an unknown Project are not.
+  expect(projects.delete(other.id).value.name).toBe('another')
+  expect(store.projects.get(other.id)).toBeUndefined()
+  expect(() => projects.delete(WORKSPACE_PROJECT_ID)).toThrow('built-in workspace is fixed')
+  expect(() => projects.delete('prj_gone')).toThrow('Unknown Project: prj_gone')
   // The workstation agent's requirements are trimmed and deduplicated, and an empty list clears them.
   const withRules = projects.update(aps.id, { agentRules: [' 先读 AGENTS.md ', '先读 AGENTS.md', '', ' 用中文回复 '] })
   expect(withRules.value.agentRules).toEqual(['先读 AGENTS.md', '用中文回复'])

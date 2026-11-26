@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { WORKSPACE_PROJECT_ID, artifactRecordId, conversationDirectory, type ProjectRecord } from '../src/core/index.ts'
+import { WORKSPACE_PROJECT_ID, artifactRecordId, conversationDirectory, projectIdOfSession, projectSessionId, type ProjectRecord }
+  from '../src/core/index.ts'
 import { workspaceDirectories, workspaceProject, workspaceTicketDirectory } from '../src/app/projects.ts'
 import { Store } from '../src/app/store.ts'
 import { SettingsSchema } from '../src/policy.ts'
@@ -28,6 +29,16 @@ it('works a Project conversation in its named folder, its local checkout, or its
   expect(conversationDirectory(repo())).toBe(base.value.scratchDir)
   // The built-in workspace has no folder of its own: its conversation stays in its working copies.
   expect(conversationDirectory({ ...base, value: { ...base.value, kind: 'workspace', location: { type: 'managed' } } })).toBe(base.value.scratchDir)
+})
+
+it('names each conversation generation deterministically, and reads both back to their Project', () => {
+  expect(projectSessionId('prj_aps')).toBe('project-prj_aps')
+  expect(projectSessionId('prj_aps', 0)).toBe('project-prj_aps')
+  expect(projectSessionId('prj_aps', 2)).toBe('project-prj_aps-2')
+  expect(projectIdOfSession('project-prj_aps')).toBe('prj_aps')
+  expect(projectIdOfSession('project-prj_aps-2')).toBe('prj_aps')
+  expect(projectIdOfSession('project-prj_foo2')).toBe('prj_foo2')
+  expect(projectIdOfSession('session-abc')).toBeUndefined()
 })
 
 it('describes the built-in workspace Project with the area layout under the state directory', () => {

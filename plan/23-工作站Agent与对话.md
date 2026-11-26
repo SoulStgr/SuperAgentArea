@@ -1,7 +1,7 @@
 # 23 工作站 Agent 要求与对话
 
 > 需求（2026-11-26）：每个工作站（Project）的 agent 段要能由操作者填写「要求与规则」（人设 / 强制方向），可新增、编辑、删除；工作站要有一个「会话」入口，**一键进入该工作站的会话**，复用 DeepSeek Harness 的对话，不再出现「新建会话 / 选择工作区」的强制步骤；不新建多个会话，重复点击进入同一个确定性会话 `project-<projectId>`。
-> 状态：已完成（待提交）。服务端字段、提示词注入与面板一键会话 / 规则编辑均已落地，以本工作区代码为准；验证见 §13。
+> 状态：已完成。0.3.17 的首版与 0.3.18 的二次调整（删除工作站 / 删除会话 / 规则编辑布局 / 发布包入 `history/`，见 §14）均以本工作区代码为准；验证见 §13 与 §14.6。
 
 ## 1. 背景与问题
 
@@ -225,4 +225,67 @@ openProjectConversation({ sessions, workspaces?, open }, { id, conversationDir }
 ### 13.5 提交
 
 提交者 `shsren-saa`，提交信息按仓库规范（`feat(project): 工作站 Agent 要求与规则、一键会话`），正文列改动与验证。
+
+## 14. 0.3.18 二次调整：删除工作站、删除会话、布局与打包约定
+
+> 来源：用户对已上线面板的反馈（删除工作站、删除/重开工作站会话、规则编辑区布局）与发布约定调整（发布包统一放 `history/`）。服务端已落地，客户端由面板实现同阶段收口；本文以本工作区最终代码为准。
+
+### 14.1 需求
+
+1. **工作站可删除**：此前工作站只能归档，误建的空站也无法从注册表移除。
+2. **工作站会话可删除 / 重新开始**：此前会话只能打开与复用（确定性 `project-<id>`），没有「重开一个新会话」的入口。
+3. **Agent 规则编辑区布局**：底部「新增要求 / 保存」两个按钮挤在一起，需要左侧新增、右侧保存。
+4. **发布包统一放 `history/`**：仓库根目录不再散放 `.tgz`。
+
+### 14.2 删除工作站
+
+- **数据。** `Store.projects.remove(id)` 删除一行 Project；`ProjectService.delete(id)` 只删 Project 注册行，不级联任何数据。
+- **校验顺序与拒绝。**
+  1. 项目不存在 → `projectUnknown`（404）。
+  2. 内置 workspace → `projectFixed`（拒绝；workspace 固定不可删）。
+  3. 仍有工单或产物 → `projectHasWork`，参数带项目名、工单数与产物数（面板按 `userError.projectHasWork` 显示数量）。
+- **为什么拒绝仍有工单/产物的工作站。** 工单行与产物行都记录 `project_id`，而删除不级联；删掉注册行会让历史行指向不存在的项目（卡片、统计、产物反查处处不一致）。因此只允许删除**从未产生过工单或产物**的工作站；有历史的工作站保留。
+- **「归档」不等于可删。** `projectHasWork` 统计全部工单与产物（含已结束工单、归档项目下的行）——归档只是隐藏，不改变计数，也无法解锁删除；当前也没有清理工单/产物的 API。产品文案里的「先归档或清理」是处理方向；实际能删的是空站。此项作为已知限制记录（后续可考虑级联删除，或只把未结束/未清理的工单计入阻止条件）。
+- **路由。** `DELETE projects/:id` → `{ deleted: true }`；Host 校验同上。
+- **面板。**
+  - 工作站卡片右上角新增删除按钮（trash 图标），**仅非内置 workspace 显示**；点击弹确认（ConfirmButton），确认后调用删除，成功刷新卡片列表。
+  - 工作站详情页头也提供删除入口（非 workspace）；删除成功后返回工作站列表。
+  - 被拒绝时弹出本地化错误提示（toast，`userError.projectHasWork` 含工单/产物数量），确认框保持打开、工作站与页面状态不变。
+- **会话处理。** 删除成功后，客户端尽力把该工作站的会话（按删除前的 generation 计算 id）交给 `uiWorkspace.archiveSession(id, { stopActivity: true })` 归档；归档失败忽略（工作站已删，不影响结果）。删除不删除 DSH 里的会话本体，它留在 DSH 归档中。
+- **已知边界。** 删除后以同一名称重建工作站会得到同一个 `prj_<key>` id 且 `conversationGeneration` 重新从 0 开始，会话 id 会和旧归档会话同名；Host 拒绝创建且刷新后的目录仍不列出该归档会话时，面板会报创建失败。可换一个名称，或后续在重建时让会话代数从归档里已有 id 之后开始。
+- **不影响历史数据。** 有历史的工作站被拒绝删除，其工单、产物、历史全部保留；能删除的工作站本来就没有历史数据。
+
+### 14.3 删除会话（重新开始工作站会话）
+
+- **数据。** `ProjectValue.conversationGeneration?: number`（缺省 0）。`projectSessionId(projectId, generation = 0)`：第 0 代为 `project-<id>`，之后为 `project-<id>-<generation>`；`projectIdOfSession(sessionId)` 去掉末尾的 `-<数字>` 仍解析回项目 id，所以旧会话也能识别为「该项目的工作站会话」。
+- **服务。** `ProjectService.resetConversation(id)`：代数 +1 并保存，返回更新后的 `ProjectRecord`；没有会话也可重置（只是让下一次打开用新 id）。
+- **路由。** `POST projects/:id/conversation/reset` → `{ project }`。
+- **面板。** agent 段「工作站会话」内、「打开会话」旁新增「删除会话」按钮（确认框）；确认后：
+  1. `POST projects/:id/conversation/reset`，代数 +1；
+  2. 尽力归档旧会话：`uiWorkspace.archiveSession(projectSessionId(id, 旧代数), { stopActivity: true })`，失败忽略（旧会话留在 DSH）；
+  3. 重新读取工作站详情（generation 已变化）并 notify；
+  4. 下一次「打开会话」按新 generation 创建 `project-<id>-<n>` 新会话。
+- **行为。** 旧会话**不删除**，留在 DSH 归档中可查；同一 id 不再复用；新会话是普通 DSH 会话，再次注入当前的 Agent 要求与规则段——所以「删除会话」也是让规则改动进入新会话、无需重启 dsh-superagent 的途径。
+- **入口传参。** 卡片与页头的「打开会话」都要传 `conversationGeneration`（卡片取 `project.conversationGeneration`，详情取 `data.conversationGeneration`）；漏传会打开旧代 id。
+- **视图。** `ProjectRowView.conversationGeneration` 与 `GET projects/:id` 顶层 `conversationGeneration` 暴露当前代数。
+
+### 14.4 Agent 规则编辑区布局
+
+- 底部操作行改为：左侧「新增要求」（outline），右侧「保存」（primary）；保存仅在 dirty 时可用（原有语义不变：trim、去重、空数组清除）。
+- 空态提示、规则列表与操作行之间整理间距，两个按钮不再挤在一起。
+- 不改变规则的数据模型、接口与生效时机（见 §5.3 与 §13.4）。
+
+### 14.5 发布包统一放 history/
+
+- **约定。** 所有已发布构建包 `dsh-superagent-<version>.tgz` 统一放在 `history/` 下并随 git 跟踪，仓库根目录不再存放 `.tgz`；包文件不覆盖、不删除。
+- **同步。** `releases/README.md` 的「包路径」列与 `releases/manifest.json` 的 `tgz` 字段一律写 `history/dsh-superagent-<version>.tgz`；`releases/` 只保留索引与说明。此前放在根目录的 0.3.17 包与本次 0.3.18 包都在本次发布中归入 `history/`。
+- **流程。** 发版时用 `pnpm pack --pack-destination history` 直接在 `history/` 产出包，或打包后移入 `history/`，并登记 `releases/README.md` 与 `manifest.json`。打包与 `releases/**` 的维护由发布流程（Lead）执行，本文件只记录约定。
+
+### 14.6 验证与限制（0.3.18）
+
+- 服务端单测：`tests/projects.spec.ts`（两代会话 id 的命名与反解）、`tests/resolve.spec.ts`（`resetConversation` 递增；`delete` 删除空站，拒绝内置 workspace 与未知项目）。`projectHasWork` 的拒绝由服务层与面板 fixture 覆盖；HTTP 路由层未单独加用例。
+- 客户端测试：`tests/panel-workstations.spec.tsx` 覆盖卡片/详情删除入口与确认、删除成功刷新与失败提示（toast 含数量、确认框保持打开）、删除会话（POST reset + 归档旧会话 + 新代数打开新会话 id）、规则编辑区「左新增 / 右保存且仅 dirty 可用」；`tests/navigation.spec.ts` 覆盖代数命名与旧会话归档 best effort。
+- 本次复核：`tests/docs.spec.ts`、`tests/class-docs.spec.ts`、`tests/locales.spec.ts`、`tests/projects.spec.ts`、`tests/resolve.spec.ts`、`tests/navigation.spec.ts`、`tests/panel-workstations.spec.tsx`、`tests/panel-panel.spec.tsx` 共 **8 文件 / 74 项全过**。
+- 全量 `pnpm check` 与桌面 profile 手工验证由 Lead 收口，测试总数以收口时为准。
+- 已知限制：只有「从未产生工单/产物」的工作站可删除；同名重建的会话 id 可能与旧归档会话同名（见 §14.2）；发布包移动是发布流程的手工步骤，不在代码中自动完成。
 

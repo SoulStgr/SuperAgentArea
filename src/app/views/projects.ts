@@ -49,6 +49,8 @@ export interface ProjectRowView {
   sources: ProjectSourceRef[]; lastActivity: string; reporter?: ActorView
   /** The directory the Project's conversation Session works in. */
   conversationDir: string
+  /** Which conversation Session the Project is on; resetting the conversation advances it. */
+  conversationGeneration: number
 }
 /** The work of one Project: its Tickets, and the Threads those Tickets came from, follow, or had answered into it. */
 function projectWork(store: Store, projectId: string) {
@@ -96,7 +98,8 @@ function projectRow(host: ViewHost, view: Snapshot, project: ProjectRecord, tick
     location: project.value.location, status: project.status, ...project.value.archivedAt ? { archivedAt: project.value.archivedAt } : {},
     openTickets: tickets.filter(liveTicket).length, tickets: tickets.length, artifacts: artifacts.length,
     sources: projectSourceIds(host, project, tickets).map(id => ({ id, title: sourceTitleOf(host.sources, id) })),
-    lastActivity: lastActivityOf(tickets, artifacts), ...reporter ? { reporter } : {}, conversationDir: conversationDirectory(project) }
+    lastActivity: lastActivityOf(tickets, artifacts), ...reporter ? { reporter } : {}, conversationDir: conversationDirectory(project),
+    conversationGeneration: project.value.conversationGeneration ?? 0 }
 }
 /**
  * Every Project's card, the built-in workspace first and the others by their latest change: the active ones by default,
@@ -164,7 +167,7 @@ export function projectDetail(host: ViewHost, id: string, health: HealthMap, set
     installed: false, state: 'missing', lastAt: '', linked: true })
   const decisions = projectDecisions(host.store, keys)
   const threads = threadList(host, 'all', 0, PROJECT_PAGE, keys)
-  return { project, conversationDir: conversationDirectory(project), counts: { openTickets: tickets.filter(liveTicket).length, tickets: tickets.length, threads: threads.total,
+  return { project, conversationDir: conversationDirectory(project), conversationGeneration: project.value.conversationGeneration ?? 0, counts: { openTickets: tickets.filter(liveTicket).length, tickets: tickets.length, threads: threads.total,
     decisions: decisions.length, artifacts: artifacts.length }, sources,
     tickets: ticketPage(host, tickets, undefined, 0, PROJECT_PAGE), threads,
     decisions: decisionPage(host, decisions, 0, PROJECT_PAGE),

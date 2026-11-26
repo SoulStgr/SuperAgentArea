@@ -25,6 +25,8 @@ import { When } from './widgets.tsx'
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
   openProjectConversation: (project: ProjectConversation) => Promise<void>
+  deleteProject: (project: ProjectConversation) => Promise<void>
+  resetProjectConversation: (project: ProjectConversation) => Promise<void>
   deploymentForm: DeploymentForm
 }
 
@@ -184,7 +186,7 @@ function Pages({ route, openTab, openSettings, deploymentForm }: { route: Route;
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, openProjectConversation, deploymentForm }: AppProps) {
+export function App({ t, openSession, openProjectConversation, deleteProject, resetProjectConversation, deploymentForm }: AppProps) {
   const [location, setLocation] = useState(initialLocation)
   useEffect(() => { remember(location) }, [location])
   // Preserve the last opened settings group across navigation so the Settings gear reopens at it.
@@ -200,8 +202,9 @@ export function App({ t, openSession, openProjectConversation, deploymentForm }:
   // The header gear opens Settings where it was left; clicking it there leaves the route as it is.
   const openSettings = useCallback(() => move(current => current.route.page === 'settings' ? { route: current.route, stack: current.stack }
     : { route: settingsRoute(lastSettingsGroup(current)), stack: [...current.stack, current.route].slice(-20) }), [move])
-  return <PanelProvider t={t} openSession={openSession} openProjectConversation={openProjectConversation} navigate={navigate}
-    back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
+  return <PanelProvider t={t} openSession={openSession} openProjectConversation={openProjectConversation} deleteProject={deleteProject}
+    resetProjectConversation={resetProjectConversation} navigate={navigate} back={back}
+    backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
     <Pages route={location.route} openTab={openTab} openSettings={openSettings} deploymentForm={deploymentForm} />
   </PanelProvider>
 }

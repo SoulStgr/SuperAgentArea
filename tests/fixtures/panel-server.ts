@@ -126,6 +126,8 @@ export interface ProjectFixture {
   artifacts?: (ProjectDetailView['artifacts'][number] & { hash?: string })[]; reporter?: Actor
   /** The requirements and rules its agent reads, as a saved Project holds them. */
   agentRules?: string[]
+  /** Which conversation Session it is on; resetting the conversation advances it. */
+  conversationGeneration?: number
 }
 /** The directory a Project's conversation works in, as the host derives it: the station's folder, a repository's local
  * checkout, and otherwise its working-copy directory. */
@@ -136,6 +138,8 @@ const conversationDirectoryOf = (project: ProjectFixture): string => {
   }
   return project.scratchDir
 }
+/** The generation of a Project's conversation Session: the first one unless a person started it over. */
+const conversationGenerationOf = (project: ProjectFixture): number => project.conversationGeneration ?? 0
 /** The key a Project's name gives it, as the host's `projectKey` does. */
 const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '')
   .slice(0, 60) || 'station'
@@ -195,6 +199,8 @@ export interface PanelServer {
   conversationWait?: () => Promise<void>
   /** When set, creating a Session fails with this message before the host records it. */
   sessionCreateError?: string
+  /** The Sessions the panel asked the DSH workspace UI to archive, with the options it passed. */
+  archivedSessions: { id: string; stopActivity?: boolean }[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
   /** The delivered artifacts the 产物 pages list, the page served for one of them, and the file each download answers with. */
@@ -406,7 +412,8 @@ function projectRowOf(project: ProjectFixture): ProjectRow {
     ...project.archivedAt ? { archivedAt: project.archivedAt } : {},
     openTickets: tickets.filter(ticket => ticket.state === 'open').length, tickets: tickets.length, artifacts: artifacts.length,
     sources: projectLinkedIds(project, tickets).map(id => ({ id, title: projectSourceTitle(id) })),
-    lastActivity, ...project.reporter ? { reporter: project.reporter } : {}, conversationDir: conversationDirectoryOf(project) }
+    lastActivity, ...project.reporter ? { reporter: project.reporter } : {}, conversationDir: conversationDirectoryOf(project),
+    conversationGeneration: conversationGenerationOf(project) }
 }
 /** The Project cards of one status, the built-in workspace first. */
 function projectRows(status: ProjectRow['status']): ProjectRow[] {
@@ -419,6 +426,7 @@ const projectRecordOf = (project: ProjectFixture): ProjectDetailView['project'] 
   value: { name: project.name, kind: project.kind, location: project.location, outputDir: project.outputDir,
     scratchDir: project.scratchDir, rulesDir: project.rulesDir, sourceIds: project.sourceIds, aliases: project.aliases,
     ...project.agentRules?.length ? { agentRules: project.agentRules } : {},
+    ...project.conversationGeneration ? { conversationGeneration: project.conversationGeneration } : {},
     ...project.archivedAt ? { archivedAt: project.archivedAt } : {} } })
 /** One Project's page: its record, its counts, its Sources and the first page of each section. */
 function projectDetailOf(id: string): ProjectDetailView | undefined {
@@ -427,6 +435,7 @@ function projectDetailOf(id: string): ProjectDetailView | undefined {
   const tickets = projectTicketsOf(project), threads = projectThreadsOf(project)
   const decisions = project.decisions ?? [], artifacts = project.artifacts ?? []
   return { project: projectRecordOf(project), conversationDir: conversationDirectoryOf(project),
+    conversationGeneration: conversationGenerationOf(project),
     counts: { openTickets: tickets.filter(ticket => ticket.state === 'open').length, tickets: tickets.length, threads: threads.length,
       decisions: decisions.length, artifacts: artifacts.length },
     sources: projectSourceRows(project, tickets), tickets: page(tickets), threads: page(threads),
@@ -552,6 +561,7 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], hostSessions: new Set(), sessions: new Set(), created: [], workspaces: [],
+    archivedSessions: [],
     requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
     projects: [
       { id: 'prj_workspace', key: 'workspace', name: 'workspace', kind: 'workspace', location: { type: 'managed' },
@@ -820,6 +830,26 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       else delete project.archivedAt
     }
     project.updatedAt = new Date().toISOString()
+    return { project: projectRecordOf(project) }
+  } },
+  // Deleting a workstation is refused for the built-in workspace and one that still owns Tickets or artifacts.
+  'DELETE projects/:id': { answer: ({ params }) => {
+    const project = server.projects.find(item => item.id === params.id)
+    if (!project) return refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
+    if (project.kind === 'workspace') return refuse(400, 'The built-in workspace is fixed: it cannot be archived, renamed or deleted',
+      { code: 'projectFixed', values: {} })
+    const tickets = projectTicketsOf(project).length, artifacts = (project.artifacts ?? []).length
+    if (tickets || artifacts) return refuse(400,
+      `The Project still owns work: ${tickets} Tickets and ${artifacts} artifacts; archive it or clear them first`,
+      { code: 'projectHasWork', values: { project: project.name, tickets: String(tickets), artifacts: String(artifacts) } })
+    server.projects = server.projects.filter(project_ => project_ !== project)
+    return { deleted: true as const }
+  } },
+  // Starting a workstation's conversation over advances its generation; the next open names a Session by it.
+  'POST projects/:id/conversation/reset': { answer: ({ params }) => {
+    const project = server.projects.find(item => item.id === params.id)
+    if (!project) return refuse(404, 'Unknown Project', { code: 'projectUnknown', values: { project: params.id } })
+    project.conversationGeneration = conversationGenerationOf(project) + 1
     return { project: projectRecordOf(project) }
   } },
   // The artifact index filters by Project, Source, Ticket or a name/hash search; one artifact's page carries its chain.

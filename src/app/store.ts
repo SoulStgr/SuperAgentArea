@@ -293,6 +293,8 @@ export class Store implements Repositories {
         ON CONFLICT(id) DO UPDATE SET key=excluded.key, value=excluded.value, status=excluded.status, updated_at=excluded.updated_at`)
         .run(project.id, project.key, JSON.stringify(project.value), project.status, project.createdAt, project.updatedAt)
     },
+    /** Removes a Project row; callers check what still refers to it before deleting. */
+    remove: (id: string): void => { this.db.prepare('DELETE FROM project WHERE id=?').run(id) },
     /**
      * Returns the built-in workspace Project, creating it with `stateDir`'s area layout when absent; the schema 12 migration
      * calls this so every database has one.

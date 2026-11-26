@@ -20,7 +20,7 @@ export const ASSESSOR_PERSON: PersonRef = { source: 'orchestrator', id: 'orchest
 
 /** What the Project service reads and writes: Projects, Decisions, Triggers, the answer records, the Sources, and the current settings. */
 export interface ProjectHost {
-  readonly store: Pick<Store, 'projects' | 'decisions' | 'triggers' | 'get' | 'set'>
+  readonly store: Pick<Store, 'projects' | 'decisions' | 'triggers' | 'tickets' | 'artifacts' | 'get' | 'set'>
   readonly sources: Pick<SourceRegistry, 'projectHints' | 'instances'>
   settings(): Settings
   readonly stateDir: string
@@ -296,5 +296,34 @@ export class ProjectService {
     if (this.host.store.projects.list().some(project => project.key === key && project.id !== except)) {
       throw new UserError('projectExists', { project: key })
     }
+  }
+  /**
+   * Starts a Project's conversation over: the next open creates a Session under the next deterministic id, so the old
+   * conversation stays in DSH as an archived Session instead of being reopened.
+   * @throws UserError `projectUnknown`.
+   */
+  resetConversation(id: string): ProjectRecord {
+    const project = this.host.store.projects.get(id)
+    if (!project) throw new UserError('projectUnknown', { project: id })
+    const generation = (project.value.conversationGeneration ?? 0) + 1
+    const updated: ProjectRecord = { ...project, value: { ...project.value, conversationGeneration: generation }, updatedAt: this.now() }
+    this.host.store.projects.save(updated)
+    return updated
+  }
+  /**
+   * Deletes a workstation from the registry. The built-in workspace is fixed, and a Project that still owns Tickets or
+   * artifacts is refused so no row is left naming a Project that no longer exists; a person archives it instead or clears
+   * its work first.
+   * @throws UserError `projectUnknown`, `projectFixed`, `projectHasWork`.
+   */
+  delete(id: string): ProjectRecord {
+    const project = this.host.store.projects.get(id)
+    if (!project) throw new UserError('projectUnknown', { project: id })
+    if (isWorkspaceProject(project)) throw new UserError('projectFixed')
+    const tickets = this.host.store.tickets.list().filter(ticket => ticket.projectId === id).length
+    const artifacts = this.host.store.artifacts.list().filter(artifact => artifact.project === id).length
+    if (tickets || artifacts) throw new UserError('projectHasWork', { project: project.value.name, tickets: String(tickets), artifacts: String(artifacts) })
+    this.host.store.projects.remove(id)
+    return project
   }
 }

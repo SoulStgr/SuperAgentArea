@@ -26,9 +26,16 @@ function LocationTag({ location }: { location: ProjectLocation }) {
 const fixedProject = (project: Pick<ProjectRecord, 'value'>): boolean => project.value.kind === 'workspace'
 
 /** One Project's card: its name and address, its counts and latest activity, its sections, and its conversation. */
-function ProjectCard({ project }: { project: ProjectRow }) {
-  const { t, navigate, openProjectConversation } = usePanel()
-  const conversation = useAction(() => openProjectConversation({ id: project.id, conversationDir: project.conversationDir }))
+function ProjectCard({ project, onDeleted }: { project: ProjectRow; onDeleted: () => Promise<unknown> }) {
+  const { t, navigate, notify, openProjectConversation, deleteProject } = usePanel()
+  const conversation = useAction(() => openProjectConversation({ id: project.id, conversationDir: project.conversationDir,
+    conversationGeneration: project.conversationGeneration }))
+  const remove = async () => {
+    await deleteProject({ id: project.id, conversationDir: project.conversationDir,
+      conversationGeneration: project.conversationGeneration })
+    notify(t('projectDeleted', { name: project.name }))
+    await onDeleted()
+  }
   const open = (segment?: ProjectSegment) => navigate({ page: 'workstations', id: project.id, ...segment ? { query: { segment } } : {} })
   return <section className="dt-card dt-project-card" aria-label={project.name}>
     <div className="dt-card-head">
@@ -46,6 +53,9 @@ function ProjectCard({ project }: { project: ProjectRow }) {
           {project.lastActivity && <LabelValue label={t('projectActivity')} value={<When at={project.lastActivity} />} />}
         </div>
       </div>
+      {project.kind !== 'workspace' && <ConfirmButton variant="ghost" icon="trash" label="" ariaLabel={t('projectDelete')}
+        title={t('projectDeleteTitle')} message={t('projectDeleteConfirm', { name: project.name })}
+        onConfirm={remove} />}
     </div>
     {project.reporter && <p className="dt-row-meta"><LabelValue label={t('projectReporter')} value={actorName(t, project.reporter)} /></p>}
     <div className="dt-project-segments">
@@ -130,7 +140,7 @@ function ProjectList() {
     </div>
     <LoadState error={error} loading={!data} />
     {data && data.length > 0 && <div className="dt-project-grid">
-      {data.map(project => <ProjectCard key={project.id} project={project} />)}
+      {data.map(project => <ProjectCard key={project.id} project={project} onDeleted={reload} />)}
     </div>}
     {onlyWorkspace && <div className="dt-empty">
       <Hint>{t('projectEmpty')}</Hint>
@@ -325,10 +335,16 @@ const AGENT_RULE_MAX_LENGTH = 2000
  * The agent section of a Project: the requirements and rules its conversations and its Tickets' workers follow, edited as
  * a list and saved together, the button that opens its conversation, and the Ticket, change and report history it collects.
  */
-function ProjectAgent({ project, conversationDir, reload }: { project: ProjectRecord; conversationDir: string
-  reload: () => Promise<unknown> }) {
-  const { t, call, notify, openProjectConversation } = usePanel()
-  const open = useAction(() => openProjectConversation({ id: project.id, conversationDir }))
+function ProjectAgent({ project, conversationDir, conversationGeneration, reload }: { project: ProjectRecord; conversationDir: string
+  conversationGeneration: number; reload: () => Promise<unknown> }) {
+  const { t, call, notify, openProjectConversation, resetProjectConversation } = usePanel()
+  const open = useAction(() => openProjectConversation({ id: project.id, conversationDir, conversationGeneration }))
+  // Deleting a conversation starts it over: the old Session is archived and the next open names a new one by generation.
+  const removeConversation = async () => {
+    await resetProjectConversation({ id: project.id, conversationDir, conversationGeneration })
+    notify(t('projectConversationDeleted'))
+    await reload()
+  }
   const saved = project.value.agentRules ?? []
   const [rules, setRules] = useState<string[]>(saved)
   const [busy, setBusy] = useState(false)
@@ -366,7 +382,7 @@ function ProjectAgent({ project, conversationDir, reload }: { project: ProjectRe
         })}
       </div>}
       {error && <p className="dt-error" role="alert">{error}</p>}
-      <div className="dt-row-buttons">
+      <div className="dt-rules-actions">
         <Button variant="outline" size="sm" icon={<Icon name="plus" />} disabled={rules.length >= AGENT_RULES_MAX}
           onClick={() => setRules([...rules, ''])}>{t('projectAgentRulesAdd')}</Button>
         <Button variant="primary" size="sm" disabled={busy || !dirty} onClick={() => { void save() }}>{t('save')}</Button>
@@ -377,6 +393,10 @@ function ProjectAgent({ project, conversationDir, reload }: { project: ProjectRe
       <div className="dt-row-buttons">
         <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={open.busy}
           onClick={() => { void open.run() }}>{t('projectConversationOpen')}</Button>
+        <ConfirmButton variant="outline" icon="trash" label={t('projectConversationDelete')}
+          title={t('projectConversationDeleteTitle')}
+          message={t('projectConversationDeleteConfirm', { name: project.value.name })}
+          onConfirm={removeConversation} />
       </div>
     </Section>
     <LoadState error={historyError} loading={!data} />
@@ -399,10 +419,19 @@ function ProjectAgent({ project, conversationDir, reload }: { project: ProjectRe
 
 /** One Project's page: its counts and archive state, the button that opens its conversation, then the section the route names. */
 function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: ProjectSegment }) {
-  const { t, call, navigate, notify, openProjectConversation } = usePanel()
+  const { t, call, navigate, notify, openProjectConversation, deleteProject } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET projects/:id', { id }), [id])
-  const openConversation = useAction(() => data ? openProjectConversation({ id: data.project.id,
-    conversationDir: data.conversationDir }) : Promise.resolve(), { reload })
+  const openConversation = useAction(() => data ? openProjectConversation({ id: data.project.id, conversationDir: data.conversationDir,
+    conversationGeneration: data.conversationGeneration }) : Promise.resolve(), { reload })
+  // A deleted Project leaves the page for the list; its conversation is archived best effort by the panel entry. A refusal
+  // (the Project still owns work) is reported by the confirmation dialog, which stays open so a person can act on it.
+  const remove = async () => {
+    if (!data) return
+    await deleteProject({ id: data.project.id, conversationDir: data.conversationDir,
+      conversationGeneration: data.conversationGeneration })
+    notify(t('projectDeleted', { name: data.project.value.name }))
+    navigate({ page: 'workstations' })
+  }
   if (!data) return <div className="dt-form"><PageHead title={id} /><LoadState error={error} loading={!error} /></div>
   const { project, counts } = data
   const fixed = fixedProject(project)
@@ -427,6 +456,8 @@ function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: 
           onClick={() => { void setArchived(false).catch(failure => notify(errorText(failure))) }}>{t('projectRestore')}</Button>
         : <ConfirmButton variant="outline" icon="stop" label={t('projectArchive')} title={t('projectArchiveTitle')}
           message={t('projectArchiveConfirm', { name: project.value.name })} onConfirm={() => setArchived(true)} />)}
+      {!fixed && <ConfirmButton variant="outline" icon="trash" label={t('projectDelete')} title={t('projectDeleteTitle')}
+        message={t('projectDeleteConfirm', { name: project.value.name })} onConfirm={remove} />}
     </PageHead>
     <div className="dt-row-meta">
       <LabelValue label={t('projectOpenTickets')} value={counts.openTickets} />
@@ -441,7 +472,8 @@ function ProjectDetailPage({ id, segment = 'sources' }: { id: string; segment?: 
     {segment === 'decisions' && <ProjectDecisions id={id} first={data.decisions} />}
     {segment === 'tickets' && <ProjectTickets id={id} first={data.tickets} />}
     {segment === 'settings' && <ProjectSettings project={project} reload={reload} />}
-    {segment === 'agent' && <ProjectAgent project={project} conversationDir={data.conversationDir} reload={reload} />}
+    {segment === 'agent' && <ProjectAgent project={project} conversationDir={data.conversationDir}
+      conversationGeneration={data.conversationGeneration} reload={reload} />}
   </div>
 }
 

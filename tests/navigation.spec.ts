@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { openKnownSession, openProjectConversation, projectSessionId } from '../src/navigation.ts'
+import { archiveProjectSession, openKnownSession, openProjectConversation, projectSessionId } from '../src/navigation.ts'
 import { initialLocation, lastSettingsGroup, parseRoute, remember, setupPage } from '../src/client/route.ts'
 const id = 'orchestrator-test' as SessionId
 function fixture(ready = false) {
@@ -110,6 +110,30 @@ it('does nothing for a Project conversation click that was superseded before it 
   expect(workspaces!.create).not.toHaveBeenCalled()
   expect(sessions.create).not.toHaveBeenCalled()
   expect(open).not.toHaveBeenCalled()
+})
+it('names a Project conversation by its generation: the first one and one started over', () => {
+  expect(projectSessionId('prj_aps')).toBe('project-prj_aps')
+  expect(projectSessionId('prj_aps', 0)).toBe('project-prj_aps')
+  expect(projectSessionId('prj_aps', 2)).toBe('project-prj_aps-2')
+})
+it('opens the conversation of the generation the Project is on', async () => {
+  const { sessions, catalog } = conversationFixture()
+  const open = vi.fn()
+  await expect(openProjectConversation({ sessions, open }, { ...project, conversationGeneration: 2 },
+    new AbortController().signal)).resolves.toBe(true)
+  expect(sessions.create).toHaveBeenCalledExactlyOnceWith({ sessionId: 'project-prj_aps-2', cwd: '/srv/aps' })
+  expect(catalog.byId['project-prj_aps-2']).toEqual({})
+  expect(open).toHaveBeenCalledExactlyOnceWith('project-prj_aps-2')
+})
+it('archives an old conversation best effort, and a workspace UI failure does not fail the deletion', async () => {
+  const archived: { id: string; stopActivity?: boolean }[] = []
+  await archiveProjectSession({
+    archiveSession: async (id, options) => { archived.push({ id: String(id), ...options }) },
+  }, projectSessionId('prj_aps', 1))
+  expect(archived).toEqual([{ id: 'project-prj_aps-1', stopActivity: true }])
+  // A Session the workspace UI cannot archive (already gone, or the host is busy) leaves the successful deletion alone.
+  await expect(archiveProjectSession({ archiveSession: async () => { throw new Error('session is gone') } },
+    projectSessionId('prj_aps'))).resolves.toBeUndefined()
 })
 it('reopens the page this tab showed last, and the overview for a route that no longer exists', () => {
   remember({ route: { page: 'decisions', query: { filter: 'stop' } }, stack: [{ page: 'overview' }] })

@@ -119,6 +119,10 @@ export interface Api {
   'GET projects/:id/history': { query?: { limit?: number }; response: ProjectHistoryView }
   'POST projects': { body: NewProject; response: { project: ProjectRecord } }
   'PATCH projects/:id': { body: ProjectPatch; response: { project: ProjectRecord } }
+  /** Deletes a workstation; the built-in workspace and one that still owns Tickets or artifacts are refused. */
+  'DELETE projects/:id': { response: { deleted: true } }
+  /** Starts the workstation's conversation over: the next open uses the next deterministic Session id. */
+  'POST projects/:id/conversation/reset': { response: { project: ProjectRecord } }
   'GET artifacts': { query?: Paged & { q?: string; project?: string; source?: string; ticket?: string }; response: ArtifactListView }
   'GET artifacts/:id': { query?: { assignment?: string }; response: ArtifactDetailView }
   'GET settings': { response: SettingsView }

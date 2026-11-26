@@ -16,6 +16,10 @@ export interface PanelContext {
   openSession: (sessionId: string) => Promise<void>
   /** Opens a Project's conversation Session in the DSH workspace UI, creating it first and never asking for a workspace. */
   openProjectConversation: (project: ProjectConversation) => Promise<void>
+  /** Deletes a Project and archives its conversation Session; a Project that still owns work is refused. */
+  deleteProject: (project: ProjectConversation) => Promise<void>
+  /** Starts a Project's conversation over, archiving its old Session; the next open creates a new one. */
+  resetProjectConversation: (project: ProjectConversation) => Promise<void>
   /** Fetches one artifact's file and hands it to the browser as a download. */
   download: (artifact: { id: string; name: string }) => Promise<void>
   notify: (text: string) => void
@@ -60,7 +64,8 @@ export function useAction<A extends unknown[]>(action: (...args: A) => Promise<u
   return { run, busy }
 }
 
-const messages = (t: T): ApiMessages => ({
+/** The wording of a failed management request, as both the panel and the plugin entry resolve it. */
+export const panelMessages = (t: T): ApiMessages => ({
   offline: t('offline'), notRunning: t('hostNotRunning'), serverError: status => t('serverError', { status }),
     requestFailed: status => t('requestFailed', { status }),
   setup: problem => problem.values.output ? `${setupText(t, problem)}\n${problem.values.output}` : setupText(t, problem),
@@ -77,20 +82,25 @@ function Toast({ text, onDone, holdMs = 3000 }: { text: string; onDone: () => vo
 const stay = () => {}
 const noSession = async () => {}
 const noProjectConversation = async () => {}
+const noProjectDelete = async () => {}
+const noProjectReset = async () => {}
 export function PanelProvider({ t, interval = 5000, openSession = noSession, openProjectConversation = noProjectConversation,
-  navigate = stay, back = stay, backLabel = '', children }: {
+  deleteProject = noProjectDelete, resetProjectConversation = noProjectReset, navigate = stay, back = stay, backLabel = '',
+  children }: {
   t: T; interval?: number; openSession?: (sessionId: string) => Promise<void>
-  openProjectConversation?: (project: ProjectConversation) => Promise<void>; navigate?: PanelContext['navigate']; back?: () => void
+  openProjectConversation?: (project: ProjectConversation) => Promise<void>
+  deleteProject?: (project: ProjectConversation) => Promise<void>
+  resetProjectConversation?: (project: ProjectConversation) => Promise<void>; navigate?: PanelContext['navigate']; back?: () => void
   backLabel?: string
   children: ReactNode
 }) {
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
   const copy = useRef(t)
   copy.current = t
-  const call = useMemo(() => caller(() => messages(copy.current)), [])
+  const call = useMemo(() => caller(() => panelMessages(copy.current)), [])
   const [toast, setToast] = useState<{ text: string; id: number }>()
   const notify = useCallback((text: string) => setToast({ text, id: Date.now() }), [])
-  const download = useCallback((artifact: { id: string; name: string }) => downloadFile(messages(copy.current), artifact), [])
+  const download = useCallback((artifact: { id: string; name: string }) => downloadFile(panelMessages(copy.current), artifact), [])
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.
   const [restarting, setRestarting] = useState<{ down: boolean }>()
   const [restarts, setRestarts] = useState(0)
@@ -105,8 +115,9 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, ope
     const timer = setTimeout(() => setRestarting(undefined), 30_000)
     return () => clearTimeout(timer)
   }, [restarting])
-  const context = useMemo(() => ({ t, call, navigate, back, backLabel, openSession, openProjectConversation, download, notify, restart }),
-    [t, call, navigate, back, backLabel, openSession, openProjectConversation, download, notify, restart])
+  const context = useMemo(() => ({ t, call, navigate, back, backLabel, openSession, openProjectConversation, deleteProject,
+    resetProjectConversation, download, notify, restart }), [t, call, navigate, back, backLabel, openSession, openProjectConversation,
+    deleteProject, resetProjectConversation, download, notify, restart])
   const data = useMemo(() => ({ state, error, reload, setup: state?.setup, running: state?.load.running ?? 0, restarts }), [state, error,
     reload, restarts])
   return <Panel.Provider value={context}><PanelState.Provider value={data}>

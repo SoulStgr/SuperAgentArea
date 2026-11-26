@@ -1,5 +1,5 @@
 /** Browser plugin entry point registering the sidebar icon, main management panel, and Plugin Manager config view. */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { SidebarPanelIconOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
@@ -10,11 +10,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { openKnownSession, openProjectConversation as openConversation, SessionNavigationError,
-  type ProjectConversation, type WorkspaceController } from '../navigation.ts'
+import { archiveProjectSession, openKnownSession, openProjectConversation as openConversation, projectSessionId,
+  SessionNavigationError, type ProjectConversation, type WorkspaceController } from '../navigation.ts'
+import { caller } from './api.ts'
 import { App } from './app.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { en, zh } from './locales.ts'
+import { panelMessages } from './provider.tsx'
 import type { T } from './text.ts'
 
 type ClientContext = Context & { sessions: ISessions }
@@ -34,6 +36,10 @@ const navigationFailure = (t: T, error: unknown): unknown => error instanceof Se
 /** Mounted panel wrapper; cancels any pending Session navigation when a new one starts or the panel unmounts. */
 function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
   const pending = useRef<AbortController>(undefined)
+  // Calls the management API with the wording of the interface language, which a locale switch may change between calls.
+  const copy = useRef(t)
+  copy.current = t
+  const call = useMemo(() => caller(() => panelMessages(copy.current)), [])
   useEffect(() => () => { pending.current?.abort() }, [])
   const openSession = useCallback(async (id: string) => {
     pending.current?.abort()
@@ -54,8 +60,19 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
       }, project, request.signal)
     } catch (error) { throw navigationFailure(t, error) }
   }, [ctx, t])
+  // Deleting a Project archives the conversation it leaves behind; the archive is best effort and never fails the deletion.
+  const deleteProject = useCallback(async (project: ProjectConversation) => {
+    await call('DELETE projects/:id', { id: project.id })
+    await archiveProjectSession(ctx.uiWorkspace, projectSessionId(project.id, project.conversationGeneration ?? 0))
+  }, [call, ctx])
+  // Starting a conversation over leaves the old Session archived; the next open names a new one by generation.
+  const resetProjectConversation = useCallback(async (project: ProjectConversation) => {
+    await call('POST projects/:id/conversation/reset', { id: project.id })
+    await archiveProjectSession(ctx.uiWorkspace, projectSessionId(project.id, project.conversationGeneration ?? 0))
+  }, [call, ctx])
   const form = usePageForm(ctx.get('configForms')?.get<Record<string, unknown>>(ENTRY))
-  return <App t={t} openSession={openSession} openProjectConversation={openProjectConversation} deploymentForm={form} />
+  return <App t={t} openSession={openSession} openProjectConversation={openProjectConversation} deleteProject={deleteProject}
+    resetProjectConversation={resetProjectConversation} deploymentForm={form} />
 }
 
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']

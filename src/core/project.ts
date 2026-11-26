@@ -49,6 +49,11 @@ export interface ProjectValue {
    * and the work in it follow. Empty or absent means the operator set none.
    */
   agentRules?: string[]
+  /**
+   * Which conversation Session the workstation is on: resetting the conversation advances it, so the next open starts a new
+   * Session under the next deterministic id instead of reopening the old one. Absent is the first conversation.
+   */
+  conversationGeneration?: number
   specifiedBy?: PersonRef
   /** The person who confirmed an address an assessment proposed, rather than named themselves. */
   confirmedBy?: PersonRef
@@ -107,10 +112,14 @@ export const artifactRecordId = (ticket: string, name: string): string =>
   createHash('sha1').update(`${ticket}:${name}`).digest('hex').slice(0, 16)
 
 /** The deterministic id of a Project's conversation Session: opening the conversation again opens the same Session. */
-export const projectSessionId = (projectId: string): string => `project-${projectId}`
+export const projectSessionId = (projectId: string, generation = 0): string =>
+  generation > 0 ? `project-${projectId}-${generation}` : `project-${projectId}`
 /** The Project id a Session id names, when the Session is a Project's conversation Session. */
-export const projectIdOfSession = (sessionId: string): string | undefined =>
-  sessionId.startsWith('project-') ? sessionId.slice('project-'.length) || undefined : undefined
+export const projectIdOfSession = (sessionId: string): string | undefined => {
+  if (!sessionId.startsWith('project-')) return undefined
+  const rest = sessionId.slice('project-'.length).replace(/-\d+$/, '')
+  return rest || undefined
+}
 /**
  * The directory a Project's conversation works in: the folder a person named for the station, a repository's local checkout
  * when it has one, and otherwise the Project's working-copy directory. A remote folder or a repository without a local

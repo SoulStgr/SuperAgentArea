@@ -4,7 +4,7 @@ import { act } from 'react'
 import { expect, it } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, click, type, text, field } from './fixtures/panel.tsx'
-import { artifactDetail, server } from './fixtures/panel-server.ts'
+import { artifactDetail, server, type ProjectFixture } from './fixtures/panel-server.ts'
 
 usePanel()
 
@@ -19,6 +19,14 @@ const sourceRow = (name: string) => all('.dt-section .dt-row').find(row => row.t
 /** The section of a workstation's page whose title it names, such as one of the agent history lists. */
 const section = (name: string) => all('.dt-main .dt-section').find(item =>
   item.querySelector('.dt-section-name')?.textContent === name)!
+/** A workstation that owns no Tickets or artifacts, so a person may delete it. */
+const cleanProject = (id: string, name: string): ProjectFixture => ({ id, key: name, name, kind: 'station',
+  location: { type: 'folder', path: `/srv/${id}` }, status: 'active', sourceIds: [], aliases: [], outputDir: `/srv/${id}`,
+  scratchDir: `/srv/dsh-superagent/area/${id}.work`, rulesDir: `/srv/dsh-superagent/area/${id}.work/rules`,
+  createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
+/** The worded refusal of deleting a workstation that still owns work. */
+const hasWork = (name: string, tickets: number, artifacts: number) => zh['userError.projectHasWork']
+  .replace('{project}', name).replace('{tickets}', String(tickets)).replace('{artifacts}', String(artifacts))
 
 it('shows one card per workstation with its address, counts and latest reporter, the workspace first and fixed', async () => {
   await mount()
@@ -34,6 +42,9 @@ it('shows one card per workstation with its address, counts and latest reporter,
   expect([...card('aps').querySelectorAll('.dt-project-segments button')].map(button => button.textContent))
     .toEqual([zh['projectSegment.sources'], zh['projectSegment.triggers'], zh['projectSegment.decisions'], zh['projectSegment.tickets'],
       zh['projectSegment.settings'], zh['projectSegment.agent'], zh.projectConversation])
+  // Only a non-workspace card offers deletion, at the top-right of its head.
+  expect(card('workspace').querySelector(`[aria-label="${zh.projectDelete}"]`)).toBeNull()
+  expect(card('aps').querySelector(`[aria-label="${zh.projectDelete}"]`)).not.toBeNull()
   // Only the workspace is left: the page says so and offers the action that creates one.
   server.projects = server.projects.filter(project => project.kind === 'workspace')
   await remount()
@@ -98,6 +109,50 @@ it('creates a workstation from a name and an address, and shows a refusal where 
   expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectCreated.replace('{name}', 'new station'))
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('new station')
   expect(server.projects.some(project => project.key === 'new-station')).toBe(true)
+})
+
+it('deletes a workstation that owns no work from its card, and keeps one that still does', async () => {
+  server.projects.push(cleanProject('prj_clean', 'clean'))
+  await mount()
+  await click(zh['tab.workstations'])
+  const deletes = (id: string) => server.requests.filter(request => request.path === `projects/${id}` && request.method === 'DELETE')
+  // A station that still owns Tickets or artifacts is refused with the localized reason, and stays.
+  await click(card('aps').querySelector<HTMLButtonElement>(`[aria-label="${zh.projectDelete}"]`)!)
+  expect(dialog().textContent).toContain(zh.projectDeleteTitle)
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(deletes('prj_aps')).toHaveLength(1)
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(hasWork('aps', 1, 1))
+  expect(cards()).toContain('aps')
+  // The refused dialog stays open so the archive action can be chosen instead.
+  await click(find(zh.cancel, '[role="dialog"] button'))
+  // A station with no work is deleted, its conversation archived, and it leaves the list.
+  await click(card('clean').querySelector<HTMLButtonElement>(`[aria-label="${zh.projectDelete}"]`)!)
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(deletes('prj_clean')).toHaveLength(1)
+  expect(server.projects.some(project => project.id === 'prj_clean')).toBe(false)
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectDeleted.replace('{name}', 'clean'))
+  expect(cards()).not.toContain('clean')
+  expect(server.archivedSessions).toEqual([{ id: 'project-prj_clean', stopActivity: true }])
+})
+
+it('deletes a workstation from its page and returns to the list; a refused deletion keeps the page', async () => {
+  server.projects.push(cleanProject('prj_clean', 'clean'))
+  await openProject('aps')
+  await click(find(zh.projectDelete, '.dt-page-title button'))
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(hasWork('aps', 1, 1))
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('aps')
+  await click(find(zh.cancel, '[role="dialog"] button'))
+  // A station with no work deletes from its page, which then shows the list again.
+  await click(zh['tab.workstations'])
+  await click(card('clean').querySelector('.dt-project-title')!)
+  await click(find(zh.projectDelete, '.dt-page-title button'))
+  expect(dialog().textContent).toContain(zh.projectDeleteConfirm.replace('{name}', 'clean'))
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh['tab.workstations'])
+  expect(cards()).not.toContain('clean')
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectDeleted.replace('{name}', 'clean'))
+  expect(server.archivedSessions).toEqual([{ id: 'project-prj_clean', stopActivity: true }])
 })
 
 /** Opens a workstation's page and one of its sections. */
@@ -181,11 +236,12 @@ it('saves a workstation\'s name and aliases, shows its directories read-only, an
   expect(server.projects.find(project => project.id === 'prj_aps')!.status).toBe('active')
 })
 
-it('keeps the built-in workspace fixed: no archive action, and its name cannot be edited', async () => {
+it('keeps the built-in workspace fixed: no archive or delete action, and its name cannot be edited', async () => {
   await openProject('workspace', zh['projectSegment.settings'])
   expect(field<HTMLInputElement>(zh.projectName).matches(':disabled')).toBe(true)
   expect(text()).toContain(zh.projectWorkspaceFixed)
   expect(all('.dt-page-title button').map(button => button.textContent)).not.toContain(zh.projectArchive)
+  expect(all('.dt-page-title button').map(button => button.textContent)).not.toContain(zh.projectDelete)
 })
 
 it('links and unlinks a Source from a workstation\'s Sources section', async () => {
@@ -263,11 +319,57 @@ it('shows the conversation button busy while it opens, and reports a failure it 
   expect(button().matches(':disabled')).toBe(false)
 })
 
+it('deletes a workstation\'s conversation, archiving the old Session and opening the next generation', async () => {
+  await openProject('aps', zh['projectSegment.agent'])
+  const open = () => find(zh.projectConversationOpen, '.dt-section button')
+  const remove = () => find(zh.projectConversationDelete, '.dt-section button')
+  // The first conversation is the unnumbered id; deleting it archives it and advances the generation.
+  await click(open())
+  expect(server.created).toEqual([{ sessionId: 'project-prj_aps', workspaceId: 'ws:/srv/aps' }])
+  await click(remove())
+  expect(dialog().textContent).toContain(zh.projectConversationDeleteTitle)
+  expect(dialog().textContent).toContain(zh.projectConversationDeleteConfirm.replace('{name}', 'aps'))
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(server.requests.some(request => request.path === 'projects/prj_aps/conversation/reset' && request.method === 'POST')).toBe(true)
+  expect(server.archivedSessions).toEqual([{ id: 'project-prj_aps', stopActivity: true }])
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectConversationDeleted)
+  expect(server.projects.find(project => project.id === 'prj_aps')!.conversationGeneration).toBe(1)
+  // The next open creates the numbered Session of the generation the page reloaded.
+  await click(open())
+  expect(server.created.at(-1)).toEqual({ sessionId: 'project-prj_aps-1', workspaceId: 'ws:/srv/aps' })
+  // Deleting the conversation again archives the second Session and opens the third one.
+  await click(remove())
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(server.archivedSessions.at(-1)).toEqual({ id: 'project-prj_aps-1', stopActivity: true })
+  await click(open())
+  expect(server.created.at(-1)).toEqual({ sessionId: 'project-prj_aps-2', workspaceId: 'ws:/srv/aps' })
+})
+
+it('deletes a workstation conversation that was never opened, and a card opens the generation it lists', async () => {
+  await openProject('aps', zh['projectSegment.agent'])
+  await click(find(zh.projectConversationDelete, '.dt-section button'))
+  await click(find(zh.confirm, '[role="dialog"] button'))
+  expect(server.requests.some(request => request.path === 'projects/prj_aps/conversation/reset' && request.method === 'POST')).toBe(true)
+  expect(server.projects.find(project => project.id === 'prj_aps')!.conversationGeneration).toBe(1)
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.projectConversationDeleted)
+  // The list's card names the generation too, so its conversation creates the numbered Session.
+  server.projects.find(project => project.id === 'prj_aps')!.conversationGeneration = 3
+  await click(zh['tab.workstations'])
+  await click([...card('aps').querySelectorAll<HTMLButtonElement>('.dt-project-segments button')]
+    .find(button => button.textContent === zh.projectConversation)!)
+  expect(server.created.at(-1)).toEqual({ sessionId: 'project-prj_aps-3', workspaceId: 'ws:/srv/aps' })
+})
+
 it('edits a workstation agent\'s requirements and rules, saving them trimmed and without repetitions', async () => {
   await openProject('aps', zh['projectSegment.agent'])
   const ruleField = (number: number) => field<HTMLTextAreaElement>(zh.projectAgentRuleItem.replace('{number}', String(number)))
   const add = () => find(zh.projectAgentRulesAdd, '.dt-section button')
   const save = () => find(zh.save, '.dt-section button')
+  // The action row puts adding on the left and saving, primary and only once there is a change, on the right.
+  const actions = () => section(zh.projectAgentRulesTitle).querySelector('.dt-rules-actions')!
+  expect([...actions().querySelectorAll('button')].map(button => button.textContent)).toEqual([zh.projectAgentRulesAdd, zh.save])
+  expect(actions().querySelector('button.dt-btn-primary')?.textContent).toBe(zh.save)
+  expect(save().matches(':disabled')).toBe(true)
   expect(text()).toContain(zh.projectAgentRulesNone)
   // Adding without writing anything keeps the save disabled: there is nothing new to save.
   await click(add())
