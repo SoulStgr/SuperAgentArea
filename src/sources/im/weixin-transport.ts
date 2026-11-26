@@ -9,12 +9,19 @@
  * THIRD_PARTY_NOTICES.md. Only the wire protocol is adapted: this module has no session, command, approval or workspace
  * logic, and imports no part of dsh-im.
  *
+ * The inbound attachment path is adapted from the same upstream file: the `image_item`/`file_item` items, the two AES key
+ * encodings (`aeskey` as 32 hex digits, or `media.aes_key` as base64), `aes-128-ecb` decryption, and the encrypted CDN
+ * download address (`media.encrypt_query_param`, or a trusted `media.full_url` on `novac2c.cdn.weixin.qq.com` whose path
+ * starts with `/c2c/`). A download is bounded: HTTPS only, no redirect, 30 s and 20 MiB of ciphertext (plus one AES block),
+ * and at most five attachments per message.
+ *
  * Nothing here reads configuration: the bot token comes from a caller that stores it (the Source instance's KV record), and
- * it never appears in a transport error, a log line, a health detail or a Trigger. There is no public npm SDK for iLink, so
- * this module is the vendored client.
+ * it never appears in a transport error, a log line, a health detail or a Trigger. An attachment's signed download address,
+ * its query string and its decryption key are just as restricted: no failure carries one. There is no public npm SDK for
+ * iLink, so this module is the vendored client.
  */
 import type { OutboundMessage } from '../../core/index.ts'
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
 /** The iLink API base every call uses; the QR handshake and the authenticated bot calls share it. */
@@ -27,6 +34,16 @@ export const DEFAULT_BOT_TYPE = '3'
 export const WEIXIN_TEXT_CHARS = 8_000
 /** The longest piece of reply text one WeChat message carries; a longer reply is sent as several messages. */
 export const WEIXIN_REPLY_CHARS = 1_800
+/** The one host iLink serves encrypted inbound media from; no other host is ever followed. */
+export const WEIXIN_CDN_HOST = 'novac2c.cdn.weixin.qq.com'
+/** The base of the encrypted download path on that host; a trusted `full_url` must stay under its `/c2c/` path. */
+export const WEIXIN_CDN_BASE = `https://${WEIXIN_CDN_HOST}/c2c`
+/** The largest attachment one WeChat message may deliver; a larger decrypted file is skipped. */
+export const WEIXIN_ATTACHMENT_BYTES = 20 * 1024 * 1024
+/** The most attachments one WeChat message may carry; a message with more is skipped instead of partly received. */
+export const WEIXIN_ATTACHMENTS_PER_MESSAGE = 5
+/** How long one attachment download may take before it is abandoned; a download that times out keeps none of its bytes. */
+const DOWNLOAD_TIMEOUT_MS = 30_000
 /** How a login status the panel may poll maps onto this client's normalized states. */
 export const WEIXIN_LOGIN_STATUSES = ['wait', 'scaned', 'confirmed', 'expired'] as const
 export type WeixinLoginState = typeof WEIXIN_LOGIN_STATUSES[number] | 'failed'
@@ -64,6 +81,57 @@ export class WeixinApiError extends Error {
 export interface WeixinRequestOptions {
   fetchImpl?: typeof fetch
   signal?: AbortSignal
+}
+/** Why one attachment of an inbound message could not be received; the Source counts it in the instance's health. */
+export type WeixinAttachmentFailure = 'unavailable' | 'too-large' | 'untrusted-url' | 'invalid-key'
+  | 'decryption-failed' | 'download-failed'
+/**
+ * A failed attachment download: its kind and the HTTP status when there was one. The message never carries the signed
+ * download address, its query string or the decryption key, because none of them may reach a log line, a health detail or
+ * a Trigger.
+ */
+export class WeixinAttachmentError extends Error {
+  readonly code: WeixinAttachmentFailure
+  readonly status: number | undefined
+
+  constructor(code: WeixinAttachmentFailure, message: string, options: { status?: number; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? {} : { cause: options.cause })
+    this.name = 'WeixinAttachmentError'
+    this.code = code
+    this.status = options.status
+  }
+}
+/** The encrypted media descriptor of one iLink attachment: its signed address and the key it is encrypted with. */
+export interface WeixinMediaRef {
+  /** `media.encrypt_query_param`: the signed query value the download address is built from; never logged. */
+  encryptQueryParam: string
+  /** `media.full_url`: an alternate signed address, followed only when it is on the trusted CDN host and path. */
+  fullUrl: string
+  /** `media.aes_key`: the key as base64, either of its 16 bytes or of its 32 hex digits. */
+  aesKey: string
+  /** `aeskey`: the key as 32 hex digits. */
+  aeskey: string
+}
+/** One attachment iLink named on an inbound message, before its bytes are fetched and decrypted. */
+export interface WeixinAttachmentRef {
+  /** What the attachment is for the worker: a picture, or any other file. */
+  kind: 'image' | 'file'
+  /** The encrypted address and key; kept internal and never copied into a Trigger, a log line or a health detail. */
+  media: WeixinMediaRef
+  /** The `file_item.file_name` iLink sent; a display name only, never a path. Empty for a picture. */
+  name: string
+  /** The size iLink declared in bytes (`file_item.len`); 0 when it declared none. Used only to refuse early. */
+  bytes: number
+}
+/** One fetched and decrypted attachment: its bytes, the MIME type it turned out to be and the name iLink sent. */
+export interface WeixinDownloadedFile { data: Buffer; mime: string; name: string }
+/** One attachment download request: the reference to fetch and, in tests, the injected `fetch`. */
+export interface WeixinAttachmentRequest {
+  attachment: WeixinAttachmentRef
+  fetchImpl?: typeof fetch
+  signal?: AbortSignal
+  /** The largest plaintext accepted, in bytes; a larger file fails as `too-large` without any of it being kept. */
+  maxBytes?: number
 }
 
 const nonEmpty = (value: unknown): string => typeof value === 'string' && value.trim() ? value.trim() : ''
@@ -316,6 +384,23 @@ export async function sendWeixinText(options: WeixinSendOptions): Promise<Weixin
   }
   return { clientId }
 }
+/** The encrypted media descriptor of an image or file item, as the raw iLink message carries it. */
+export interface WeixinRawMedia {
+  encrypt_query_param?: string
+  aes_key?: string
+  full_url?: string
+  encrypt_type?: number | string
+}
+/** One inbound `item_list` entry: a text item, a voice transcript, a picture or a file. */
+export interface WeixinRawItem {
+  type?: number
+  text_item?: { text?: string }
+  voice_item?: { text?: string }
+  /** A picture iLink sent; any object (even one this client cannot read) names an attachment. */
+  image_item?: { aeskey?: string; mid_size?: string | number; media?: WeixinRawMedia }
+  /** A file iLink sent, with its display name and declared size; any object names an attachment. */
+  file_item?: { aeskey?: string; file_name?: string; len?: string | number; media?: WeixinRawMedia }
+}
 /** One inbound iLink message; the fields this Source reads, with iLink numeric and string forms both accepted. */
 export interface WeixinRawInbound {
   message_id?: string | number
@@ -325,7 +410,7 @@ export interface WeixinRawInbound {
   /** iLink's message type: 2 marks a message the bot itself sent, which never asks it for work. */
   message_type?: number
   message_state?: number
-  item_list?: { type?: number; text_item?: { text?: string }; voice_item?: { text?: string } }[]
+  item_list?: WeixinRawItem[]
   context_token?: string
   run_id?: string
   create_time_ms?: string | number
@@ -334,14 +419,16 @@ export interface WeixinRawInbound {
   chatroom_id?: string
   room_id?: string
 }
-/** One inbound text message the bot received, normalized for the Source. */
+/** One inbound message the bot received, normalized for the Source. */
 export interface WeixinMessage {
   /** The message id; a Trigger derives its id from it, and a reply sends it as `run_id`. */
   messageId: string
   /** The iLink client id of the inbound message, when it sent one; recorded for dedupe and receipts. */
   clientId: string
-  /** The message text as received, trimmed. */
+  /** The message text as received, trimmed; empty for a message that only carried an attachment. */
   text: string
+  /** The pictures and files iLink named, in order; the Source fetches and decrypts them before the message is work. */
+  attachments: WeixinAttachmentRef[]
   /** The sender as the Policy's `allowed` list names people: the WeChat user id. */
   fromUserId: string
   /** This Source listens to direct messages only; a group message is a skip. */
@@ -379,10 +466,39 @@ function extractText(items: WeixinRawInbound['item_list']): string {
   }
   return ''
 }
+/** The size an attachment item declared in bytes; an absent or unusable value is 0. */
+function declaredBytes(value: unknown): number {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : Number.NaN
+  return Number.isFinite(number) && number >= 0 ? number : 0
+}
+/** The encrypted media descriptor of one image or file item: the signed address and both key encodings. */
+function mediaRefOf(item: { aeskey?: string; media?: WeixinRawMedia }): WeixinMediaRef {
+  const media = item.media && typeof item.media === 'object' ? item.media : {}
+  return { encryptQueryParam: nonEmpty(media.encrypt_query_param), fullUrl: nonEmpty(media.full_url),
+    aesKey: nonEmpty(media.aes_key), aeskey: nonEmpty(item.aeskey) }
+}
+/**
+ * The attachments an item list names, in order: every `image_item` and every `file_item` object is one, even when this
+ * client cannot read its address or key, so a message carrying only a malformed attachment is counted as a skipped
+ * attachment instead of disappearing as a non-text message.
+ */
+function attachmentsOf(items: WeixinRawInbound['item_list']): WeixinAttachmentRef[] {
+  const refs: WeixinAttachmentRef[] = []
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || typeof item !== 'object') continue
+    const image = item.image_item && typeof item.image_item === 'object' ? item.image_item : undefined
+    const file = item.file_item && typeof item.file_item === 'object' ? item.file_item : undefined
+    if (image) refs.push({ kind: 'image', media: mediaRefOf(image), name: '', bytes: 0 })
+    else if (file) refs.push({ kind: 'file', media: mediaRefOf(file), name: nonEmpty(file.file_name),
+      bytes: declaredBytes(file.len) })
+  }
+  return refs
+}
 /**
  * Normalizes one iLink message into an inbound message, or says why it is no message for this Source. The bot's own
- * outgoing message (`message_type` 2), a group chat message, a message with no text item and a malformed one are skipped and
- * never become a Trigger.
+ * outgoing message (`message_type` 2), a group chat message, a message with neither text nor an attachment and a malformed
+ * one are skipped and never become a Trigger. The attachments are references only; the Source fetches, decrypts and saves
+ * their bytes before the message becomes work, and a message that only carried a picture or a file is work too.
  */
 export function normalizeWeixinInbound(raw: unknown): WeixinInbound {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { skipped: { reason: 'invalid' } }
@@ -396,11 +512,14 @@ export function normalizeWeixinInbound(raw: unknown): WeixinInbound {
   if (message.message_type === 2) return skip('self')
   if (conversationKind === 'group') return skip('group')
   const text = extractText(message.item_list)
-  if (!text) return skip('non-text')
+  const attachments = attachmentsOf(message.item_list)
+  // Only a message that leaves neither text nor an attachment asks for nothing.
+  if (!text && !attachments.length) return skip('non-text')
   return { message: {
     messageId,
     clientId: nonEmpty(message.client_id),
     text: text.slice(0, WEIXIN_TEXT_CHARS),
+    attachments,
     fromUserId,
     conversationKind,
     addressed: true,
@@ -408,6 +527,160 @@ export function normalizeWeixinInbound(raw: unknown): WeixinInbound {
     runId: nonEmpty(message.run_id),
     createdAt: isoTime(message.create_time_ms),
   } }
+}
+/** A strict base64 decoder for the AES key encoding iLink uses; undefined when the text is not base64. */
+function strictBase64(value: unknown): Buffer | undefined {
+  const text = nonEmpty(value)
+  if (!text || text.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return undefined
+  return Buffer.from(text, 'base64')
+}
+/**
+ * Parses the AES key of an image or file item: `aeskey` as exactly 32 hex digits, or `media.aes_key` as strict base64 of
+ * the 16 key bytes (iLink also base64-encodes the 32 hex digits that way). An item carrying neither, or a malformed one,
+ * is an `invalid-key` failure; the key never appears in the error.
+ */
+export function parseWeixinAesKey(item: { aeskey?: unknown; media?: { aes_key?: unknown } } | null | undefined): Buffer {
+  const directHex = nonEmpty(item?.aeskey)
+  if (directHex) {
+    if (!/^[0-9a-fA-F]{32}$/.test(directHex)) {
+      throw new WeixinAttachmentError('invalid-key', 'The WeChat attachment key is not 32 hex digits')
+    }
+    return Buffer.from(directHex, 'hex')
+  }
+  const encoded = strictBase64(item?.media?.aes_key)
+  if (encoded?.length === 16) return encoded
+  if (encoded?.length === 32 && /^[0-9a-fA-F]{32}$/.test(encoded.toString('ascii'))) {
+    return Buffer.from(encoded.toString('ascii'), 'hex')
+  }
+  throw new WeixinAttachmentError('invalid-key', 'The WeChat attachment key is missing or invalid')
+}
+/**
+ * Decrypts one attachment's ciphertext with `aes-128-ecb` and its 16-byte key. The ciphertext must be whole AES blocks; a
+ * failure never carries the key or the bytes.
+ */
+export function decryptWeixinAttachment(ciphertext: Buffer, key: Buffer): Buffer {
+  const encrypted = Buffer.from(ciphertext)
+  const aesKey = Buffer.from(key)
+  if (aesKey.length !== 16 || !encrypted.length || encrypted.length % 16 !== 0) {
+    throw new WeixinAttachmentError('decryption-failed', 'The WeChat attachment ciphertext is not a whole AES block sequence')
+  }
+  try {
+    const decipher = createDecipheriv('aes-128-ecb', aesKey, null)
+    return Buffer.concat([decipher.update(encrypted), decipher.final()])
+  } catch (error) {
+    throw new WeixinAttachmentError('decryption-failed', 'The WeChat attachment could not be decrypted', { cause: error })
+  }
+}
+/**
+ * The MIME type a decrypted picture turns out to be, from its magic bytes: PNG, JPEG, GIF or WebP; empty for anything else,
+ * because a picture's saved extension must not trust a server-supplied name.
+ */
+export function sniffWeixinImageMime(data: Buffer): string {
+  const bytes = Buffer.from(data)
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return 'image/png'
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
+  if (bytes.length >= 6 && (bytes.toString('ascii', 0, 3) === 'GIF')) return 'image/gif'
+  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp'
+  }
+  return ''
+}
+/**
+ * The trusted form of an attachment download address: either built from `media.encrypt_query_param` on the one CDN host and
+ * `/c2c/` base, or `media.full_url` as HTTPS on exactly `novac2c.cdn.weixin.qq.com` with a `/c2c/` path, no credentials and
+ * no port other than 443. Empty when the value is not usable, so a message naming any other address cannot redirect the
+ * fetch; the query string is a signed download credential and is kept for the request, but no failure carries it.
+ */
+export function weixinAttachmentDownloadUrl(media: WeixinMediaRef | null | undefined): string {
+  const query = nonEmpty(media?.encryptQueryParam)
+  if (query) return `${WEIXIN_CDN_BASE}/download?encrypted_query_param=${encodeURIComponent(query)}`
+  const full = nonEmpty(media?.fullUrl)
+  if (!full) return ''
+  let url: URL
+  try { url = new URL(full) } catch { return '' }
+  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== WEIXIN_CDN_HOST || (url.port && url.port !== '443')
+    || url.username || url.password || !url.pathname.startsWith('/c2c/')) return ''
+  url.hash = ''
+  return url.toString()
+}
+/** The MIME type a Content-Type names, without parameters; empty when the value is missing or malformed. */
+function mimeOf(value: string | null): string {
+  const text = (value ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(text) ? text : ''
+}
+/** Reads a response body, stopping as soon as it exceeds `maxBytes`; the rest of a too-large body is cancelled. */
+async function boundedBody(response: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new WeixinAttachmentError('too-large', `The WeChat attachment exceeds ${maxBytes} bytes`)
+  }
+  const body = response.body
+  if (!body) return Buffer.alloc(0)
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new WeixinAttachmentError('too-large', `The WeChat attachment exceeds ${maxBytes} bytes`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* A cancelled stream is already released. */ }
+  }
+  return Buffer.concat(chunks, total)
+}
+/**
+ * Fetches and decrypts one inbound attachment from the encrypted address iLink issued: only HTTPS on the WeChat CDN host is
+ * followed, a redirect is never followed, the request is bounded to 30 s and at most 20 MiB of ciphertext plus one AES
+ * block, and the rest of a larger body is cancelled at once. A key that is missing or malformed fails before any request; a
+ * declared size over the limit, a failed download and an undecryptable body fail with their own kind. Neither the signed
+ * address nor the key appears in a failure. A picture's MIME type is sniffed from its decrypted bytes first, then taken from
+ * the answer's Content-Type; a file keeps the answer's Content-Type, with `application/octet-stream` as the last resort.
+ */
+export async function downloadWeixinAttachment(request: WeixinAttachmentRequest): Promise<WeixinDownloadedFile> {
+  const { attachment, fetchImpl = fetch, signal } = request
+  const maxBytes = typeof request.maxBytes === 'number' && Number.isFinite(request.maxBytes) && request.maxBytes > 0
+    ? request.maxBytes : WEIXIN_ATTACHMENT_BYTES
+  // The key is parsed first, as iLink's own client does: an item this client cannot key is refused before any request.
+  const key = parseWeixinAesKey({ aeskey: attachment.media.aeskey, media: { aes_key: attachment.media.aesKey } })
+  if (!nonEmpty(attachment.media?.encryptQueryParam) && !nonEmpty(attachment.media?.fullUrl)) {
+    throw new WeixinAttachmentError('unavailable', 'WeChat named no download address for the attachment')
+  }
+  const url = weixinAttachmentDownloadUrl(attachment.media)
+  if (!url) throw new WeixinAttachmentError('untrusted-url', 'WeChat named an attachment download address outside its CDN')
+  if (attachment.bytes > maxBytes) throw new WeixinAttachmentError('too-large', `The WeChat attachment exceeds ${maxBytes} bytes`)
+  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+  let response: Response
+  try {
+    response = await fetchImpl(url, { method: 'GET', redirect: 'error', signal: combined })
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('The WeChat attachment download was stopped')
+    if (timeout.aborted) throw new WeixinAttachmentError('download-failed', 'The WeChat attachment download timed out', { cause: error })
+    throw new WeixinAttachmentError('download-failed', 'The WeChat attachment download failed', { cause: error })
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new WeixinAttachmentError('download-failed', `WeChat answered HTTP ${response.status} for the attachment`,
+      { status: response.status })
+  }
+  // The ciphertext is at most one AES block longer than the plaintext limit; a larger body is refused while streaming.
+  const ciphertext = await boundedBody(response, maxBytes + 16)
+  const data = decryptWeixinAttachment(ciphertext, key)
+  if (data.length > maxBytes) throw new WeixinAttachmentError('too-large', `The WeChat attachment exceeds ${maxBytes} bytes`)
+  const declared = mimeOf(response.headers.get('content-type'))
+  const mime = attachment.kind === 'image'
+    ? sniffWeixinImageMime(data) || (declared.startsWith('image/') ? declared : '') || 'application/octet-stream'
+    : declared || 'application/octet-stream'
+  return { data, mime, name: nonEmpty(attachment.name) }
 }
 /** Splits a long reply into WeChat-sized text messages, preferring a line break when one is not too early. */
 export function splitWeixinText(value: string, maxChars = WEIXIN_REPLY_CHARS): string[] {

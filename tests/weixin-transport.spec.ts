@@ -1,13 +1,16 @@
 /**
  * The WeChat iLink transport and its QR sign-in sessions, without WeChat: the wire payloads, headers and status mapping over
- * a fake fetch, inbound normalization, text splitting, and the login manager's background poll writing one credential.
+ * a fake fetch, inbound normalization (text, pictures and files), the AES key parsing, `aes-128-ecb` decryption and the
+ * bounded CDN attachment download, text splitting, and the login manager's background poll writing one credential.
  */
+import { createCipheriv } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  beginWeixinLogin, clearWeixinLiveCredentials, getWeixinUpdates, liveWeixinCredential, normalizeWeixinInbound,
-  pollWeixinLogin, rejectedProviderResponse, registerWeixinCredential, sendWeixinReply, sendWeixinText, splitWeixinText,
-  trustedWeixinUrl, unregisterWeixinCredential, WEIXIN_PROTOCOL_VERSION, WEIXIN_REPLY_CHARS, WEIXIN_TEXT_CHARS,
-  weixinClientId, weixinReplyTargetOf, WeixinApiError,
+  beginWeixinLogin, clearWeixinLiveCredentials, decryptWeixinAttachment, downloadWeixinAttachment, getWeixinUpdates,
+  liveWeixinCredential, normalizeWeixinInbound, parseWeixinAesKey, pollWeixinLogin, rejectedProviderResponse,
+  registerWeixinCredential, sendWeixinReply, sendWeixinText, sniffWeixinImageMime, splitWeixinText, trustedWeixinUrl,
+  unregisterWeixinCredential, WEIXIN_ATTACHMENT_BYTES, WEIXIN_PROTOCOL_VERSION, WEIXIN_REPLY_CHARS, WEIXIN_TEXT_CHARS,
+  weixinAttachmentDownloadUrl, weixinClientId, weixinReplyTargetOf, WeixinApiError, type WeixinAttachmentRef,
 } from '../src/sources/im/weixin-transport.ts'
 import { renderWeixinQrImage, WeixinLoginManager, weixinToken, type WeixinCredential } from '../src/sources/im/weixin-login.ts'
 
@@ -37,6 +40,42 @@ const hangingFetch = (): typeof fetch => ((_url: URL | string, init?: RequestIni
 })) as typeof fetch
 const credential = (overrides: Partial<WeixinCredential> = {}): WeixinCredential =>
   ({ token: 'bot-token-1', ilinkBotId: 'bot-1', at: '2026-11-26T00:00:00.000Z', ...overrides })
+
+/** The AES-128 key and fixture iLink encrypts an inbound attachment with; the tests use it locally, never a network. */
+const AES_KEY = Buffer.from('00112233445566778899aabbccddeeff', 'hex')
+/** Encrypts bytes as iLink does: AES-128-ECB with PKCS#7 padding, so the ciphertext is whole blocks. */
+function encryptAttachment(data: string | Buffer, key = AES_KEY): Buffer {
+  const cipher = createCipheriv('aes-128-ecb', key, null)
+  return Buffer.concat([cipher.update(Buffer.from(data)), cipher.final()])
+}
+const base64Key = (key = AES_KEY): string => key.toString('base64')
+/** One attachment reference whose bytes the fake CDN answers with; a picture by default. */
+const attachmentRef = (overrides: Partial<WeixinAttachmentRef> = {}): WeixinAttachmentRef => ({ kind: 'image',
+  media: { encryptQueryParam: 'encrypted-query', fullUrl: '', aesKey: '', aeskey: AES_KEY.toString('hex') }, name: '', bytes: 0,
+  ...overrides })
+/** The error a synchronous refusal threw, for its class and code. */
+function failureOf(run: () => unknown): unknown {
+  try { run() } catch (error) { return error }
+  return undefined
+}
+/** One recorded attachment-download call: its URL, HTTP method and redirect mode. */
+interface DownloadCall { url: string; method: string; redirect: RequestRedirect | undefined }
+/** A fake `fetch` answering whole `Response` objects; `'network'` is a socket-level failure. */
+function downloadFetch(handler: (call: DownloadCall) => Response | 'network'): { impl: typeof fetch; calls: DownloadCall[] } {
+  const calls: DownloadCall[] = []
+  const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const call: DownloadCall = { url: String(input), method: init?.method ?? 'GET', redirect: init?.redirect }
+    calls.push(call)
+    const answer = handler(call)
+    if (answer === 'network') throw new TypeError('fetch failed')
+    return answer
+  }) as unknown as typeof fetch
+  return { impl, calls }
+}
+/** A binary answer carrying already-encrypted bytes, so the transport must decrypt them itself. */
+const encryptedResponse = (data: string | Buffer, type?: string, key = AES_KEY): Response =>
+  new Response(new Uint8Array(encryptAttachment(data, key)),
+    { status: 200, ...type ? { headers: { 'content-type': type } } : {} })
 
 beforeEach(() => { clearWeixinLiveCredentials() })
 
@@ -164,7 +203,7 @@ describe('inbound normalization', () => {
     run_id: 'run-1', create_time_ms: 1_764_115_200_000, ...overrides })
   it('normalizes a direct text message with its ids, conversation token and time', () => {
     expect(normalizeWeixinInbound(raw())).toEqual({ message: { messageId: 'msg-1', clientId: '', text: 'please fix the typo',
-      fromUserId: 'user-1', conversationKind: 'dm', addressed: true, contextToken: 'ctx-1', runId: 'run-1',
+      attachments: [], fromUserId: 'user-1', conversationKind: 'dm', addressed: true, contextToken: 'ctx-1', runId: 'run-1',
       createdAt: '2025-11-26T00:00:00.000Z' } })
     // A numeric message id and a voice transcript are accepted; the text is cut at the Trigger limit.
     expect(normalizeWeixinInbound(raw({ message_id: 12, client_id: 'client-1',
@@ -177,12 +216,149 @@ describe('inbound normalization', () => {
     expect(normalizeWeixinInbound(raw({ message_type: 2 }))).toEqual({ skipped: { reason: 'self', messageId: 'msg-1' } })
     expect(normalizeWeixinInbound(raw({ chatroom_id: 'room-1' }))).toEqual({ skipped: { reason: 'group', messageId: 'msg-1' } })
     expect(normalizeWeixinInbound(raw({ room_id: 'room-1' }))).toEqual({ skipped: { reason: 'group', messageId: 'msg-1' } })
-    expect(normalizeWeixinInbound(raw({ item_list: [{ type: 2, image_item: {} }] })))
+    // A video or an empty item is still the only non-text skip: a picture or a file now names work.
+    expect(normalizeWeixinInbound(raw({ item_list: [{ type: 5, video_item: {} }] })))
       .toEqual({ skipped: { reason: 'non-text', messageId: 'msg-1' } })
     expect(normalizeWeixinInbound(raw({ from_user_id: undefined }))).toEqual({ skipped: { reason: 'invalid', messageId: 'msg-1' } })
     expect(normalizeWeixinInbound(raw({ message_id: undefined, client_id: undefined }))).toEqual({ skipped: { reason: 'invalid' } })
     expect(normalizeWeixinInbound(null)).toEqual({ skipped: { reason: 'invalid' } })
     expect(normalizeWeixinInbound([])).toEqual({ skipped: { reason: 'invalid' } })
+  })
+})
+
+describe('inbound attachments', () => {
+  const raw = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({ message_id: 'msg-1', from_user_id: 'user-1',
+    message_type: 1, item_list: [{ type: 1, text_item: { text: 'please fix the typo' } }], context_token: 'ctx-1',
+    run_id: 'run-1', create_time_ms: 1_764_115_200_000, ...overrides })
+  const media = (overrides: Partial<WeixinAttachmentRef['media']> = {}): WeixinAttachmentRef['media'] => ({
+    encryptQueryParam: 'encrypted-query', fullUrl: '', aesKey: '', aeskey: AES_KEY.toString('hex'), ...overrides })
+  it('normalizes image and file items into attachments and keeps an attachment-only message as work', () => {
+    const inbound = normalizeWeixinInbound(raw({ item_list: [
+      { type: 1, text_item: { text: 'look at these' } },
+      { type: 2, image_item: { aeskey: AES_KEY.toString('hex'), media: { encrypt_query_param: 'image-query',
+        aes_key: base64Key() } } },
+      { type: 4, file_item: { file_name: 'report.pdf', len: '120', aeskey: 'f'.repeat(32),
+        media: { encrypt_query_param: 'file-query' } } },
+    ] }))
+    expect(inbound).toMatchObject({ message: { text: 'look at these', attachments: [
+      { kind: 'image', name: '', bytes: 0, media: { encryptQueryParam: 'image-query', aesKey: base64Key(),
+        aeskey: AES_KEY.toString('hex') } },
+      { kind: 'file', name: 'report.pdf', bytes: 120, media: { encryptQueryParam: 'file-query',
+        aeskey: 'f'.repeat(32) } },
+    ] } })
+    // A message carrying only a picture is work, not a non-text skip; the same is true for a file.
+    expect(normalizeWeixinInbound(raw({ item_list: [{ type: 2, image_item: { media: { encrypt_query_param: 'x' } } }] })))
+      .toMatchObject({ message: { text: '', attachments: [{ kind: 'image', media: { encryptQueryParam: 'x' } }] } })
+    expect(normalizeWeixinInbound(raw({ item_list: [{ type: 4, file_item: { file_name: 'a.txt', len: '3',
+      media: { encrypt_query_param: 'y' } } }] })))
+      .toMatchObject({ message: { text: '', attachments: [{ kind: 'file', name: 'a.txt', bytes: 3 }] } })
+    // An item this client cannot read still names an attachment, so the message becomes a counted skip, not non-text.
+    expect(normalizeWeixinInbound(raw({ item_list: [{ type: 2, image_item: {} }] })))
+      .toMatchObject({ message: { text: '', attachments: [{ kind: 'image', media: { encryptQueryParam: '' } }] } })
+  })
+  it('parses the aeskey hex and media.aes_key base64 key forms and refuses a malformed one', () => {
+    expect(parseWeixinAesKey({ aeskey: AES_KEY.toString('hex') })).toEqual(AES_KEY)
+    expect(parseWeixinAesKey({ media: { aes_key: base64Key() } })).toEqual(AES_KEY)
+    // iLink also base64-encodes the 32 hex digits of a key.
+    expect(parseWeixinAesKey({ media: { aes_key: Buffer.from(AES_KEY.toString('hex')).toString('base64') } })).toEqual(AES_KEY)
+    for (const item of [{}, { aeskey: 'not-hex' }, { media: { aes_key: 'not base64!' } },
+      { media: { aes_key: Buffer.alloc(8).toString('base64') } }]) {
+      expect(failureOf(() => parseWeixinAesKey(item))).toMatchObject({ name: 'WeixinAttachmentError', code: 'invalid-key' })
+    }
+  })
+  it('decrypts aes-128-ecb ciphertext and refuses a body that is not whole AES blocks', () => {
+    const plaintext = Buffer.from('hello wechat attachment')
+    const ciphertext = encryptAttachment(plaintext)
+    expect(decryptWeixinAttachment(ciphertext, AES_KEY)).toEqual(plaintext)
+    // A body that is not whole AES blocks and a key of the wrong length both fail before decrypting.
+    for (const [bytes, key] of [[Buffer.from('short'), AES_KEY],
+      [Buffer.concat([ciphertext, Buffer.from([1])]), AES_KEY], [ciphertext, Buffer.alloc(15)]] as const) {
+      expect(failureOf(() => decryptWeixinAttachment(bytes, key))).toMatchObject({ name: 'WeixinAttachmentError',
+        code: 'decryption-failed' })
+    }
+  })
+  it('builds only the trusted encrypted-CDN download address', () => {
+    const urlOf = (overrides: Partial<WeixinAttachmentRef['media']>): string => weixinAttachmentDownloadUrl(media(overrides))
+    expect(urlOf({ encryptQueryParam: 'a b&c' }))
+      .toBe('https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=a%20b%26c')
+    // A full URL is followed only on the exact CDN host, over HTTPS, with no credentials, port or foreign path.
+    expect(urlOf({ encryptQueryParam: '', fullUrl: 'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=x#frag' }))
+      .toBe('https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=x')
+    for (const fullUrl of ['http://novac2c.cdn.weixin.qq.com/c2c/x', 'https://evil.example/c2c/x',
+      'https://novac2c.cdn.weixin.qq.com.evil.example/c2c/x', 'https://user:pass@novac2c.cdn.weixin.qq.com/c2c/x',
+      'https://novac2c.cdn.weixin.qq.com:8443/c2c/x', 'https://novac2c.cdn.weixin.qq.com/other/x']) {
+      expect(urlOf({ encryptQueryParam: '', fullUrl })).toBe('')
+    }
+    expect(urlOf({ encryptQueryParam: '', fullUrl: '' })).toBe('')
+  })
+  it('downloads and decrypts an attachment from the encrypted CDN address', async () => {
+    const plaintext = Buffer.from('image-bytes')
+    const stub = downloadFetch(() => encryptedResponse(plaintext, 'image/jpeg'))
+    expect(await downloadWeixinAttachment({ attachment: attachmentRef(), fetchImpl: stub.impl }))
+      .toEqual({ data: plaintext, mime: 'image/jpeg', name: '' })
+    expect(stub.calls).toHaveLength(1)
+    expect(stub.calls[0]).toMatchObject({ method: 'GET', redirect: 'error' })
+    expect(stub.calls[0]!.url)
+      .toContain('https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=encrypted-query')
+    // A media.aes_key base64 key decrypts the same fixture; a trusted full URL is used when no query parameter came.
+    expect(await downloadWeixinAttachment({ attachment: attachmentRef({ media: media({ aeskey: '', aesKey: base64Key() }) }),
+      fetchImpl: stub.impl })).toMatchObject({ data: plaintext })
+    const full = downloadFetch(() => encryptedResponse('x'))
+    await downloadWeixinAttachment({ attachment: attachmentRef({ kind: 'file', name: 'report.pdf',
+      media: media({ encryptQueryParam: '', fullUrl: 'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=full' }) }),
+    fetchImpl: full.impl })
+    expect(full.calls[0]!.url).toBe('https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=full')
+    // The answer's Content-Type only survives as a MIME type when the decrypted bytes are not a sniffable picture first.
+    expect((await downloadWeixinAttachment({ attachment: attachmentRef({ kind: 'file', name: 'report.pdf' }),
+      fetchImpl: downloadFetch(() => encryptedResponse('%PDF-1.4', 'application/pdf; charset=binary')).impl })))
+      .toMatchObject({ mime: 'application/pdf', name: 'report.pdf' })
+  })
+  it('names a picture from its decrypted bytes and keeps an unknown type untyped', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    const sniffed = downloadFetch(() => encryptedResponse(png, 'application/octet-stream'))
+    expect((await downloadWeixinAttachment({ attachment: attachmentRef(), fetchImpl: sniffed.impl })).mime).toBe('image/png')
+    expect(sniffWeixinImageMime(Buffer.from('GIF89a......'))).toBe('image/gif')
+    expect(sniffWeixinImageMime(Buffer.from('%PDF-1.4'))).toBe('')
+    // A picture whose bytes are unknown and whose answer declares no image type stays octet-stream.
+    const unknown = downloadFetch(() => encryptedResponse('unknown-bytes'))
+    expect((await downloadWeixinAttachment({ attachment: attachmentRef(), fetchImpl: unknown.impl })).mime)
+      .toBe('application/octet-stream')
+  })
+  it('refuses a missing or untrusted address and a malformed key before any request', async () => {
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef({ media: media({ encryptQueryParam: '', fullUrl: '' }) }) }))
+      .rejects.toMatchObject({ name: 'WeixinAttachmentError', code: 'unavailable' })
+    const untrusted = downloadFetch(() => encryptedResponse('x'))
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef({ media: media({ encryptQueryParam: '',
+      fullUrl: 'https://evil.example/c2c/x' }) }), fetchImpl: untrusted.impl }))
+      .rejects.toMatchObject({ code: 'untrusted-url' })
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef({ media: media({ aeskey: 'bad' }) }) }))
+      .rejects.toMatchObject({ code: 'invalid-key' })
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef({ bytes: WEIXIN_ATTACHMENT_BYTES + 1 }) }))
+      .rejects.toMatchObject({ code: 'too-large' })
+    expect(untrusted.calls).toEqual([])
+  })
+  it('reports a redirect, a failed download and an undecryptable body with their own kind, without the signed address', async () => {
+    const redirected = downloadFetch(() => 'network')
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef(), fetchImpl: redirected.impl }))
+      .rejects.toMatchObject({ code: 'download-failed' })
+    expect(redirected.calls[0]).toMatchObject({ method: 'GET', redirect: 'error' })
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef(),
+      fetchImpl: downloadFetch(() => new Response('', { status: 503 })).impl }))
+      .rejects.toMatchObject({ code: 'download-failed', status: 503 })
+    const broken = downloadFetch(() => new Response('not-an-aes-block'))
+    const failure = await downloadWeixinAttachment({ attachment: attachmentRef(), fetchImpl: broken.impl })
+      .catch((error: unknown) => error)
+    expect(failure).toMatchObject({ code: 'decryption-failed' })
+    // Neither the signed query string nor the AES key appears in a failure.
+    expect(String((failure as Error).message)).not.toContain('encrypted-query')
+    expect(String((failure as Error).message)).not.toContain(AES_KEY.toString('hex'))
+  })
+  it('stops a streamed body over 20 MiB plus one AES block and keeps none of it', async () => {
+    const huge = downloadFetch(() => new Response(new Uint8Array(WEIXIN_ATTACHMENT_BYTES + 17)))
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef(), fetchImpl: huge.impl }))
+      .rejects.toMatchObject({ code: 'too-large' })
+    await expect(downloadWeixinAttachment({ attachment: attachmentRef({ bytes: WEIXIN_ATTACHMENT_BYTES + 1 }) }))
+      .rejects.toMatchObject({ code: 'too-large' })
   })
 })
 
