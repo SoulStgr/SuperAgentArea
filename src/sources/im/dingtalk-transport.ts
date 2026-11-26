@@ -1,19 +1,21 @@
 /**
  * DingTalk transport: the bot's Stream long connection, inbound message normalization (including the attachments a picture,
  * file or rich-text callback names and the download that turns one into bytes), the access token cache, the attachment
- * download path and the two reply transports — the message's own `sessionWebhook` first, the robot API once it expired.
+ * download path, the two text reply transports — the message's own `sessionWebhook` first, the robot API once it expired —
+ * and the outbound media path that uploads a reply's files and sends them as a picture or file message.
  *
  * Protocol details adapted from dsh-im (MIT, Copyright (c) 2026 xmanrui, upstream 5.10.0), files
  * `src/channels/dingtalk/dingtalk-runtime.mjs`, `src/channels/dingtalk/dingtalk-api.mjs` and
- * `src/channels/dingtalk/dingtalk-bridge.mjs` (the attachment references a callback names and the file download API); see
- * THIRD_PARTY_NOTICES.md. Only the wire protocol is adapted: this module has no session, command, approval or workspace
- * logic, and imports no part of dsh-im.
+ * `src/channels/dingtalk/dingtalk-bridge.mjs` (the attachment references a callback names, the file download API and the
+ * media-upload plus `sampleFile`/`sampleImageMsg` send path); see THIRD_PARTY_NOTICES.md. Only the wire protocol is adapted:
+ * this module has no session, command, approval or workspace logic, and imports no part of dsh-im.
  *
  * Nothing here reads configuration: the credentials come from a caller that stores them (the Source instance), and the
  * clientSecret never appears in a transport error, a log line, a health detail or a Trigger.
  */
 import type { OutboundMessage } from '../../core/index.ts'
 import { setTimeout as delay } from 'node:timers/promises'
+import { extname } from 'node:path'
 
 /** DingTalk's Stream bot topic: a callback carries one message the bot received. */
 export const DINGTALK_TOPIC_ROBOT = '/v1.0/im/bot/messages/get'
@@ -27,7 +29,15 @@ export const DINGTALK_REPLY_CHARS = 4_000
 export const DINGTALK_ATTACHMENT_BYTES = 20 * 1024 * 1024
 /** The most attachments one DingTalk message may carry; a message with more is skipped instead of partly received. */
 export const DINGTALK_ATTACHMENTS_PER_MESSAGE = 5
+/** The largest file one reply may deliver to DingTalk; a larger one is skipped and counted in the instance's health. */
+export const DINGTALK_SENT_ATTACHMENT_BYTES = 20 * 1024 * 1024
+/** The most files one reply may deliver to DingTalk; the rest are skipped and counted in the instance's health. */
+export const DINGTALK_SENT_ATTACHMENTS_PER_MESSAGE = 10
+/** The legacy media upload endpoint: the access token goes in the query and the file in a multipart `media` field. */
+export const DINGTALK_MEDIA_UPLOAD_URL = 'https://oapi.dingtalk.com/media/upload'
 const REQUEST_TIMEOUT_MS = 15_000
+/** How long one media upload may take; 20 MiB over a slow link still finishes. */
+const UPLOAD_TIMEOUT_MS = 60_000
 /** How long the file bytes themselves may take to download; the download-address request keeps the API timeout. */
 const DOWNLOAD_TIMEOUT_MS = 30_000
 /** The hosts a DingTalk file download URL may name: DingTalk itself and the Alibaba CDN that serves its media. */
@@ -161,6 +171,10 @@ export interface DingtalkSendOptions extends DingtalkRequestOptions {
   /** The route the Trigger carried; the only place a reply may go. */
   target: DingtalkReplyTarget
 }
+/** One file a reply delivers, already read from disk: its display name, MIME type and bytes. */
+export interface DingtalkOutboundFile { name: string; mime: string; data: Buffer }
+/** One robot message the transport sends: DingTalk's message template key and its JSON `msgParam` object. */
+export interface DingtalkRobotMessage { msgKey: string; msgParam: Record<string, unknown> }
 
 const nonEmpty = (value: unknown): string => typeof value === 'string' && value.trim() ? value.trim() : ''
 /** A DingTalk timestamp as ISO: Stream callbacks send milliseconds, and a seconds value is accepted too. */
@@ -366,6 +380,17 @@ function failureOf(status: number, body: unknown): { code: DingtalkFailure; prov
   if (status === 408 || status >= 500) return { code: 'network', ...extra }
   return { code: 'rejected', ...extra }
 }
+/** The rejection code a DingTalk answer carries as `errcode` or `code`, whether a number or text; empty on success. */
+function rejectionOf(record: Record<string, unknown>): string {
+  const errcode = record.errcode
+  if (typeof errcode === 'number') return errcode === 0 ? '' : String(errcode)
+  if (typeof errcode === 'string') {
+    const text = errcode.trim()
+    if (text && text !== '0') return text
+  }
+  const code = nonEmpty(record.code)
+  return code === '0' ? '' : code
+}
 /** DingTalk's "the reply address has expired" answer: an HTTP 4xx whose code or text names the session webhook. */
 function expiredWebhook(status: number, body: unknown): boolean {
   if (status < 400 || status >= 500) return false
@@ -568,27 +593,20 @@ export async function sendDingtalkWebhook(options: DingtalkRequestOptions & { we
     throw error
   }
 }
-/**
- * Sends one text piece through the robot API: `groupMessages/send` with the group's `openConversationId`, or
- * `oToMessages/batchSend` with the person's `userIds`. A failure that says the target no longer exists is `invalid-route`.
- */
-export async function sendDingtalkRobot(options: DingtalkRequestOptions & { target: DingtalkReplyTarget; token: string
-  text: string }): Promise<void> {
-  const { target } = options
-  if (!target.robotCode) throw new DingtalkApiError('invalid-route', 'The DingTalk reply has no robot code')
+/** One robot message: its message key and JSON `msgParam`, sent to the group conversation or the person the route names. */
+async function sendDingtalkRobotMessage(target: DingtalkReplyTarget, message: DingtalkRobotMessage,
+  options: DingtalkRequestOptions & { token: string }): Promise<void> {
+  assertDingtalkRoute(target)
   const group = target.conversationType === 'group'
-  if (group ? !target.openConversationId : !target.userId) {
-    throw new DingtalkApiError('invalid-route', 'The DingTalk reply has no target conversation')
-  }
   const path = group ? 'v1.0/robot/groupMessages/send' : 'v1.0/robot/oToMessages/batchSend'
-  const body = { robotCode: target.robotCode, msgKey: 'sampleText', msgParam: JSON.stringify({ content: options.text }),
+  const body = { robotCode: target.robotCode, msgKey: message.msgKey, msgParam: JSON.stringify(message.msgParam),
     ...group ? { openConversationId: target.openConversationId } : { userIds: [target.userId] } }
   try {
     const answer = await postJson(new URL(path, DINGTALK_API_BASE).toString(), body, options,
       { 'x-acs-dingtalk-access-token': options.token })
     const record = answer.body && typeof answer.body === 'object' ? answer.body as Record<string, unknown> : {}
-    const rejection = nonEmpty(record.code) || nonEmpty(record.errcode)
-    if (rejection && rejection !== '0') {
+    const rejection = rejectionOf(record)
+    if (rejection) {
       if (unreachableTarget(400, record)) throw new DingtalkApiError('invalid-route', 'DingTalk no longer knows the target', { providerCode: rejection })
       throw new DingtalkApiError('rejected', 'DingTalk rejected the robot message', { providerCode: rejection })
     }
@@ -601,9 +619,87 @@ export async function sendDingtalkRobot(options: DingtalkRequestOptions & { targ
   }
 }
 /**
+ * Sends one text piece through the robot API: `groupMessages/send` with the group's `openConversationId`, or
+ * `oToMessages/batchSend` with the person's `userIds`. A failure that says the target no longer exists is `invalid-route`.
+ */
+export async function sendDingtalkRobot(options: DingtalkRequestOptions & { target: DingtalkReplyTarget; token: string
+  text: string }): Promise<void> {
+  await sendDingtalkRobotMessage(options.target, { msgKey: 'sampleText', msgParam: { content: options.text } }, options)
+}
+/** The message one uploaded file is sent as: a picture for an `image/*` type (`sampleImageMsg`, whose `photoURL` may be the
+ * media id) and a file for every other type (`sampleFile` with its media id, display name and lower-case extension).
+ */
+export function dingtalkMediaMessage(file: { name: string; mime: string }, mediaId: string): DingtalkRobotMessage {
+  if (/^image\//i.test(file.mime)) return { msgKey: 'sampleImageMsg', msgParam: { photoURL: mediaId } }
+  return { msgKey: 'sampleFile', msgParam: { mediaId, fileName: file.name, fileType: extname(file.name).slice(1).toLowerCase() } }
+}
+/** Throws `invalid-route` when the Trigger's route cannot receive a robot message; nothing is uploaded for such a route. */
+function assertDingtalkRoute(target: DingtalkReplyTarget): void {
+  if (!target.robotCode) throw new DingtalkApiError('invalid-route', 'The DingTalk reply has no robot code')
+  const group = target.conversationType === 'group'
+  if (group ? !target.openConversationId : !target.userId) {
+    throw new DingtalkApiError('invalid-route', 'The DingTalk reply has no target conversation')
+  }
+}
+/**
+ * Uploads one outbound file through DingTalk's media API: `POST /media/upload` with the instance's access token in the query
+ * and the bytes as a multipart `media` field, typed `image` for a picture and `file` otherwise. Returns the `media_id` the
+ * message sends it with; the upload address and the token never appear in a failure.
+ */
+export async function uploadDingtalkMedia(file: DingtalkOutboundFile, options: DingtalkRequestOptions & { token: string }):
+Promise<string> {
+  const token = nonEmpty(options.token)
+  if (!token) throw new DingtalkApiError('auth', 'The DingTalk media upload has no access token')
+  if (!nonEmpty(file.name)) throw new TypeError('A DingTalk media upload needs a file name')
+  if (!file.data.byteLength) throw new DingtalkApiError('rejected', 'The DingTalk media upload carries no bytes')
+  const { fetchImpl = fetch, signal, timeoutMs = UPLOAD_TIMEOUT_MS } = options
+  signal?.throwIfAborted()
+  const url = new URL(DINGTALK_MEDIA_UPLOAD_URL)
+  url.searchParams.set('access_token', token)
+  url.searchParams.set('type', /^image\//i.test(file.mime) ? 'image' : 'file')
+  const form = new FormData()
+  form.append('media', new Blob([new Uint8Array(file.data)], { type: file.mime || 'application/octet-stream' }), file.name)
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined
+  const combined = timeout && signal ? AbortSignal.any([signal, timeout]) : signal ?? timeout
+  let response: Response
+  try {
+    response = await fetchImpl(url.toString(), { method: 'POST', redirect: 'error', body: form, signal: combined })
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('The DingTalk media upload was stopped')
+    if (timeout?.aborted) throw new DingtalkApiError('timeout', 'The DingTalk media upload timed out', { cause: error })
+    throw new DingtalkApiError('network', 'DingTalk could not be reached for the media upload', { cause: error })
+  }
+  let parsed: unknown
+  try { parsed = await response.json() } catch { parsed = undefined }
+  const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  if (!response.ok) {
+    const failure = failureOf(response.status, record)
+    throw new DingtalkApiError(failure.code, `DingTalk answered HTTP ${response.status} for the media upload`,
+      { status: response.status, ...failure.providerCode ? { providerCode: failure.providerCode } : {},
+        ...failure.providerMessage ? { providerMessage: failure.providerMessage } : {} })
+  }
+  const rejection = rejectionOf(record)
+  if (rejection) throw new DingtalkApiError('rejected', 'DingTalk rejected the media upload', { providerCode: rejection })
+  const mediaId = nonEmpty(record.media_id) || nonEmpty(record.mediaId)
+  if (!mediaId) throw new DingtalkApiError('invalid-response', 'DingTalk returned no media id for the uploaded file')
+  return mediaId
+}
+/**
+ * Delivers one file beside a reply: upload it with the instance's own access token, then send the media to the Trigger's own
+ * route as the picture or file message its MIME type names. Every failure is thrown, classified, for the Source to count;
+ * the reply's text is already delivered and is never sent again because of a file.
+ */
+export async function sendDingtalkAttachment(file: DingtalkOutboundFile, options: DingtalkSendOptions): Promise<void> {
+  // The route is checked before anything is uploaded, so a Trigger that cannot receive a reply uploads nothing.
+  assertDingtalkRoute(options.target)
+  const token = await dingtalkAccessToken(options.credentials, options)
+  const mediaId = await uploadDingtalkMedia(file, { ...options, token })
+  await sendDingtalkRobotMessage(options.target, dingtalkMediaMessage(file, mediaId), { ...options, token })
+}
+/**
  * Sends one Channel message to the route its Trigger carried: pieces go to the still-fresh `sessionWebhook` first, and a
  * piece whose webhook expired is sent through the robot API instead. Only a conversation DingTalk no longer knows is
- * `gone`; every other failure is thrown for the Outbox to retry.
+ * `gone`; every other failure is thrown for the Outbox to retry. Files are not sent here; the Source delivers them after.
  */
 export async function sendDingtalkReply(message: OutboundMessage, options: DingtalkSendOptions): Promise<'sent' | 'gone'> {
   const { target } = options

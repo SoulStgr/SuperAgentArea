@@ -5,7 +5,7 @@ import { withMentions } from './mentions.ts'
 import { latestAssignment, liveTicket, ticketOutcome } from './model.ts'
 import type { ChannelRef, Ticket, Trigger } from './model.ts'
 import type { PersonRef } from './project.ts'
-import type { ReplyStatus } from './ports.ts'
+import type { OutboundAttachment, ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
 
 /**
@@ -16,7 +16,9 @@ import { EnginePart } from './part.ts'
  */
 export type ReplyRequest =
   | { purpose: 'acknowledgement'; ticketId: string; triggerId: string; text: string }
-  | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string; text: string }
+  | { purpose: 'answer' | 'attention'; ticketId?: string; triggerId?: string; question?: string; text: string }
+  /** A ticket's result; `attachments` are the files it delivers beside the text, such as a ready ticket's deliverables. */
+  | { purpose: 'result'; ticketId?: string; triggerId?: string; text: string; attachments?: OutboundAttachment[] }
   /** A question for the conversation a Trigger came from, such as how to place it in a Project; idempotent per Trigger. */
   | { purpose: 'question'; triggerId: string; text: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
@@ -112,7 +114,10 @@ export class Replies extends EnginePart {
     // A result or a question for a person names the people it concerns where that conversation's Source can mention them.
     const mentioned = request.purpose === 'attention' || request.purpose === 'result'
       ? this.mentioned(request.text, ticket?.reporter, ticket?.mentions, channel) : request.text
-    this.options.outbox.send({ id, channel, text: mentioned, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {} })
+    // A result's files travel with its text; the message id is the text's, so a reused reply keeps what it queued first.
+    const attachments = request.purpose === 'result' ? request.attachments : undefined
+    this.options.outbox.send({ id, channel, text: mentioned, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {},
+      ...attachments?.length ? { attachments } : {} })
     if (request.purpose === 'answer' && ticket && trigger && ticket.answers?.includes(trigger.id)) {
       ticket.answers = ticket.answers.filter(item => item !== trigger.id)
       this.repo.tickets.save(ticket)

@@ -8,8 +8,8 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, relative } from 'node:path'
-import { artifactRecordId, WORKSPACE_PROJECT_ID, type ArtifactRecord, type Reply, type ReplyRequest, type Ticket, type Trigger }
-  from '../core/index.ts'
+import { artifactRecordId, WORKSPACE_PROJECT_ID, type ArtifactRecord, type OutboundAttachment, type Reply, type ReplyRequest,
+  type Ticket, type Trigger } from '../core/index.ts'
 
 /** One deliverable file: its path relative to `deliver/` with forward slashes, content hash, size, and collection time. */
 export interface Artifact { name: string; hash: string; size: number; at: string }
@@ -17,6 +17,26 @@ export interface Artifact { name: string; hash: string; size: number; at: string
 const sha = (content: Buffer): string => createHash('sha256').update(content).digest('hex').slice(0, 16)
 /** How many characters of a ticket id a promoted file's conflict suffix uses. */
 const SUFFIX_CHARS = 8
+/** The MIME type each deliverable extension is delivered as; an unknown extension is a binary stream. */
+const MIME_TYPES: Readonly<Record<string, string>> = {
+  '.md': 'text/markdown', '.txt': 'text/plain', '.csv': 'text/csv', '.json': 'application/json', '.yaml': 'application/yaml',
+  '.yml': 'application/yaml', '.html': 'text/html', '.htm': 'text/html', '.xml': 'application/xml', '.log': 'text/plain',
+  '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.zip': 'application/zip', '.tar': 'application/x-tar', '.gz': 'application/gzip',
+  '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+/** The MIME type a deliverable's extension names, such as `text/markdown` for `report.md`; unknown is a binary stream. */
+export function artifactMime(name: string): string { return MIME_TYPES[extname(name).toLowerCase()] ?? 'application/octet-stream' }
+/**
+ * The files a result reply carries: each deliverable's name, its absolute path under the ticket directory's `deliver/` (the
+ * file the Channel reads, never a copy), its MIME type and size.
+ */
+export function artifactAttachments(directory: string, artifacts: readonly Artifact[]): OutboundAttachment[] {
+  return artifacts.map(artifact => ({ name: artifact.name, path: join(directory, 'deliver', artifact.name),
+    mime: artifactMime(artifact.name), bytes: artifact.size }))
+}
 
 /** Reads every file under `<directory>/deliver/`, recursively; an absent directory yields nothing. */
 export async function collectDeliverables(directory: string): Promise<Artifact[]> {
@@ -113,11 +133,14 @@ export async function deliverArtifacts(host: ArtifactHost, ticketId: string): Pr
   if (outbox) await copyArtifacts(directory, artifacts, outbox)
   const project = ticket.projectId ?? WORKSPACE_PROJECT_ID
   const source = ticket.sourceId ?? trigger?.source ?? ''
-  // The reply is queued after the files are in place; its message id is the delivery's, also when the reply is reused.
+  // The reply is queued after the files are in place; its message id is the delivery's, also when the reply is reused. The
+  // reply carries the deliverable files themselves, so a Channel that can send files delivers them beside the notice.
   let messageId: string | undefined
   let refused: unknown
-  try { messageId = host.engine.reply({ purpose: 'result', ticketId, text: artifactNotice(artifacts, host.targetRoot) }).id }
-  catch (error) { refused = error }
+  try {
+    messageId = host.engine.reply({ purpose: 'result', ticketId, text: artifactNotice(artifacts, host.targetRoot),
+      attachments: artifactAttachments(directory, artifacts) }).id
+  } catch (error) { refused = error }
   for (const artifact of artifacts) {
     host.store.artifacts.add({ id: artifactRecordId(ticketId, artifact.name), ticket: ticketId, project, source, name: artifact.name,
       value: { hash: artifact.hash, size: artifact.size, at: artifact.at, targetRoot: host.targetRoot,

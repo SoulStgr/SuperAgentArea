@@ -6,18 +6,19 @@
  * into `<stateDir>/area/attachments/dingtalk/<instance>/<messageId>/` and its Trigger names every saved absolute path, so the
  * worker can read the file. A message whose attachments cannot be received is counted in the instance's health instead of
  * opening an empty Ticket. A reply goes back through the route its Trigger carries — the message's own sessionWebhook while
- * it is fresh, the robot API once it expired — and never anywhere else; replies are text only.
+ * it is fresh, the robot API once it expired — and never anywhere else; a reply written by a ready ticket also delivers its
+ * deliverable files, uploaded one by one and sent as pictures or files to the same conversation.
  *
  * The three credentials (Client ID, Client Secret, Robot Code) are required before the bot connects; an account saved with
  * none of them is a new account and reports `paused` until it is filled. Saving does not contact DingTalk: a wrong credential
  * surfaces as this instance's health, and the connection is retried with a 5 s to 60 s backoff, reporting `error` after three
  * consecutive failures. The Client Secret is stored in our own settings, is never logged, never written to a health detail
  * and never put in a Trigger: a reply routes by the conversation ids the Trigger carries plus the instance's credentials, and
- * an attachment download carries it only in the access-token request body DingTalk itself requires.
+ * an attachment download or upload carries it only in the access-token request body DingTalk itself requires.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
@@ -25,8 +26,9 @@ import { key, threadKey, type OutboundMessage, type ProjectHint, type Trigger } 
 import type { Commands } from '../infra/commands.ts'
 import {
   DingtalkAttachmentError, DINGTALK_ATTACHMENT_BYTES, DINGTALK_ATTACHMENTS_PER_MESSAGE, DINGTALK_TEXT_CHARS,
-  DingtalkConnection, dingtalkFailureText, downloadDingtalkAttachment, replyTargetOf, sendDingtalkReply,
-  type DingtalkAttachmentRef, type DingtalkMessage, type DingtalkSkipEvent, type DingtalkStreamFactory,
+  DINGTALK_SENT_ATTACHMENTS_PER_MESSAGE, DingtalkConnection, dingtalkFailureText, downloadDingtalkAttachment, replyTargetOf,
+  sendDingtalkAttachment, sendDingtalkReply,
+  type DingtalkAttachmentRef, type DingtalkMessage, type DingtalkReplyTarget, type DingtalkSkipEvent, type DingtalkStreamFactory,
 } from './im/dingtalk-transport.ts'
 import { health, reportFailure, sourceContext, type SourceContext } from './host.ts'
 import type { FieldSpec, SourceKind } from './kind.ts'
@@ -274,8 +276,8 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
   kind: 'dingtalk',
   order: 4,
   title: { zh: '钉钉', en: 'DingTalk' },
-  description: { zh: '接收钉钉企业自建应用机器人收到的私聊与群 @ 消息（文字、图片、文件），并回到原会话；长连接（Stream 模式），不需要公网回调地址。',
-    en: 'Receives the direct messages and group mentions of an enterprise DingTalk bot — text, pictures and files — and replies in the same conversation over Stream mode; no public callback URL is needed.' },
+  description: { zh: '接收钉钉企业自建应用机器人收到的私聊与群 @ 消息（文字、图片、文件），并回到原会话；完成工单的产物文件作为图片/文件一并回传。长连接（Stream 模式），不需要公网回调地址。',
+    en: 'Receives the direct messages and group mentions of an enterprise DingTalk bot — text, pictures and files — and replies in the same conversation over Stream mode, sending a ready ticket\'s deliverable files back as pictures or files; no public callback URL is needed.' },
   schema: ConfigSchema,
   fields,
   health: ['dingtalk'],
@@ -331,13 +333,54 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
     return scoped
   },
 }
+/** Files of replies to one instance that were skipped or could not be delivered since this process started. */
+const sentAttachmentFailures = new Map<string, number>()
+/** How many files a reply to `instance` could not deliver since this process started; its health detail names the count. */
+export function dingtalkSentAttachmentFailures(instance: string): number { return sentAttachmentFailures.get(instance) ?? 0 }
+/** Forgets the recorded outbound file failures (tests). */
+export function clearDingtalkSentAttachmentFailures(): void { sentAttachmentFailures.clear() }
+/** Counts one reply file the Channel skipped or could not deliver; the text reply is unaffected. */
+function countSentAttachmentFailure(instance: string): void { sentAttachmentFailures.set(instance, (sentAttachmentFailures.get(instance) ?? 0) + 1) }
+/** The display name one reply file is sent as: its own base name, without a directory and never empty. */
+function sentAttachmentName(value: string, fallback: string): string {
+  const base = (typeof value === 'string' ? value : '').split(/[\\/]/).pop()?.trim() ?? ''
+  const cleaned = base.replace(/[\u0000-\u001f<>:"|?*]+/g, '-').trim()
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : fallback
+}
+/**
+ * Delivers the files a reply carries after its text: each within the per-message count and size limits, uploaded with the
+ * instance's access token and sent to the Trigger's own route as a picture (`image/*`) or a file. A skipped, oversized or
+ * failed file is counted in the instance's health and never thrown: the text is already delivered, so the Outbox must not
+ * resend it and the person must not receive it twice.
+ */
+async function sendDingtalkAttachments(message: OutboundMessage, config: DingtalkConfig, target: DingtalkReplyTarget): Promise<void> {
+  const attachments = message.attachments ?? []
+  if (!attachments.length) return
+  const instance = message.channel.address.row || 'dingtalk'
+  const credentials = { clientId: config.clientId, clientSecret: config.clientSecret }
+  for (const [index, attachment] of attachments.entries()) {
+    try {
+      if (index >= DINGTALK_SENT_ATTACHMENTS_PER_MESSAGE) throw new Error('The reply carries more files than one DingTalk message may deliver')
+      const size = (await stat(attachment.path)).size
+      if (size > DINGTALK_ATTACHMENT_BYTES) throw new Error('The reply file is larger than one DingTalk message may deliver')
+      const data = await readFile(attachment.path)
+      await sendDingtalkAttachment({ name: sentAttachmentName(attachment.name, `attachment-${index + 1}`),
+        mime: attachment.mime?.trim() || 'application/octet-stream', data }, { credentials, target })
+    } catch {
+      countSentAttachmentFailure(instance)
+    }
+  }
+}
 /** Sends one message to the route it carries, with the credentials of the instance the Registry resolved. */
 async function sendDingtalk(message: OutboundMessage, commands: object): Promise<'sent' | 'gone'> {
   const config = scopedConfigs.get(commands)
   if (!config) throw new Error('The DingTalk Source has no configuration for this reply')
   const target = replyTargetOf(message.channel.address)
   if (!target) return 'gone'
-  return sendDingtalkReply(message, { credentials: { clientId: config.clientId, clientSecret: config.clientSecret }, target })
+  const result = await sendDingtalkReply(message, { credentials: { clientId: config.clientId, clientSecret: config.clientSecret }, target })
+  // The text goes first; a file that cannot follow is counted, never thrown, so the delivered text is not sent again.
+  if (result === 'sent') await sendDingtalkAttachments(message, config, target)
+  return result
 }
 
 /** The per-instance counters a health detail reports: messages received, duplicates, skips and receive failures. */
@@ -354,11 +397,12 @@ function skipText(counters: DingtalkCounters): string {
   const total = skipped.reduce((sum, [, count]) => sum + count, 0)
   return total ? `; ${total} skipped (${skipped.map(([reason, count]) => `${reason} ${count}`).join(', ')})` : ''
 }
-/** One instance's health detail while connected: what it received and skipped since it connected. */
-function connectedText(counters: DingtalkCounters): string {
+/** One instance's health detail while connected: what it received, what it skipped, and what files it could not deliver. */
+function connectedText(counters: DingtalkCounters, sentFailures = 0): string {
   const duplicates = counters.duplicates ? `; ${counters.duplicates} duplicate callbacks` : ''
   const failed = counters.failed ? `; ${counters.failed} messages could not be received` : ''
-  return `Connected to the DingTalk Stream; ${counters.received} messages received${duplicates}${failed}${skipText(counters)}`
+  const sent = sentFailures ? `; ${sentFailures} reply attachments could not be delivered` : ''
+  return `Connected to the DingTalk Stream; ${counters.received} messages received${duplicates}${failed}${skipText(counters)}${sent}`
 }
 /** One connection's options, as the caller injected them; every field has a production default. */
 export interface DingtalkWatchOptions {
@@ -388,7 +432,10 @@ async function runDingtalkInstance(ctx: SourceContext, id: string, config: Dingt
   options: DingtalkWatchOptions): Promise<void> {
   const counters = countersOf()
   const counter = (reason: string): void => { counters.skipped.set(reason, (counters.skipped.get(reason) ?? 0) + 1) }
-  const reportReady = (): void => { ctx.report(id, { state: 'ready', detail: connectedText(counters), at: iso() }) }
+  // Reply files are delivered by the Channel, not by this loop; the detail reports the ones this connection saw fail.
+  const sentBaseline = dingtalkSentAttachmentFailures(id)
+  const reportReady = (): void => { ctx.report(id, { state: 'ready',
+    detail: connectedText(counters, dingtalkSentAttachmentFailures(id) - sentBaseline), at: iso() }) }
   const backoff = options.backoffMs ?? BACKOFF_MS
   const failureThreshold = options.failureThreshold ?? FAILURES_BEFORE_ERROR
   const waited = (ms: number): number => Math.max(1, Math.round(ms / 1_000))

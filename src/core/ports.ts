@@ -94,12 +94,20 @@ export interface Executor {
 }
 
 /**
+ * One file a Channel may deliver beside its message text: its display name, the local absolute path the kind reads when it
+ * sends it, and the MIME type and size when known. A path is internal state: it is never logged and never put in a Trigger,
+ * and a kind that cannot deliver files ignores the attachment.
+ */
+export interface OutboundAttachment { name: string; path: string; mime?: string; bytes?: number }
+/**
  * A message for a Channel; `ticketId` names the Ticket it is for, when there is one. `purpose: 'question'` marks the host's
  * own question about the Project of the Trigger it came from (only `Replies.question` sets it), which a kind may deliver
  * beside its replies: a folder Source writes it to `QUESTION.md`, where its operator answers it by dropping the task again.
  */
 export interface OutboundMessage {
   id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string; purpose?: 'question'
+  /** Files to deliver beside the text, such as a ready ticket's deliverables; a kind that cannot send files ignores them. */
+  attachments?: OutboundAttachment[]
 }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'

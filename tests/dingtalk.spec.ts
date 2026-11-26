@@ -3,21 +3,24 @@
  * `fetch`, the Stream connection over a fake client, the attachment download and storage, and the watch loop's health over a
  * fake `SourceContext`. Nothing here opens a socket, calls api.dingtalk.com or needs a real DingTalk file.
  */
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { key, type OutboundMessage, type Trigger } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { apply, dingtalkAttachmentDirectory, dingtalkKind, dingtalkTrigger, receiveDingtalk, watchDingtalk,
-  type DingtalkConfig, type DingtalkSavedAttachment, type DingtalkWatchOptions } from '../src/sources/dingtalk.ts'
+import { apply, clearDingtalkSentAttachmentFailures, dingtalkAttachmentDirectory, dingtalkKind, dingtalkSentAttachmentFailures,
+  dingtalkTrigger, receiveDingtalk, watchDingtalk, type DingtalkConfig, type DingtalkSavedAttachment,
+  type DingtalkWatchOptions } from '../src/sources/dingtalk.ts'
 import type { Health, SourceContext } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
-import { clearDingtalkTokens, DINGTALK_ATTACHMENT_BYTES, DINGTALK_ATTACHMENTS_PER_MESSAGE, dingtalkAccessToken,
-  dingtalkFailureText, DingtalkApiError, DingtalkConnection, DINGTALK_REPLY_CHARS, DINGTALK_TOPIC_ROBOT, DingtalkStreamError,
-  normalizeDingtalkCallback, replyTargetOf, sendDingtalkReply, splitDingtalkText, trustedDingtalkDownloadUrl, webhookExpired,
-  type DingtalkMessage, type DingtalkReplyTarget, type DingtalkSkipEvent, type DingtalkStream, type DingtalkStreamClient,
-  type DingtalkStreamEnvelope, type DingtalkStreamFactory } from '../src/sources/im/dingtalk-transport.ts'
+import { clearDingtalkTokens, DINGTALK_ATTACHMENT_BYTES, DINGTALK_ATTACHMENTS_PER_MESSAGE, DINGTALK_MEDIA_UPLOAD_URL,
+  DINGTALK_SENT_ATTACHMENT_BYTES, DINGTALK_SENT_ATTACHMENTS_PER_MESSAGE, dingtalkAccessToken, dingtalkFailureText,
+  DingtalkApiError, DingtalkConnection, DINGTALK_REPLY_CHARS, DINGTALK_TOPIC_ROBOT, DingtalkStreamError,
+  normalizeDingtalkCallback, replyTargetOf, sendDingtalkAttachment, sendDingtalkReply, splitDingtalkText,
+  trustedDingtalkDownloadUrl, webhookExpired, type DingtalkMessage, type DingtalkReplyTarget, type DingtalkSkipEvent,
+  type DingtalkStream, type DingtalkStreamClient, type DingtalkStreamEnvelope, type DingtalkStreamFactory }
+  from '../src/sources/im/dingtalk-transport.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 
 const WEBHOOK = 'https://oapi.dingtalk.com/robot/sendBySession?session=abc'
@@ -44,11 +47,14 @@ const target = (overrides: Partial<DingtalkReplyTarget> = {}): DingtalkReplyTarg
 const reply = (text: string, address: Record<string, string> = dingtalkTrigger(message(), 'dingtalk:ops', config()).channel!.address):
   OutboundMessage => ({ id: 'm-1', kind: 'reply', text, channel: { source: 'dingtalk:ops', thread: 'dingtalk:ops:cid-1', address } })
 
-/** One recorded fake-`fetch` call: its URL, parsed JSON body and headers. */
+/** One recorded fake-`fetch` call: its URL, parsed JSON body (or the multipart `FormData`) and headers. */
 interface FetchCall { url: string; body: unknown; headers: Record<string, string> }
 type FetchHandler = (call: FetchCall) => { status?: number; body: unknown } | 'network'
+/** The media ids the fake upload endpoint hands out, in order, so a test can name the one a message carried. */
+let mediaIndex = 0
 const defaultAnswer: FetchHandler = call => {
   if (call.url.includes('oauth2/accessToken')) return { body: { accessToken: 'token-1', expireIn: 7_200 } }
+  if (call.url.startsWith(DINGTALK_MEDIA_UPLOAD_URL)) return { body: { errcode: 0, errmsg: 'ok', media_id: `media-${++mediaIndex}` } }
   if (call.url.includes('/robot/')) return { body: { processQueryKey: 'pq-1' } }
   return { body: { errcode: 0 } }
 }
@@ -56,8 +62,9 @@ const defaultAnswer: FetchHandler = call => {
 function fetchStub(handler: FetchHandler = defaultAnswer): { impl: typeof fetch; calls: FetchCall[] } {
   const calls: FetchCall[] = []
   const spy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const call: FetchCall = { url: String(input), body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) as unknown,
-      headers: Object.fromEntries(new Headers(init?.headers).entries()) }
+    const body = init?.body
+    const call: FetchCall = { url: String(input), headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      body: body === undefined ? undefined : typeof body === 'string' ? JSON.parse(body) as unknown : body }
     calls.push(call)
     const answer = handler(call)
     if (answer === 'network') throw new TypeError('fetch failed')
@@ -67,16 +74,24 @@ function fetchStub(handler: FetchHandler = defaultAnswer): { impl: typeof fetch;
 }
 const tokenCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url.includes('oauth2/accessToken'))
 const webhookCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url === WEBHOOK)
+const uploadCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url.startsWith(DINGTALK_MEDIA_UPLOAD_URL))
+const robotCalls = (calls: FetchCall[]): FetchCall[] => calls.filter(call => call.url.includes('/v1.0/robot/'))
+/** The multipart `media` field of one upload call: the file name, Content-Type and size it carried. */
+function mediaOf(call: FetchCall): { name: string; type: string; size: number } {
+  const form = call.body as FormData
+  const file = form.get('media') as File
+  return { name: file.name, type: file.type, size: file.size }
+}
 
-/** One recorded attachment-download call: its URL, HTTP method, parsed body and headers. */
+/** One recorded attachment-download call: its URL, HTTP method, parsed JSON body (or the multipart `FormData`) and headers. */
 interface DownloadCall { url: string; method: string; body: unknown; headers: Record<string, string> }
 /** A fake `fetch` answering whole `Response` objects, so a download can carry real bytes and a binary Content-Type. */
 function responseStub(handler: (call: DownloadCall) => Response | 'network'): { impl: typeof fetch; calls: DownloadCall[] } {
   const calls: DownloadCall[] = []
   const spy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const call: DownloadCall = { url: String(input), method: init?.method ?? 'GET',
-      body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) as unknown,
-      headers: Object.fromEntries(new Headers(init?.headers).entries()) }
+    const body = init?.body
+    const call: DownloadCall = { url: String(input), method: init?.method ?? 'GET', headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      body: body === undefined ? undefined : typeof body === 'string' ? JSON.parse(body) as unknown : body }
     calls.push(call)
     const answer = handler(call)
     if (answer === 'network') throw new TypeError('fetch failed')
@@ -179,6 +194,8 @@ async function watching(source: FakeSource, options: DingtalkWatchOptions, run: 
 
 beforeEach(() => {
   clearDingtalkTokens()
+  clearDingtalkSentAttachmentFailures()
+  mediaIndex = 0
   vi.unstubAllGlobals()
 })
 
@@ -645,6 +662,131 @@ describe('replies', () => {
   })
 })
 
+/** The group route a reply to the default test message takes. */
+const groupAddress = (): Record<string, string> => dingtalkTrigger(message(), 'dingtalk:ops', config()).channel!.address
+/** One outbound attachment on disk: its file name, absolute path, MIME type and size. */
+async function storedAttachment(stateDir: string, name: string, content: string | Uint8Array, mime = 'application/octet-stream') {
+  const path = join(stateDir, name)
+  await writeFile(path, content)
+  return { name, path, mime, bytes: Buffer.byteLength(content) }
+}
+/** Sends one reply carrying `attachments` through the DingTalk Channel, with the instance's own scoped Commands. */
+async function sendWithAttachments(attachments: OutboundMessage['attachments'],
+  address = groupAddress()): Promise<'sent' | 'gone'> {
+  const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+  const scoped = dingtalkKind.commands!(config(), commands)
+  return dingtalkKind.channel!.send({ commands: scoped }, { ...reply('Artifacts delivered', address), attachments })
+}
+
+describe('outbound attachments', () => {
+  it('sends the text first, then uploads each file and sends it as a picture or a file to the group', async () => {
+    await withStateDir(async stateDir => {
+      const stub = fetchStub()
+      vi.stubGlobal('fetch', stub.impl)
+      expect(await sendWithAttachments([
+        await storedAttachment(stateDir, 'chart.png', 'png-bytes', 'image/png'),
+        await storedAttachment(stateDir, 'report.pdf', 'pdf-bytes', 'application/pdf'),
+      ])).toBe('sent')
+      // The token is fetched once, and the text goes out before either file.
+      expect(tokenCalls(stub.calls)).toHaveLength(1)
+      const uploadAt = stub.calls.findIndex(call => call.url.startsWith(DINGTALK_MEDIA_UPLOAD_URL))
+      expect(stub.calls.findIndex(call => call.url === WEBHOOK)).toBeLessThan(uploadAt)
+      expect(webhookCalls(stub.calls)[0]!.body).toEqual({ msgtype: 'text', text: { content: 'Artifacts delivered' },
+        at: { atUserIds: ['staff-1'] } })
+      // A picture is uploaded as an image and sent as sampleImageMsg, its media id the photoURL.
+      expect(uploadCalls(stub.calls).map(call => new URL(call.url).searchParams.get('type'))).toEqual(['image', 'file'])
+      expect(uploadCalls(stub.calls).map(call => new URL(call.url).searchParams.get('access_token')))
+        .toEqual(['token-1', 'token-1'])
+      expect(uploadCalls(stub.calls).map(mediaOf)).toEqual([
+        { name: 'chart.png', type: 'image/png', size: 9 }, { name: 'report.pdf', type: 'application/pdf', size: 9 }])
+      expect(robotCalls(stub.calls).map(call => call.body)).toEqual([
+        { robotCode: 'robot-1', msgKey: 'sampleImageMsg', msgParam: JSON.stringify({ photoURL: 'media-1' }),
+          openConversationId: 'cid-1' },
+        { robotCode: 'robot-1', msgKey: 'sampleFile',
+          msgParam: JSON.stringify({ mediaId: 'media-2', fileName: 'report.pdf', fileType: 'pdf' }), openConversationId: 'cid-1' },
+      ])
+      expect(robotCalls(stub.calls).every(call => call.headers['x-acs-dingtalk-access-token'] === 'token-1')).toBe(true)
+    })
+  })
+  it('sends a direct conversation\'s files to the sender through oToMessages/batchSend', async () => {
+    await withStateDir(async stateDir => {
+      const stub = fetchStub()
+      vi.stubGlobal('fetch', stub.impl)
+      const address = { row: 'dingtalk:ops', conversationType: 'direct', conversationId: 'cid-1', openConversationId: '',
+        userId: 'staff-1', senderStaffId: 'staff-1', robotCode: 'robot-1', sessionWebhook: '', sessionWebhookExpiresAt: '' }
+      expect(await sendWithAttachments([await storedAttachment(stateDir, 'notes.txt', 'note', 'text/plain')],
+        address)).toBe('sent')
+      expect(webhookCalls(stub.calls)).toHaveLength(0)
+      const files = robotCalls(stub.calls).filter(call => (call.body as { msgKey: string }).msgKey === 'sampleFile')
+      expect(files).toHaveLength(1)
+      expect(files[0]!.body).toEqual({ robotCode: 'robot-1', msgKey: 'sampleFile',
+        msgParam: JSON.stringify({ mediaId: 'media-1', fileName: 'notes.txt', fileType: 'txt' }), userIds: ['staff-1'] })
+    })
+  })
+  it('delivers at most ten files per reply and counts the rest, keeping the text delivered', async () => {
+    await withStateDir(async stateDir => {
+      const stub = fetchStub()
+      vi.stubGlobal('fetch', stub.impl)
+      const attachments = []
+      for (let index = 0; index < DINGTALK_SENT_ATTACHMENTS_PER_MESSAGE + 2; index += 1) {
+        attachments.push(await storedAttachment(stateDir, `file-${index}.txt`, `file ${index}`, 'text/plain'))
+      }
+      expect(await sendWithAttachments(attachments)).toBe('sent')
+      expect(webhookCalls(stub.calls)).toHaveLength(1)
+      expect(uploadCalls(stub.calls)).toHaveLength(DINGTALK_SENT_ATTACHMENTS_PER_MESSAGE)
+      expect(dingtalkSentAttachmentFailures('dingtalk:ops')).toBe(2)
+    })
+  })
+  it('skips a file over 20 MiB and counts it, keeping the text delivered', async () => {
+    await withStateDir(async stateDir => {
+      const stub = fetchStub()
+      vi.stubGlobal('fetch', stub.impl)
+      const big = await storedAttachment(stateDir, 'big.bin', Buffer.alloc(DINGTALK_SENT_ATTACHMENT_BYTES + 1))
+      const file = await storedAttachment(stateDir, 'report.md', 'done', 'text/markdown')
+      expect(await sendWithAttachments([big, file])).toBe('sent')
+      expect(webhookCalls(stub.calls)).toHaveLength(1)
+      // The oversized file is skipped before it is read, and only the other one is uploaded.
+      expect(uploadCalls(stub.calls).map(mediaOf)).toEqual([{ name: 'report.md', type: 'text/markdown', size: 4 }])
+      expect(dingtalkSentAttachmentFailures('dingtalk:ops')).toBe(1)
+    })
+  })
+  it('counts a refused upload but keeps the delivered text', async () => {
+    await withStateDir(async stateDir => {
+      const stub = fetchStub(call => call.url.startsWith(DINGTALK_MEDIA_UPLOAD_URL)
+        ? { status: 500, body: { errcode: 500, errmsg: 'boom' } } : defaultAnswer(call))
+      vi.stubGlobal('fetch', stub.impl)
+      expect(await sendWithAttachments([await storedAttachment(stateDir, 'report.md', 'done', 'text/markdown')])).toBe('sent')
+      expect(webhookCalls(stub.calls)).toHaveLength(1)
+      expect(robotCalls(stub.calls)).toHaveLength(0)
+      expect(dingtalkSentAttachmentFailures('dingtalk:ops')).toBe(1)
+    })
+  })
+  it('sends files only to the Trigger route', async () => {
+    const stub = fetchStub()
+    vi.stubGlobal('fetch', stub.impl)
+    // A Channel address that names no usable route is gone before the file is even read.
+    expect(await sendWithAttachments([{ name: 'report.md', path: '/nonexistent/report.md', mime: 'text/markdown' }], {}))
+      .toBe('gone')
+    expect(stub.calls).toHaveLength(0)
+    // A route without its robot code is refused before anything is uploaded.
+    await expect(sendDingtalkAttachment({ name: 'a.txt', mime: 'text/plain', data: Buffer.from('x') },
+      { credentials, target: target({ robotCode: '' }), fetchImpl: stub.impl })).rejects.toMatchObject({ code: 'invalid-route' })
+    expect(stub.calls).toHaveLength(0)
+  })
+  it('never puts the Client Secret in an upload failure', async () => {
+    const stub = fetchStub(call => call.url.startsWith(DINGTALK_MEDIA_UPLOAD_URL)
+      ? { status: 401, body: { code: 'InvalidAuthentication' } } : defaultAnswer(call))
+    const error = await sendDingtalkAttachment({ name: 'report.md', mime: 'text/markdown', data: Buffer.from('done') },
+      { credentials, target: target(), fetchImpl: stub.impl }).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(DingtalkApiError)
+    expect(String(error)).not.toContain('secret-1')
+    expect(dingtalkFailureText(error)).not.toContain('secret-1')
+    // The token request carries the secret in its body, as DingTalk requires; the upload URL carries only the token.
+    expect(tokenCalls(stub.calls)[0]!.body).toEqual({ appKey: 'client-1', appSecret: 'secret-1' })
+    expect(uploadCalls(stub.calls)[0]!.url).toContain('access_token=token-1')
+  })
+})
+
 describe('the Stream connection', () => {
   it('registers the bot topic, acknowledges the callback at once, then dispatches the message', async () => {
     const client = fakeStreamClient()
@@ -798,6 +940,32 @@ describe('the plugin loop', () => {
         clients[0]!.push({ headers: { messageId: 'envelope-picture' }, data: JSON.stringify(pictureCallback()) })
         await vi.waitFor(() => expect(lastHealth(source)!.detail).toContain('skipped (attachment-download-failed 1)'))
         expect(source.receive).not.toHaveBeenCalled()
+      })
+    })
+  }, 20_000)
+  it('counts a reply file it cannot deliver in the instance\'s health detail', async () => {
+    await withStateDir(async stateDir => {
+      const clients: FakeClient[] = []
+      const source = fakeSource([config()], { stateDir })
+      const stub = responseStub(call => {
+        if (call.url.includes('oauth2/accessToken')) return jsonResponse(tokenAnswer)
+        if (call.url.startsWith(DINGTALK_MEDIA_UPLOAD_URL)) return jsonResponse({ errcode: 500, errmsg: 'boom' }, 500)
+        return jsonResponse({ errcode: 0 })
+      })
+      await watching(source, { streamFactory: streamFactoryOf(clients), fetchImpl: stub.impl, probeIntervalMs: 2, backoffMs: [1],
+        reconcileSeconds: 0.05 }, async () => {
+        await vi.waitFor(() => expect(lastHealth(source)).toMatchObject({ state: 'ready' }))
+        // The Channel's own fetches take the global `fetch`; the watch loop's fake only serves inbound downloads.
+        vi.stubGlobal('fetch', stub.impl)
+        const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+        const file = await storedAttachment(stateDir, 'report.md', 'done', 'text/markdown')
+        expect(await dingtalkKind.channel!.send({ commands: dingtalkKind.commands!(config(), commands) },
+          { ...reply('Artifacts delivered'), attachments: [file] })).toBe('sent')
+        // The next report names the file it could not deliver, without the file's path or the secret.
+        clients[0]!.push({ headers: { messageId: 'envelope-after' }, data: JSON.stringify(callback()) })
+        await vi.waitFor(() => expect(lastHealth(source)!.detail).toContain('1 reply attachments could not be delivered'))
+        expect(lastHealth(source)!.detail).not.toContain(stateDir)
+        expect(lastHealth(source)!.detail).not.toContain('secret-1')
       })
     })
   }, 20_000)

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { artifactRecordId, type ArtifactRecord, type Reply, type Ticket, type Trigger } from '../src/core/index.ts'
-import { artifactNotice, collectDeliverables, conflictName, copyArtifacts, deliverArtifacts, promoteArtifacts, type Artifact }
-  from '../src/app/artifacts.ts'
+import { artifactAttachments, artifactMime, artifactNotice, collectDeliverables, conflictName, copyArtifacts, deliverArtifacts,
+  promoteArtifacts, type Artifact } from '../src/app/artifacts.ts'
 import { Store } from '../src/app/store.ts'
 import { KV } from '../src/kv.ts'
 
@@ -92,9 +92,32 @@ describe('delivery', () => {
     expect(h.rows).toEqual([{ id: artifactRecordId('t1', 'report.md'), ticket: 't1', project: 'prj_workspace', source: 'folder', name: 'report.md',
       value: { hash: expect.stringMatching(/^[0-9a-f]{16}$/), size: 4, at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
         targetRoot: target, deliveredTo: join(outbox, 't1', 'artifacts'), messageId: 'reply-1' }, at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) }])
-    // The reply names the workspace, where people find the deliverables.
+    // The reply names the workspace, where people find the deliverables, and carries the files for a Channel that sends them.
     expect(h.engine.reply).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'result', ticketId: 't1',
-      text: artifactNotice(await collectDeliverables(work), target) }))
+      text: artifactNotice(await collectDeliverables(work), target),
+      attachments: [{ name: 'report.md', path: join(work, 'deliver', 'report.md'), mime: 'text/markdown', bytes: 4 }] }))
+  })
+  it('offers every collected deliverable with its absolute path, MIME type and size, in collection order', async () => {
+    write('chart.png', 'png-bytes')
+    write('nested/data.csv', 'a,b')
+    write('report.md', 'done')
+    const h = host()
+    expect(await deliverArtifacts(h, 't1')).toBe(3)
+    expect(h.engine.reply).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'result', attachments: [
+      { name: 'chart.png', path: join(work, 'deliver', 'chart.png'), mime: 'image/png', bytes: 9 },
+      { name: 'nested/data.csv', path: join(work, 'deliver', 'nested/data.csv'), mime: 'text/csv', bytes: 3 },
+      { name: 'report.md', path: join(work, 'deliver', 'report.md'), mime: 'text/markdown', bytes: 4 },
+    ] }))
+  })
+  it('names a deliverable\'s MIME type from its extension and falls back to a binary stream', () => {
+    expect(artifactMime('report.md')).toBe('text/markdown')
+    expect(artifactMime('SHOT.JPG')).toBe('image/jpeg')
+    expect(artifactMime('nested/data.csv')).toBe('text/csv')
+    expect(artifactMime('archive.unknown')).toBe('application/octet-stream')
+    expect(artifactMime('NOTES')).toBe('application/octet-stream')
+    const artifacts: Artifact[] = [{ name: 'report.md', hash: '0123456789abcdef', size: 3, at: '2026-11-24T00:00:00.000Z' }]
+    expect(artifactAttachments('/ticket', artifacts)).toEqual([{ name: 'report.md', path: join('/ticket', 'deliver', 'report.md'),
+      mime: 'text/markdown', bytes: 3 }])
   })
   it('indexes a delivery in the artifact table and writes no `artifacts:<ticket id>` record', async () => {
     const store = new Store(join(dir, 'delivery.sqlite'))

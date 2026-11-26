@@ -1048,6 +1048,19 @@ describe('replies', () => {
     expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Done' })).toMatchObject({ status: 'pending' })
     expect(h.outbox.at(-1)!.channel).toEqual(trigger('1').channel)
   })
+  it('queues a result\'s files with its text, and queues no files when there are none', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const attachments = [{ name: 'report.md', path: '/area/work/deliver/report.md', mime: 'text/markdown', bytes: 4 }]
+    h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
+    expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Artifacts delivered', attachments })).toMatchObject({ status: 'pending' })
+    expect(h.outbox.at(-1)).toMatchObject({ kind: 'reply', text: 'Artifacts delivered', attachments })
+    // A result without files carries no field, and an empty list is dropped instead of queued.
+    expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Nothing to deliver' })).toMatchObject({ status: 'pending' })
+    expect(h.outbox.at(-1)).not.toHaveProperty('attachments')
+    expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Still nothing', attachments: [] })).toMatchObject({ status: 'pending' })
+    expect(h.outbox.at(-1)).not.toHaveProperty('attachments')
+  })
 })
 describe('ticket commands', () => {
   it('ends a ticket by the same rule on a close and on a ready report: once no PR it opened is open, as the latest of them ended', () => {
