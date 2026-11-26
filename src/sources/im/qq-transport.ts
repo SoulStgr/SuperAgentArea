@@ -1,19 +1,23 @@
 /**
  * QQ transport: the bot's WebSocket gateway long connection over the public `@tencent-connect/qqbot-nodejs` SDK, inbound
- * message normalization, and the passive reply path (a reply anchored to the inbound message's `msg_id` inside QQ's window).
+ * message normalization (including the attachment references QQ sends and the download that turns one into bytes), and the
+ * passive reply path (a reply anchored to the inbound message's `msg_id` inside QQ's window).
  *
  * Protocol details adapted from dsh-im (MIT, Copyright (c) 2026 xmanrui, upstream 5.10.0), files
  * `src/channels/qq/qq-runtime.mjs` (QQBot connection/events), `src/channels/qq/qq-controller.mjs` (the send path),
  * `src/channels/qq/markdown-reply.mjs` (markdown first, plain text on a definite rejection, passive reply budget),
- * `src/channels/qq/qq-mention.mjs` (self-mention detection and stripping) and `src/channels/shared/markdown-chunks.mjs`
+ * `src/channels/qq/qq-mention.mjs` (self-mention detection and stripping), `src/channels/qq/qq-bridge.mjs` (the inbound
+ * attachment fields, the image-or-file decision and the media-host list) and `src/channels/shared/markdown-chunks.mjs`
  * (line-break-aware splitting); see THIRD_PARTY_NOTICES.md. Only the wire protocol is adapted: this module has no session,
  * command, approval or workspace logic, and imports no part of dsh-im.
  *
  * Nothing here reads configuration: the credentials come from a caller that stores them (the Source instance), and the
- * AppSecret never appears in a transport error, a log line, a health detail or a Trigger. The SDK is loaded lazily by the
+ * AppSecret never appears in a transport error, a log line, a health detail or a Trigger. A signed attachment URL is just as
+ * restricted: no failure carries one, so neither a health detail nor a Trigger can. The SDK is loaded lazily by the
  * production bot factory, so a missing SDK is a connection error of one instance instead of a broken plugin.
  */
 import type { OutboundMessage } from '../../core/index.ts'
+import { isIP } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 
 /** The QQ Open Platform API base; the production bot factory uses it unless the account is in the sandbox environment. */
@@ -36,6 +40,20 @@ export const QQ_PASSIVE_MARGIN_MS = 30_000
 export const QQ_PASSIVE_REPLY_LIMIT = Object.freeze({ c2c: 4, group: 5 })
 /** Appended in the last passive slot when a reply is longer than the passive budget can carry. */
 export const QQ_TRUNCATION_NOTICE = '(The reply was longer than QQ can deliver in one passive reply and was truncated.)'
+/** The largest attachment one QQ message may deliver; a larger file is skipped and counted in the instance's health. */
+export const QQ_ATTACHMENT_BYTES = 20 * 1024 * 1024
+/** The most attachments one QQ message may carry; a message with more is skipped instead of partly received. */
+export const QQ_ATTACHMENTS_PER_MESSAGE = 5
+/** How long one attachment download may take before it is abandoned; a download that times out keeps none of its bytes. */
+const DOWNLOAD_TIMEOUT_MS = 30_000
+/**
+ * The hosts a QQ attachment download URL may name: QQ's own media hosts and the Tencent CDNs that serve them, taken from
+ * the upstream `QQ_IMAGE_HOSTS` list. A host matches the registrable domain itself or any subdomain of it.
+ */
+export const QQ_DOWNLOAD_HOSTS = Object.freeze(['.myqcloud.com', '.qpic.cn', '.qq.com', '.qq.com.cn', '.tencentcos.com',
+  '.ugcimg.cn'] as const)
+/** The file names QQ's attachments use for a picture when no Content-Type says so; the extensions are upstream's. */
+const QQ_IMAGE_FILENAME = /\.(?:gif|jpe?g|png|webp)$/i
 /** The group-scope self mention QQ substitutes into inbound content, `<@!openid>` or the legacy `<@openid>`. */
 const QQ_MENTION = /<@!?([^<>\s]+)>/gu
 /** Consecutive gateway `error` events after which a connection is considered failed and the Source loop reconnects. */
@@ -75,6 +93,38 @@ export class QqConnectError extends Error {
 }
 /** The two credentials a bot needs; the App ID and the App Secret from the QQ open platform. */
 export interface QqCredentials { appId: string; appSecret: string }
+/** Why one attachment of an inbound message could not be fetched; the Source counts it in the instance's health. */
+export type QqAttachmentFailure = 'unavailable' | 'too-large' | 'untrusted-url' | 'download-failed'
+/**
+ * A failed attachment download: its kind and the HTTP status when there was one. The message never carries the signed
+ * download URL or its query string, because neither may reach a log line, a health detail or a Trigger.
+ */
+export class QqAttachmentError extends Error {
+  readonly code: QqAttachmentFailure
+  readonly status: number | undefined
+
+  constructor(code: QqAttachmentFailure, message: string, options: { status?: number; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? {} : { cause: options.cause })
+    this.name = 'QqAttachmentError'
+    this.code = code
+    this.status = options.status
+  }
+}
+/** One attachment QQ named on an inbound message, before its bytes are fetched. */
+export interface QqAttachmentRef {
+  /** What the attachment is for the worker: a picture, or any other file. */
+  kind: 'image' | 'file'
+  /** The download address QQ issued; a protocol-relative address is already completed to `https:`. */
+  url: string
+  /** The file name QQ sent; empty when it sent none, and never trusted as a path. */
+  name: string
+  /** The Content-Type QQ declared; empty when it declared none, and only used when the answer declares none either. */
+  mime: string
+  /** The size QQ declared in bytes; 0 when it declared none. Used only to refuse an oversized download early. */
+  bytes: number
+}
+/** One fetched attachment: its bytes, the MIME type it arrived as and the file name QQ sent (empty when it sent none). */
+export interface QqDownloadedFile { data: Buffer; mime: string; name: string }
 /** One message QQ's SDK normalized from a gateway event; the subset this transport reads. */
 export interface QqRawInbound {
   /** The gateway event type, such as `C2C_MESSAGE_CREATE` or `GROUP_AT_MESSAGE_CREATE`. */
@@ -92,12 +142,14 @@ export interface QqRawInbound {
   mentions?: { is_you?: boolean; id?: string; user_openid?: string; member_openid?: string }[]
   attachments?: unknown[]
 }
-/** One inbound text message the bot received, normalized for the Source. */
+/** One inbound message the bot received, normalized for the Source. */
 export interface QqMessage {
   /** The message id; a Trigger derives its id from it and the passive reply sends it back as `msg_id`. */
   messageId: string
-  /** The message text as received, without the bot's own mention markers and trimmed. */
+  /** The message text as received, without the bot's own mention markers and trimmed; empty for a media-only message. */
   text: string
+  /** The attachments QQ named, in order; the Source fetches them before the message becomes work. */
+  attachments: QqAttachmentRef[]
   /** The sender as the Policy's `allowed` list names people: the user openid of a direct message or group member. */
   senderId: string
   senderNick: string
@@ -160,6 +212,54 @@ function isoTime(value: unknown): string {
   if (!Number.isFinite(number) || number <= 0) return ''
   return new Date(number < 10_000_000_000 ? number * 1_000 : number).toISOString()
 }
+/**
+ * The trusted form of an attachment download URL: HTTPS on one of QQ's own media hosts, no credentials, no IP literal and
+ * no port other than the default 443, with a protocol-relative address completed to `https:`. The URL is the only place a
+ * download may go; an empty result means the Source refuses it, so a message naming any other host cannot redirect the
+ * fetch. The query string is a signed download credential and is kept for the request, but no failure carries it.
+ */
+export function trustedQqDownloadUrl(value: unknown): string {
+  const text = nonEmpty(value)
+  if (!text) return ''
+  const completed = text.startsWith('//') ? `https:${text}` : text
+  let url: URL
+  try { url = new URL(completed) } catch { return '' }
+  if (url.protocol !== 'https:' || url.port || url.username || url.password) return ''
+  const rawHost = url.hostname.toLowerCase().replace(/\.$/, '')
+  const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost
+  if (!host || isIP(host) !== 0) return ''
+  if (!QQ_DOWNLOAD_HOSTS.some(domain => host === domain.slice(1) || host.endsWith(domain))) return ''
+  // The fragment means nothing to a download.
+  url.hash = ''
+  return url.toString()
+}
+/** The Content-Type a QQ attachment declares, without parameters and in lower case; empty when it declares none. */
+function attachmentMimeOf(attachment: Record<string, unknown>): string {
+  const declared = nonEmpty(attachment.content_type) || nonEmpty(attachment.contentType)
+  return declared ? declared.split(';')[0]!.trim().toLowerCase() : ''
+}
+/**
+ * The attachment one `attachments` entry names: its download address (a protocol-relative one completed to `https:`), the
+ * file name QQ sent, the declared Content-Type and size, and the kind the Content-Type or the file name's extension decides.
+ * An entry that is not an object names no attachment; an object with no usable field still names one, so a message that only
+ * carried a malformed attachment is counted as a skipped attachment instead of disappearing as a non-text message.
+ */
+function attachmentOf(entry: unknown): QqAttachmentRef | undefined {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined
+  const raw = entry as Record<string, unknown>
+  const url = nonEmpty(raw.url)
+  const name = nonEmpty(raw.filename) || nonEmpty(raw.fileName)
+  const mime = attachmentMimeOf(raw)
+  const declared = Number(raw.size)
+  const image = mime.startsWith('image/') || QQ_IMAGE_FILENAME.test(name)
+  return { kind: image ? 'image' : 'file', url: url.startsWith('//') ? `https:${url}` : url, name, mime,
+    bytes: Number.isFinite(declared) && declared >= 0 ? declared : 0 }
+}
+/** The attachments one gateway message names, in order. */
+function attachmentsOf(message: QqRawInbound): QqAttachmentRef[] {
+  const entries = Array.isArray(message.attachments) ? message.attachments : []
+  return entries.flatMap(entry => { const attachment = attachmentOf(entry); return attachment ? [attachment] : [] })
+}
 /** The mention ids a gateway message attributes to the bot itself, so its own mention is stripped from the text. */
 function selfMentionIds(message: QqRawInbound): string[] {
   const mentions = Array.isArray(message.mentions) ? message.mentions : []
@@ -183,8 +283,10 @@ function withoutSelfMention(text: string, botIds: ReadonlySet<string>): string {
 /**
  * Normalizes one gateway message into an inbound message, or says why it is no message for this Source. A direct chat
  * always addresses the bot; a group message does only when QQ's group @ event, an `is_you` mention or an inline mention
- * names the bot. A non-text message, the bot's own message, a guild or DM event and a malformed event are skipped and
- * never become a Trigger.
+ * names the bot. A message carrying text, attachments, or both becomes a message — a media-only message is work for the
+ * worker too — while a message with neither, the bot's own message, a guild or DM event and a malformed event are skipped
+ * and never become a Trigger. The attachments are references only; the Source fetches their bytes before the message
+ * becomes work.
  */
 export function normalizeQqInbound(message: QqRawInbound | null | undefined, botIds: ReadonlySet<string> = new Set()): QqInbound {
   if (!message || typeof message !== 'object') return { skipped: { reason: 'invalid' } }
@@ -199,17 +301,18 @@ export function normalizeQqInbound(message: QqRawInbound | null | undefined, bot
   if (!conversationId) return skip('invalid')
   // The bot's own messages never ask it for work; QQ marks a bot author, and a learned id catches the rest.
   if (message.senderIsBot === true || botIds.has(senderId)) return skip('self')
-  const content = typeof message.content === 'string' ? message.content : ''
-  const attachments = Array.isArray(message.attachments) ? message.attachments : []
-  // This Source reads text only: a media-only message is counted and dropped rather than turned into empty work.
-  if (!content.trim() || (attachments.length > 0 && !withoutSelfMention(content, botIds))) return skip('non-text')
   const addressed = addressedToBot(message, botIds)
+  // An unmentioned group message is dropped before its attachments are looked at, so nothing from it is downloaded.
   if (kind === 'group' && !addressed) return skip('not-addressed')
+  const content = typeof message.content === 'string' ? message.content : ''
+  const attachments = attachmentsOf(message)
   const text = withoutSelfMention(content, botIds)
-  if (!text) return skip('non-text')
+  // Only a message that leaves neither text nor an attachment asks for nothing.
+  if (!text && !attachments.length) return skip('non-text')
   return { message: {
     messageId,
     text: text.slice(0, QQ_TEXT_CHARS),
+    attachments,
     senderId,
     senderNick: nonEmpty(message.senderName),
     kind,
@@ -219,6 +322,83 @@ export function normalizeQqInbound(message: QqRawInbound | null | undefined, bot
     createdAt: isoTime(message.timestamp),
     rawEventType: nonEmpty(message.rawEventType),
   } }
+}
+/** The MIME type a Content-Type names, without parameters; empty when the value is missing or malformed. */
+function mimeOf(value: string | null): string {
+  const text = (value ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(text) ? text : ''
+}
+/** Reads a response body, stopping as soon as it exceeds `maxBytes`; the rest of a too-large body is cancelled. */
+async function boundedBody(response: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new QqAttachmentError('too-large', `The QQ attachment exceeds ${maxBytes} bytes`)
+  }
+  const body = response.body
+  if (!body) return Buffer.alloc(0)
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new QqAttachmentError('too-large', `The QQ attachment exceeds ${maxBytes} bytes`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try { reader.releaseLock() } catch { /* A cancelled stream is already released. */ }
+  }
+  return Buffer.concat(chunks, total)
+}
+/** One attachment download request: the reference to fetch and, in tests, the injected `fetch`. */
+export interface QqAttachmentRequest {
+  attachment: QqAttachmentRef
+  fetchImpl?: typeof fetch
+  signal?: AbortSignal
+  /** The largest file accepted, in bytes; a larger one fails as `too-large` without any of it being kept. */
+  maxBytes?: number
+}
+/**
+ * Fetches one inbound attachment from the signed address QQ issued: only HTTPS on a QQ media host is followed, a redirect is
+ * never followed, the request is bounded to 30 s and at most `maxBytes` (20 MiB by default) of the body is read, with the
+ * rest of a larger body cancelled at once. A declared size over the limit is refused before any request. Neither the signed
+ * URL nor its query string appears in a failure.
+ */
+export async function downloadQqAttachment(request: QqAttachmentRequest): Promise<QqDownloadedFile> {
+  const { attachment, fetchImpl = fetch, signal } = request
+  const maxBytes = typeof request.maxBytes === 'number' && Number.isFinite(request.maxBytes) && request.maxBytes > 0
+    ? request.maxBytes : QQ_ATTACHMENT_BYTES
+  const url = trustedQqDownloadUrl(attachment.url)
+  if (!url) {
+    if (!nonEmpty(attachment.url)) throw new QqAttachmentError('unavailable', 'QQ named no download address for the attachment')
+    throw new QqAttachmentError('untrusted-url', 'QQ named an attachment download address outside its media hosts')
+  }
+  if (attachment.bytes > maxBytes) throw new QqAttachmentError('too-large', `The QQ attachment exceeds ${maxBytes} bytes`)
+  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+  let response: Response
+  try {
+    response = await fetchImpl(url, { method: 'GET', redirect: 'error', signal: combined })
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('The QQ attachment download was stopped')
+    if (timeout.aborted) throw new QqAttachmentError('download-failed', 'The QQ attachment download timed out', { cause: error })
+    throw new QqAttachmentError('download-failed', 'The QQ attachment download failed', { cause: error })
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new QqAttachmentError('download-failed', `QQ answered HTTP ${response.status} for the attachment`,
+      { status: response.status })
+  }
+  const data = await boundedBody(response, maxBytes)
+  // The answer's own Content-Type names the saved file; QQ's declared one is only a fallback, and the last resort is binary.
+  const mime = mimeOf(response.headers.get('content-type')) || mimeOf(attachment.mime) || 'application/octet-stream'
+  return { data, mime, name: nonEmpty(attachment.name) }
 }
 /** Splits a long reply into QQ-sized text pieces, preferring a line break when one is not too early. */
 export function splitQqText(value: string, maxChars = QQ_REPLY_CHARS): string[] {

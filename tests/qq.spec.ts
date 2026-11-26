@@ -1,17 +1,24 @@
 /**
- * The QQ Source without QQ: message normalization, the passive reply path over a fake bot, the gateway connection over a
- * fake SDK client, and the watch loop's health over a fake `SourceContext`. Nothing here opens a socket or calls the QQ API.
+ * The QQ Source without QQ: message normalization, the passive reply path over a fake bot, gateway normalization of the
+ * attachment references and their download and storage over a fake `fetch`, the gateway connection over a fake SDK client,
+ * and the watch loop's health over a fake `SourceContext`. Nothing here opens a socket, calls the QQ API or fetches a real
+ * attachment.
  */
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { key, type OutboundMessage, type Trigger } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { apply, qqKind, qqTrigger, receiveQq, watchQq, type QqConfig, type QqWatchOptions } from '../src/sources/qq.ts'
+import { apply, qqAttachmentDirectory, qqKind, qqTrigger, receiveQq, watchQq, type QqConfig, type QqSavedAttachment,
+  type QqWatchOptions } from '../src/sources/qq.ts'
 import type { Health, SourceContext } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
-import { clearQqLiveBots, liveQqBot, normalizeQqInbound, QqApiError, QqConnection, QQ_PASSIVE_REPLY_LIMIT, QQ_REPLY_CHARS,
-  QQ_TEXT_CHARS, QQ_TRUNCATION_NOTICE, qqMention, replySeqOf, replyTargetOf, replyWindowOpen, sendQqReply, splitQqText,
-  type QqBotClient, type QqBotFactory, type QqMessage, type QqRawInbound, type QqReplyTarget, type QqSendOptions, type QqSkipEvent } from
-  '../src/sources/im/qq-transport.ts'
+import { clearQqLiveBots, liveQqBot, normalizeQqInbound, QqApiError, QqConnection, QQ_ATTACHMENT_BYTES,
+  QQ_ATTACHMENTS_PER_MESSAGE, QQ_PASSIVE_REPLY_LIMIT, QQ_REPLY_CHARS, QQ_TEXT_CHARS, QQ_TRUNCATION_NOTICE, qqMention,
+  replySeqOf, replyTargetOf, replyWindowOpen, sendQqReply, splitQqText, trustedQqDownloadUrl, type QqAttachmentRef,
+  type QqBotClient, type QqBotFactory, type QqMessage, type QqRawInbound, type QqReplyTarget, type QqSendOptions,
+  type QqSkipEvent } from '../src/sources/im/qq-transport.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 
 /** A validated configuration with both credentials filled, as an operator would save it. */
@@ -21,13 +28,18 @@ const future = (): number => Date.now() - 10_000
 const past = (): number => Date.now() - 2 * 60 * 60_000
 /** One normalized message, a group mention by default. */
 const message = (overrides: Partial<QqMessage> = {}): QqMessage => ({ messageId: 'msg-1', text: 'please fix the typo',
-  senderId: 'user-1', senderNick: 'Alice', kind: 'group', conversationId: 'group-1', groupId: 'group-1', addressed: true,
-  createdAt: '2026-11-26T00:00:00.000Z', rawEventType: 'GROUP_AT_MESSAGE_CREATE', ...overrides })
+  attachments: [], senderId: 'user-1', senderNick: 'Alice', kind: 'group', conversationId: 'group-1', groupId: 'group-1',
+  addressed: true, createdAt: '2026-11-26T00:00:00.000Z', rawEventType: 'GROUP_AT_MESSAGE_CREATE', ...overrides })
 /** One gateway message as the SDK normalizes it, a group mention by default; tests change one field to exercise a skip. */
 const rawInbound = (overrides: Partial<QqRawInbound> = {}): QqRawInbound => ({ rawEventType: 'GROUP_AT_MESSAGE_CREATE', kind: 'group',
   senderId: 'user-1', senderName: 'Alice', content: 'please fix the typo', messageId: 'msg-1',
   timestamp: '2026-11-26T08:00:00+08:00', groupOpenid: 'group-1', msgType: 0,
   mentions: [{ is_you: true, member_openid: 'bot-user' }], ...overrides })
+/** One signed attachment address QQ hands out; its query string is a credential no health detail or Trigger may carry. */
+const SIGNED_URL = 'https://gchat.qpic.cn/gchatpic_new/0/0-0/0?term=2&rkey=secret-query'
+/** One attachment reference QQ named on a message, a picture at SIGNED_URL by default. */
+const ref = (overrides: Partial<QqAttachmentRef> = {}): QqAttachmentRef => ({ kind: 'image', url: SIGNED_URL, name: '',
+  mime: '', bytes: 0, ...overrides })
 /** The two ids the connection learns from READY and from the AppID, naming the bot in self mentions. */
 const BOT_IDS = new Set(['app-1', 'bot-user'])
 const target = (overrides: Partial<QqReplyTarget> = {}): QqReplyTarget => ({ scope: 'group', targetId: 'group-1', msgId: 'msg-1',
@@ -86,7 +98,7 @@ function factoryOf(bots: FakeBot[]): QqBotFactory {
 
 /** The health reports one fake Source context received, in order. */
 interface FakeSource { ctx: SourceContext; reports: { id: string; health: Health }[]; receive: ReturnType<typeof vi.fn> }
-function fakeSource(configs: QqConfig[], options: { configured?: boolean; enabled?: boolean } = {}): FakeSource {
+function fakeSource(configs: QqConfig[], options: { configured?: boolean; enabled?: boolean; stateDir?: string } = {}): FakeSource {
   const reports: { id: string; health: Health }[] = []
   const receive = vi.fn((_trigger: Trigger) => 'stored' as const)
   const instances = configs.map((value, index) => ({ id: index ? `qq:ops-${index}` : 'qq:ops', kind: 'qq',
@@ -95,6 +107,7 @@ function fakeSource(configs: QqConfig[], options: { configured?: boolean; enable
     ready: Promise.resolve(),
     configured: () => options.configured ?? true,
     instances: () => instances,
+    deployment: { stateDir: options.stateDir ?? join(tmpdir(), 'dsh-qq-fake-state') },
     report: (id: string, health: Health) => { reports.push({ id, health }) },
     receive,
     threads: { describe: vi.fn() },
@@ -109,6 +122,39 @@ async function watching(source: FakeSource, options: QqWatchOptions, run: () => 
   const running = watchQq(source.ctx, controller.signal, options)
   try { await run() } finally { controller.abort(); await running }
 }
+
+/** Runs one case with a fresh state directory, removed afterwards. */
+async function withStateDir(run: (stateDir: string) => Promise<void>): Promise<void> {
+  const stateDir = await mkdtemp(join(tmpdir(), 'dsh-qq-'))
+  try { await run(stateDir) } finally { await rm(stateDir, { recursive: true, force: true }) }
+}
+/** A Source context that records the Triggers it receives and names one state directory for attachment downloads. */
+function attachmentSource(stateDir: string): { ctx: SourceContext; received: Trigger[]; receive: ReturnType<typeof vi.fn> } {
+  const received: Trigger[] = []
+  const receive = vi.fn((trigger: Trigger) => { received.push(trigger); return 'stored' as const })
+  const ctx = { deployment: { stateDir }, receive, threads: { describe: vi.fn() } } as unknown as SourceContext
+  return { ctx, received, receive }
+}
+/** One recorded attachment-download call: its URL, HTTP method, redirect mode and headers. */
+interface DownloadCall { url: string; method: string; redirect: RequestRedirect | undefined; headers: Headers }
+/** A fake `fetch` answering whole `Response` objects, so a download can carry real bytes and a binary Content-Type. */
+function responseStub(handler: (call: DownloadCall) => Response | 'network'): { impl: typeof fetch; calls: DownloadCall[] } {
+  const calls: DownloadCall[] = []
+  const spy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const call: DownloadCall = { url: String(input), method: init?.method ?? 'GET', redirect: init?.redirect,
+      headers: new Headers(init?.headers) }
+    calls.push(call)
+    const answer = handler(call)
+    if (answer === 'network') throw new TypeError('fetch failed')
+    return answer
+  })
+  return { impl: spy as unknown as typeof fetch, calls }
+}
+/** A binary answer with an optional Content-Type; a missing one leaves the body untyped, like a CDN answer could be. */
+const binaryResponse = (data: string | Uint8Array<ArrayBuffer>, type?: string): Response =>
+  new Response(data, { status: 200, ...type ? { headers: { 'content-type': type } } : {} })
+/** The attachments a Trigger carries for its worker. */
+const attachmentsOf = (trigger: Trigger): QqSavedAttachment[] => trigger.meta.attachments as QqSavedAttachment[]
 
 beforeEach(() => { clearQqLiveBots() })
 
@@ -174,22 +220,70 @@ describe('normalization', () => {
     expect(normalizeQqInbound(rawInbound({ rawEventType: 'GROUP_AT_MESSAGE_CREATE', content: 'hello' }), BOT_IDS))
       .toMatchObject({ message: { addressed: true } })
   })
-  it('skips an unmentioned group message, the bot\'s own message, a non-text message and malformed events', () => {
+  it('skips an unmentioned group message, the bot\'s own message, a message with neither text nor attachment, and malformed events', () => {
     const skipped = (payload: QqRawInbound): unknown => normalizeQqInbound(payload, BOT_IDS)
     expect(skipped(rawInbound({ rawEventType: 'GROUP_MESSAGE_CREATE', content: 'hello all', mentions: [] })))
       .toEqual({ skipped: { reason: 'not-addressed', messageId: 'msg-1', kind: 'group' } })
     expect(skipped(rawInbound({ senderIsBot: true }))).toEqual({ skipped: { reason: 'self', messageId: 'msg-1', kind: 'group' } })
     expect(skipped(rawInbound({ senderId: 'bot-user', mentions: [] })))
       .toEqual({ skipped: { reason: 'self', messageId: 'msg-1', kind: 'group' } })
-    const nonText = skipped(rawInbound({ content: '', attachments: [{ url: 'https://example.invalid/i.png' }] }))
-    expect(nonText).toEqual({ skipped: { reason: 'non-text', messageId: 'msg-1', kind: 'group' } })
-    // A media message with only the bot's mention marker left is non-text too.
-    expect(skipped(rawInbound({ content: '<@bot-user>', attachments: [{ url: 'x' }] })))
-      .toEqual({ skipped: { reason: 'non-text', messageId: 'msg-1', kind: 'group' } })
+    // A message with neither text nor an attachment is the only non-text skip left.
+    expect(skipped(rawInbound({ content: '' }))).toEqual({ skipped: { reason: 'non-text', messageId: 'msg-1', kind: 'group' } })
+    // A media-only message now becomes work: its attachments are references the Source fetches.
+    expect(normalizeQqInbound(rawInbound({ content: '', attachments: [{ url: 'https://gchat.qpic.cn/i.png' }] }), BOT_IDS))
+      .toMatchObject({ message: { text: '', attachments: [{ kind: 'file', url: 'https://gchat.qpic.cn/i.png' }] } })
+    // A message with only the bot's mention marker left and an attachment is work too.
+    expect(normalizeQqInbound(rawInbound({ content: '<@bot-user>', attachments: [{ url: 'x' }] }), BOT_IDS))
+      .toMatchObject({ message: { text: '', attachments: [{ kind: 'file', url: 'x' }] } })
+    // An unmentioned group message is dropped before its attachment is ever looked at.
+    expect(normalizeQqInbound(rawInbound({ rawEventType: 'GROUP_MESSAGE_CREATE', mentions: [],
+      attachments: [{ url: 'https://gchat.qpic.cn/i.png' }] }), BOT_IDS))
+      .toEqual({ skipped: { reason: 'not-addressed', messageId: 'msg-1', kind: 'group' } })
     expect(skipped(rawInbound({ messageId: undefined }))).toEqual({ skipped: { reason: 'invalid', kind: 'group' } })
     expect(skipped(rawInbound({ kind: 'guild' }))).toMatchObject({ skipped: { reason: 'unsupported' } })
     expect(skipped(rawInbound({ groupOpenid: undefined }))).toEqual({ skipped: { reason: 'invalid', messageId: 'msg-1', kind: 'group' } })
     expect(normalizeQqInbound(null)).toEqual({ skipped: { reason: 'invalid' } })
+  })
+  it('turns a picture and a file attachment into the references the Source downloads', () => {
+    const inbound = normalizeQqInbound(rawInbound({ attachments: [
+      { url: 'https://gchat.qpic.cn/a', filename: 'photo.png', content_type: 'image/png', size: 12 },
+      { url: '//gchat.qpic.cn/b', filename: 'report.pdf', content_type: 'application/pdf' },
+      { url: 'https://multimedia.nt.qq.com.cn/c', filename: 'note.JPG' },
+    ] }), BOT_IDS)
+    expect(inbound).toMatchObject({ message: { text: 'please fix the typo', attachments: [
+      { kind: 'image', url: 'https://gchat.qpic.cn/a', name: 'photo.png', mime: 'image/png', bytes: 12 },
+      { kind: 'file', url: 'https://gchat.qpic.cn/b', name: 'report.pdf', mime: 'application/pdf', bytes: 0 },
+      { kind: 'image', url: 'https://multimedia.nt.qq.com.cn/c', name: 'note.JPG', mime: '', bytes: 0 },
+    ] } })
+    // The camelCase fields are read too, an audio attachment is a file, and a malformed entry names no attachment.
+    expect(normalizeQqInbound(rawInbound({ attachments: [
+      { url: 'https://gchat.qpic.cn/d', contentType: 'image/webp' },
+      { url: 'https://gchat.qpic.cn/e', content_type: 'audio/silk', fileName: 'voice.silk', size: '7' },
+      'not an attachment',
+    ] }), BOT_IDS)).toMatchObject({ message: { attachments: [
+      { kind: 'image', url: 'https://gchat.qpic.cn/d', mime: 'image/webp' },
+      { kind: 'file', name: 'voice.silk', mime: 'audio/silk', bytes: 7 },
+    ] } })
+  })
+  it('accepts an HTTPS attachment address on a QQ media host and refuses every other address', () => {
+    expect(trustedQqDownloadUrl('https://gchat.qpic.cn/a?rkey=1')).toBe('https://gchat.qpic.cn/a?rkey=1')
+    expect(trustedQqDownloadUrl('https://qpic.cn/a')).toBe('https://qpic.cn/a')
+    expect(trustedQqDownloadUrl('https://multimedia.nt.qq.com.cn/a')).toBe('https://multimedia.nt.qq.com.cn/a')
+    expect(trustedQqDownloadUrl('https://x.myqcloud.com/a')).toBe('https://x.myqcloud.com/a')
+    expect(trustedQqDownloadUrl('https://x.tencentcos.com/a')).toBe('https://x.tencentcos.com/a')
+    expect(trustedQqDownloadUrl('https://x.ugcimg.cn/a')).toBe('https://x.ugcimg.cn/a')
+    // Protocol-relative addresses QQ sometimes sends are completed to HTTPS.
+    expect(trustedQqDownloadUrl('//gchat.qpic.cn/a')).toBe('https://gchat.qpic.cn/a')
+    // Plain HTTP, a foreign host, a look-alike host, credentials, a non-443 port and an IP literal are all refused.
+    expect(trustedQqDownloadUrl('http://gchat.qpic.cn/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://evil.example/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://qq.com.evil.example/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://evilqq.com/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://user:pass@gchat.qpic.cn/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://gchat.qpic.cn:8443/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://127.0.0.1/a')).toBe('')
+    expect(trustedQqDownloadUrl('https://[::1]/a')).toBe('')
+    expect(trustedQqDownloadUrl('not a url')).toBe('')
   })
   it('cuts a long message text at the Trigger limit and strips only the bot\'s own mentions', () => {
     const long = normalizeQqInbound(rawInbound({ content: `${'x'.repeat(9_000)}` }), BOT_IDS)
@@ -234,6 +328,181 @@ describe('triggers', () => {
     expect(receive).toHaveBeenCalledTimes(2)
     expect(await receiveQq(ctx, 'qq:ops', config({ allowedUserIds: 'user-2' }), message())).toBe('not-allowed')
     expect(receive).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('inbound attachments', () => {
+  it('saves an inbound picture under the state directory and names its absolute path in the Trigger', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => binaryResponse('png-bytes', 'image/png'))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '', attachments: [ref()] }),
+        { fetchImpl: stub.impl })).toBe('received')
+      expect(source.received).toHaveLength(1)
+      const trigger = source.received[0]!
+      const attachment = attachmentsOf(trigger)[0]!
+      expect(attachment).toMatchObject({ kind: 'image', name: 'image.png', mime: 'image/png', bytes: 9 })
+      expect(attachment.path).toBe(join(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'), 'image.png'))
+      expect(relative(stateDir, attachment.path).startsWith('..')).toBe(false)
+      expect(await readFile(attachment.path, 'utf8')).toBe('png-bytes')
+      expect(trigger.text).toBe(`收到图片/文件：${attachment.path}`)
+      // The signed address alone is fetched, as a GET that never follows a redirect; the reply route is unchanged.
+      expect(stub.calls).toHaveLength(1)
+      expect(stub.calls[0]).toMatchObject({ url: SIGNED_URL, method: 'GET', redirect: 'error' })
+      expect(trigger.channel!.address).toMatchObject({ conversationType: 'group', conversationId: 'group-1', msgId: 'msg-1' })
+      // The signed query string is a download credential: it never reaches the Trigger or its meta.
+      expect(JSON.stringify(trigger)).not.toContain('rkey=secret-query')
+    })
+  })
+  it('names a picture from its Content-Type and keeps an unknown type as .bin', async () => {
+    await withStateDir(async stateDir => {
+      let type: string | undefined = 'image/jpeg; charset=binary'
+      // A missing answer Content-Type leaves the body untyped; a string body would get one from `Response` itself.
+      const stub = responseStub(() => type === undefined ? new Response(new Uint8Array([120])) : binaryResponse('x', type))
+      const source = attachmentSource(stateDir)
+      await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '', attachments: [ref()] }), { fetchImpl: stub.impl })
+      type = 'image/tiff'
+      await receiveQq(source.ctx, 'qq:ops', config(), message({ messageId: 'msg-2', text: '', attachments: [ref()] }),
+        { fetchImpl: stub.impl })
+      expect(attachmentsOf(source.received[0]!)[0]).toMatchObject({ name: 'image.jpg', mime: 'image/jpeg' })
+      expect(attachmentsOf(source.received[1]!)[0]).toMatchObject({ name: 'image.bin', mime: 'image/tiff' })
+      // The declared Content-Type is only the fallback when the answer carries none.
+      type = undefined
+      await receiveQq(source.ctx, 'qq:ops', config(), message({ messageId: 'msg-3', text: '',
+        attachments: [ref({ mime: 'image/webp' })] }), { fetchImpl: stub.impl })
+      expect(attachmentsOf(source.received[2]!)[0]).toMatchObject({ name: 'image.webp', mime: 'image/webp' })
+    })
+  })
+  it('saves a file under the name QQ sent, sanitized, and falls back to the message id', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => binaryResponse('%PDF-1.4', 'application/pdf'))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '',
+        attachments: [ref({ kind: 'file', name: '../../etc/passwd' })] }), { fetchImpl: stub.impl })).toBe('received')
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ messageId: 'msg-2', text: '',
+        attachments: [ref({ kind: 'file', name: '' })] }), { fetchImpl: stub.impl })).toBe('received')
+      const first = attachmentsOf(source.received[0]!)[0]!
+      expect(first).toMatchObject({ kind: 'file', mime: 'application/pdf', bytes: 8 })
+      // The provider name is not trusted as a path: the saved name has no directory part and stays in its directory.
+      expect(first.name).toBe('etc-passwd')
+      expect(relative(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'), first.path)).toBe(first.name)
+      expect(await readFile(first.path, 'utf8')).toBe('%PDF-1.4')
+      expect(attachmentsOf(source.received[1]!)[0]!.name).toBe('file-msg-2')
+    })
+  })
+  it('lists the original text and every attachment of a message, naming clashing files apart', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(call => binaryResponse(call.url.split('/').at(-1) ?? '', 'image/png'))
+      const source = attachmentSource(stateDir)
+      const attachments = [ref({ url: 'https://gchat.qpic.cn/media/a' }), ref({ url: 'https://gchat.qpic.cn/media/b' })]
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: 'see the two pictures', attachments }),
+        { fetchImpl: stub.impl })).toBe('received')
+      const trigger = source.received[0]!
+      const saved = attachmentsOf(trigger)
+      // Both are PNGs, so the second file keeps the same base name with a sequence number.
+      expect(saved.map(attachment => attachment.name)).toEqual(['image.png', 'image-1.png'])
+      expect(await readFile(saved[0]!.path, 'utf8')).toBe('a')
+      expect(await readFile(saved[1]!.path, 'utf8')).toBe('b')
+      expect(saved).toEqual([
+        { path: join(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'), 'image.png'), kind: 'image',
+          name: 'image.png', mime: 'image/png', bytes: 1 },
+        { path: join(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'), 'image-1.png'), kind: 'image',
+          name: 'image-1.png', mime: 'image/png', bytes: 1 },
+      ])
+      expect(trigger.text).toBe(`see the two pictures\n附件：${saved[0]!.path}（image/image/png）\n附件：${saved[1]!.path}（image/image/png）`)
+    })
+  })
+  it('receives a text message as before, without an attachment directory', async () => {
+    await withStateDir(async stateDir => {
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message())).toBe('received')
+      expect(source.received[0]!.text).toBe('please fix the typo')
+      expect(source.received[0]!.meta.attachments).toBeUndefined()
+      await expect(stat(join(stateDir, 'area'))).rejects.toThrow()
+    })
+  })
+  it('skips an attachment with no download address without contacting QQ', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => binaryResponse('x', 'image/png'))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '', attachments: [ref({ url: '' })] }),
+        { fetchImpl: stub.impl })).toBe('attachment-unavailable')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toEqual([])
+      await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('skips a message with more than five attachments instead of receiving part of it', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => binaryResponse('x', 'image/png'))
+      const source = attachmentSource(stateDir)
+      const attachments = Array.from({ length: QQ_ATTACHMENTS_PER_MESSAGE + 1 }, () => ref())
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '', attachments }), { fetchImpl: stub.impl }))
+        .toBe('attachment-count')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toEqual([])
+      await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('never fetches an attachment outside the QQ media hosts', async () => {
+    await withStateDir(async stateDir => {
+      for (const [index, url] of ['http://gchat.qpic.cn/x', 'https://evil.example/x', 'https://qq.com.evil.example/x',
+        'https://127.0.0.1/x'].entries()) {
+        const stub = responseStub(() => binaryResponse('x', 'image/png'))
+        const source = attachmentSource(stateDir)
+        expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ messageId: `msg-evil-${index}`, text: '',
+          attachments: [ref({ url })] }), { fetchImpl: stub.impl })).toBe('attachment-untrusted')
+        expect(source.receive).not.toHaveBeenCalled()
+        expect(stub.calls).toEqual([])
+        await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', `msg-evil-${index}`))).rejects.toThrow()
+      }
+    })
+  })
+  it('refuses a redirected download instead of following it', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => new Response('', { status: 302, headers: { location: 'https://evil.example/x' } }))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '', attachments: [ref()] }),
+        { fetchImpl: stub.impl })).toBe('attachment-download-failed')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toHaveLength(1)
+      expect(stub.calls[0]!.redirect).toBe('error')
+      expect(stub.calls.some(call => call.url === 'https://evil.example/x')).toBe(false)
+      await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('skips a message whose download fails, keeping no partial directory', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => new Response('', { status: 503 }))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '', attachments: [ref()] }),
+        { fetchImpl: stub.impl })).toBe('attachment-download-failed')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toHaveLength(1)
+      await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('refuses an attachment whose declared size exceeds 20 MiB before any request', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => binaryResponse('x', 'image/png'))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '',
+        attachments: [ref({ bytes: QQ_ATTACHMENT_BYTES + 1 })] }), { fetchImpl: stub.impl })).toBe('attachment-too-large')
+      expect(source.receive).not.toHaveBeenCalled()
+      expect(stub.calls).toEqual([])
+      await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'))).rejects.toThrow()
+    })
+  })
+  it('stops a streamed body larger than 20 MiB and keeps none of it', async () => {
+    await withStateDir(async stateDir => {
+      const stub = responseStub(() => new Response(new Uint8Array(QQ_ATTACHMENT_BYTES + 1),
+        { headers: { 'content-type': 'application/octet-stream' } }))
+      const source = attachmentSource(stateDir)
+      expect(await receiveQq(source.ctx, 'qq:ops', config(), message({ text: '',
+        attachments: [ref({ kind: 'file' })] }), { fetchImpl: stub.impl })).toBe('attachment-too-large')
+      expect(source.receive).not.toHaveBeenCalled()
+      await expect(stat(qqAttachmentDirectory(stateDir, 'qq:ops', 'msg-1'))).rejects.toThrow()
+    })
   })
 })
 
@@ -470,6 +739,20 @@ describe('the plugin loop', () => {
       await vi.waitFor(() => expect(lastHealth(source, 'qq:ops')).toMatchObject({ state: 'ready' }))
       await vi.waitFor(() => expect(lastHealth(source, 'qq:ops-1')).toMatchObject({ state: 'ready' }))
       expect(bots).toHaveLength(2)
+    })
+  }, 20_000)
+  it('counts a message whose attachments cannot be downloaded in the health detail, without a Ticket', async () => {
+    await withStateDir(async stateDir => {
+      const bots: FakeBot[] = []
+      const source = fakeSource([config()], { stateDir })
+      const stub = responseStub(() => new Response('', { status: 503 }))
+      await watching(source, { botFactory: factoryOf(bots), fetchImpl: stub.impl, backoffMs: [1], reconcileSeconds: 0.05 },
+        async () => {
+          await vi.waitFor(() => expect(lastHealth(source)).toMatchObject({ state: 'ready' }))
+          bots[0]!.emit('message', undefined, rawInbound({ content: '', attachments: [{ url: 'https://gchat.qpic.cn/x' }] }))
+          await vi.waitFor(() => expect(lastHealth(source)!.detail).toContain('skipped (attachment-download-failed 1)'))
+          expect(source.receive).not.toHaveBeenCalled()
+        })
     })
   }, 20_000)
   it('registers the kind and starts its loop from the plugin entry', async () => {

@@ -1,9 +1,13 @@
 /**
  * QQ Source: one instance is one QQ open-platform bot reached over the bot gateway's WebSocket long connection. The bot's
  * client (`im/qq-transport.ts`) delivers every message the gateway pushes; a direct message, and a group message that
- * mentions the bot, becomes a Trigger, while the bot's own messages, other bots' messages, media-only messages and
- * unmentioned group messages are counted and dropped. A reply is always a passive reply anchored to the inbound message's
- * `msg_id` — QQ's official bots mainly deliver results that way — and goes nowhere else.
+ * mentions the bot, becomes a Trigger, while the bot's own messages, other bots' messages and unmentioned group messages are
+ * counted and dropped. A text message becomes a Trigger as it arrives; a message QQ named a picture or a file on — even one
+ * with no text at all — is downloaded first into `<stateDir>/area/attachments/qq/<instance>/<messageId>/` and its Trigger
+ * names every saved absolute path, so the worker can read the file. A message whose attachments cannot be received is
+ * counted in the instance's health instead of opening an empty Ticket. A reply is always a passive reply anchored to the
+ * inbound message's `msg_id` — QQ's official bots mainly deliver results that way — and goes nowhere else; replies are text
+ * only.
  *
  * The two credentials (AppID, AppSecret) are required before the bot connects; an account saved with neither is a new
  * account and reports `paused` until it is filled, while filling only one is refused at save time. Saving does not contact
@@ -13,11 +17,15 @@
  * the App ID that names the live bot.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { key, threadKey, type OutboundMessage, type Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
-import { liveQqBot, QqApiError, QqConnection, QQ_TEXT_CHARS, qqFailureText, qqMention, replyTargetOf, sendQqReply,
+import { downloadQqAttachment, liveQqBot, QqApiError, QqAttachmentError, QQ_ATTACHMENT_BYTES, QQ_ATTACHMENTS_PER_MESSAGE,
+  QqConnection, QQ_TEXT_CHARS, qqFailureText, qqMention, replyTargetOf, sendQqReply, type QqAttachmentRef,
   type QqBotFactory, type QqMessage, type QqSkipEvent } from './im/qq-transport.ts'
 import { health, reportFailure, sourceContext, type SourceContext } from './host.ts'
 import type { FieldSpec, SourceKind } from './kind.ts'
@@ -54,8 +62,134 @@ const RECONCILE_SECONDS = 5
 /** The configuration one instance replies with, as `channel.send` reads it from the Commands the registry scoped to this kind. */
 const scopedConfigs = new WeakMap<object, QqConfig>()
 
-/** The Trigger of one QQ message on its instance: the thread is the direct chat's user openid or the group's openid. */
-export function qqTrigger(message: QqMessage, instance: string, config: QqConfig): Trigger {
+/** One attachment saved under this installation's state directory, as a worker reads it and as a Trigger carries it. */
+export interface QqSavedAttachment { path: string; kind: 'image' | 'file'; name: string; mime: string; bytes: number }
+/** Why a message whose attachments could not be received became no Trigger; the Source counts it in the instance's health. */
+export type QqAttachmentSkip = 'attachment-count' | 'attachment-unavailable' | 'attachment-too-large'
+  | 'attachment-untrusted' | 'attachment-download-failed'
+/** How one received message fetches its attachments; the watch loop leaves every default in place. */
+export interface QqReceiveOptions {
+  fetchImpl?: typeof fetch
+  signal?: AbortSignal
+}
+
+/** A short stable hash, so a sanitized path segment or file name stays unique. */
+const shortHash = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 8)
+/**
+ * One safe path segment: only `[A-Za-z0-9._-]`, never `.` or `..`. A value that had to change keeps a short hash, so two
+ * native ids that sanitize alike cannot share one directory.
+ */
+function safeSegment(value: string, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  const cleaned = text.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.\-]+|[.\-]+$/g, '')
+  const usable = cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned.slice(0, 96) : ''
+  if (!usable) return fallback
+  return usable === text ? usable : `${usable}-${shortHash(text)}`
+}
+/** Whether `path` resolves inside `stateDir`; a path that escapes it is never written or kept. */
+function withinStateDir(stateDir: string, path: string): boolean {
+  const inside = relative(resolve(stateDir), resolve(path))
+  return !!inside && !inside.startsWith('..') && !isAbsolute(inside)
+}
+/** The directory one message's attachments are saved in: `<stateDir>/area/attachments/qq/<instance>/<messageId>`. */
+export function qqAttachmentDirectory(stateDir: string, instance: string, messageId: string): string {
+  const directory = join(resolve(stateDir), 'area', 'attachments', 'qq', safeSegment(instance, 'instance'),
+    safeSegment(messageId, 'message'))
+  if (!withinStateDir(stateDir, directory)) throw new Error('The QQ attachment directory escapes the state directory')
+  return directory
+}
+/** The file name an attachment is saved as: only `[A-Za-z0-9._-]`, never a path, never `.` or `..`. */
+function safeFileName(value: string, fallback: string): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  const cleaned = text.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.\-]+|[.\-]+$/g, '')
+  const usable = cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned.slice(0, 120) : ''
+  return usable || fallback
+}
+/** The extension a picture is saved under; a Content-Type beyond the four QQ sends is kept as raw bytes. */
+const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = { 'image/png': '.png', 'image/jpeg': '.jpg',
+  'image/webp': '.webp', 'image/gif': '.gif' }
+/** A name made unique among the files already saved for one message; the second `image.png` becomes `image-1.png`. */
+function uniqueFileName(name: string, used: Set<string>): string {
+  if (!used.has(name)) { used.add(name); return name }
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const extension = dot > 0 ? name.slice(dot) : ''
+  for (let index = 1; ; index += 1) {
+    const candidate = `${stem}-${index}${extension}`
+    if (!used.has(candidate)) { used.add(candidate); return candidate }
+  }
+}
+/** The file name one downloaded attachment is saved as: a picture by Content-Type, a file by the name QQ sent. */
+function attachmentFileName(ref: QqAttachmentRef, name: string, mime: string, messageId: string,
+  used: Set<string>): string {
+  const base = ref.kind === 'image' ? `image${IMAGE_EXTENSIONS[mime] ?? '.bin'}`
+    : safeFileName(name, `file-${safeSegment(messageId, 'message')}`)
+  return uniqueFileName(base, used)
+}
+/** The receipt one failed attachment fetch becomes, as the instance's health counts it. */
+function attachmentSkipOf(error: unknown): QqAttachmentSkip {
+  if (error instanceof QqAttachmentError) {
+    if (error.code === 'too-large') return 'attachment-too-large'
+    if (error.code === 'untrusted-url') return 'attachment-untrusted'
+    if (error.code === 'unavailable') return 'attachment-unavailable'
+  }
+  return 'attachment-download-failed'
+}
+/**
+ * Fetches and saves every attachment of one message under `<stateDir>/area/attachments/qq/<instance>/<messageId>/`.
+ * A message with more than five attachments, an attachment without a download address, a failed or oversized download and
+ * an address outside QQ's media hosts all make the message no work: the directory is removed again and the reason is
+ * returned for the instance's health, so the Source never opens a Ticket that silently misses a file.
+ */
+async function saveQqAttachments(stateDir: string, instance: string, message: QqMessage,
+  options: QqReceiveOptions): Promise<{ attachments: QqSavedAttachment[] } | { skipped: QqAttachmentSkip }> {
+  const refs = message.attachments
+  if (!refs.length) return { attachments: [] }
+  if (refs.length > QQ_ATTACHMENTS_PER_MESSAGE) return { skipped: 'attachment-count' }
+  if (refs.some(ref => !ref.url)) return { skipped: 'attachment-unavailable' }
+  const directory = qqAttachmentDirectory(stateDir, instance, message.messageId)
+  const saved: QqSavedAttachment[] = []
+  const used = new Set<string>()
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    for (const ref of refs) {
+      const file = await downloadQqAttachment({ attachment: ref,
+        ...options.fetchImpl ? { fetchImpl: options.fetchImpl } : {},
+        ...options.signal ? { signal: options.signal } : {} })
+      const name = attachmentFileName(ref, file.name, file.mime, message.messageId, used)
+      const path = join(directory, name)
+      if (!withinStateDir(stateDir, path)) throw new Error('The QQ attachment path escapes the state directory')
+      await writeFile(path, file.data, { mode: 0o600 })
+      saved.push({ path, kind: ref.kind, name, mime: file.mime, bytes: file.data.byteLength })
+    }
+    return { attachments: saved }
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+    if (options.signal?.aborted) throw error
+    return { skipped: attachmentSkipOf(error) }
+  }
+}
+/** The text a Trigger carries: the original text (when there is one) plus one line per saved attachment with its path. */
+function triggerTextOf(text: string, attachments: readonly QqSavedAttachment[]): string {
+  if (!attachments.length) return text.slice(0, QQ_TEXT_CHARS)
+  const lines = attachments.map((attachment, index) => index === 0 && !text.trim()
+    ? `收到图片/文件：${attachment.path}`
+    : `附件：${attachment.path}（${attachment.kind}/${attachment.mime}）`)
+  const block = lines.join('\n')
+  const original = text.trim()
+  // A long message text is cut so that every attachment path survives: the worker needs the paths more than the tail.
+  const room = QQ_TEXT_CHARS - block.length - 1
+  if (!original || room <= 0) return block.slice(0, QQ_TEXT_CHARS)
+  return `${original.slice(0, room)}\n${block}`
+}
+
+/**
+ * The Trigger of one QQ message on its instance: the thread is the direct chat's user openid or the group's openid, and
+ * the text names every attachment the Source saved for the worker (its absolute path plus kind and MIME type).
+ * `meta.attachments` carries the same files as data, so an adapter can read them without parsing the text.
+ */
+export function qqTrigger(message: QqMessage, instance: string, config: QqConfig,
+  attachments: readonly QqSavedAttachment[] = []): Trigger {
   const group = message.kind === 'group'
   const thread = message.conversationId
   const at = message.createdAt || new Date().toISOString()
@@ -81,27 +215,37 @@ export function qqTrigger(message: QqMessage, instance: string, config: QqConfig
     human: true,
     addressed: group ? 'mention' : 'direct',
     at,
-    text: message.text.slice(0, QQ_TEXT_CHARS),
+    text: triggerTextOf(message.text, attachments),
     channel: { source: instance, thread: `${instance}:${thread}`, address },
     meta: { row: instance, conversationType: group ? 'group' : 'direct', conversationId: message.conversationId,
       groupId: group ? message.groupId : '', userId: message.senderId, senderId: message.senderId,
       senderNick: message.senderNick, messageId: message.messageId, msgId: message.messageId, eventId: message.messageId,
-      sandbox: config.sandbox, addressed: true },
+      sandbox: config.sandbox, addressed: true,
+      ...attachments.length ? { attachments: attachments.map(attachment => ({ ...attachment })) } : {} },
   }
 }
 /** The name one conversation shows for itself, or its id. */
 const conversationLabel = (message: QqMessage): string => message.kind === 'group'
   ? `QQ group ${message.groupId}`
   : message.senderNick || message.senderId
-/** What receiving one message did. */
-export type QqReceipt = 'received' | 'duplicate' | 'filtered' | 'not-allowed'
+/** What receiving one message did; an attachment skip names why the message became no Trigger. */
+export type QqReceipt = 'received' | 'duplicate' | 'filtered' | 'not-allowed' | QqAttachmentSkip
 /**
  * Turns one normalized message into a Trigger and hands it to the Engine: the allow-list filter of this instance drops a
- * sender it does not name, and a message whose Trigger the Engine already holds is a duplicate rather than an error.
+ * sender it does not name, its attachments are fetched first (a message whose files cannot be received becomes no Trigger
+ * and is counted in the instance's health), and a message whose Trigger the Engine already holds is a duplicate, not an
+ * error.
  */
-export async function receiveQq(ctx: SourceContext, instance: string, config: QqConfig, message: QqMessage): Promise<QqReceipt> {
+export async function receiveQq(ctx: SourceContext, instance: string, config: QqConfig, message: QqMessage,
+  options: QqReceiveOptions = {}): Promise<QqReceipt> {
   if (config.allowedUserIds.length && !config.allowedUserIds.includes(message.senderId)) return 'not-allowed'
-  const trigger = qqTrigger(message, instance, config)
+  let attachments: QqSavedAttachment[] = []
+  if (message.attachments.length) {
+    const outcome = await saveQqAttachments(ctx.deployment.stateDir, instance, message, options)
+    if ('skipped' in outcome) return outcome.skipped
+    attachments = outcome.attachments
+  }
+  const trigger = qqTrigger(message, instance, config, attachments)
   const result = await ctx.receive(trigger)
   ctx.threads.describe(threadKey(trigger.threads[0]!), { label: conversationLabel(message), facts: {
     conversation: { label: { zh: '会话', en: 'Conversation' },
@@ -131,8 +275,8 @@ export const qqKind: SourceKind<QqConfig> = {
   kind: 'qq',
   order: 3,
   title: { zh: 'QQ', en: 'QQ' },
-  description: { zh: '接收 QQ 开放平台机器人收到的私聊与群 @ 消息，并回到原会话；长连接（WebSocket 网关），不需要公网回调地址。',
-    en: 'Receives the direct messages and group mentions of a QQ open-platform bot and replies in the same conversation over the bot gateway\'s WebSocket; no public callback URL is needed.' },
+  description: { zh: '接收 QQ 开放平台机器人收到的私聊与群 @ 消息（文字、图片、文件），并回到原会话；长连接（WebSocket 网关），不需要公网回调地址。',
+    en: 'Receives the direct messages and group mentions of a QQ open-platform bot — text, pictures and files — and replies in the same conversation over the bot gateway\'s WebSocket; no public callback URL is needed.' },
   schema: ConfigSchema,
   fields,
   health: ['qq'],
@@ -216,6 +360,8 @@ function connectedText(counters: QqCounters): string {
 /** One connection's options, as the caller injected them; every field has a production default. */
 export interface QqWatchOptions {
   botFactory?: QqBotFactory
+  /** The `fetch` attachment downloads use; tests inject a fake, production takes the global one. */
+  fetchImpl?: typeof fetch
   /** How long one gateway handshake may take before the attempt counts as failed. */
   connectTimeoutMs?: number
   /** The waits after consecutive failed attempts; tests shorten them. */
@@ -253,7 +399,8 @@ async function runQqInstance(ctx: SourceContext, id: string, config: QqConfig, s
       ...options.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: options.connectTimeoutMs },
       onMessage: async message => {
         try {
-          const receipt = await receiveQq(ctx, id, config, message)
+          const receipt = await receiveQq(ctx, id, config, message,
+            options.fetchImpl ? { fetchImpl: options.fetchImpl } : {})
           if (receipt === 'received') counters.received += 1
           else if (receipt === 'duplicate') counters.duplicates += 1
           else counter(receipt)

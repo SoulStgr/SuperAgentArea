@@ -32,13 +32,14 @@ mechanisms.
 | `src/channels/qq/qq-controller.mjs` | `src/sources/im/qq-transport.ts` (`QqConnection`, `sendQqReply`) | The send path over the connected bot: `msg_id` and `msg_seq` on a passive reply, `markdownSupport: false` for the bot client, and the credential-free failure classification. The QR sign-in, credential store, workspace state and rename/delete flows are deliberately **not** part of this adaptation |
 | `src/channels/qq/markdown-reply.mjs` | `src/sources/im/qq-transport.ts` (`sendQqPiece`, `sendQqReply`, `QQ_PASSIVE_REPLY_LIMIT`, `QQ_MARKDOWN_REJECTION_CODES`) | Markdown (`msg_type=2`) first and plain text (`msg_type=0`) on a definite markdown rejection, the passive reply budget of 4 direct / 5 group messages per inbound `msg_id`, and the rule that an uncertain delivery is never retried as a second transport |
 | `src/channels/qq/qq-mention.mjs` | `src/sources/im/qq-transport.ts` (`addressedToBot`, `withoutSelfMention`, `normalizeQqInbound`, `qqMention`) | The group @-message decision from the raw event type, an `is_you` mention or an inline `<@id>` marker, learning the bot's own ids from READY, and stripping only the bot's own mention markers from the content |
+| `src/channels/qq/qq-bridge.mjs` | `src/sources/im/qq-transport.ts` (`attachmentsOf`, `attachmentOf`, `trustedQqDownloadUrl`, `downloadQqAttachment`, `QQ_DOWNLOAD_HOSTS`, `QQ_IMAGE_FILENAME`) and `src/sources/qq.ts` (`saveQqAttachments`, `qqTrigger`) | The inbound attachment fields (`url`, `filename`, `content_type`/`contentType`, `size`), the rule that an `image/` Content-Type or a `.gif`/`.jpg`/`.jpeg`/`.png`/`.webp` file name makes a picture and anything else a file, the media host list (`myqcloud.com`, `qpic.cn`, `qq.com`, `qq.com.cn`, `tencentcos.com`, `ugcimg.cn`), the protocol-relative address completion and the file-buffer download. This repository adds its own HTTPS-only media-host check, redirect refusal, 30 s timeout and 20 MiB cap; the saving layout under the state directory, the path and file-name sanitization, the size and count limits, the Trigger text lines and `meta.attachments` are its own |
 | `src/channels/shared/markdown-chunks.mjs` | `src/sources/im/qq-transport.ts` (`splitQqText`) | Line-break-aware text splitting for a reply longer than one QQ message |
 
-Not adapted and not copied: `qq-bridge.mjs`, `qq-menu.mjs`, `config-store.mjs`, `state-store.mjs`, `qr-auth.mjs`,
-`state-error.mjs`, `harness-client.mjs`, and every file under `src/channels/shared/`. Session binding, commands, approvals,
-workspaces, deferred delivery and artifact delivery stay this repository's own Ticket, Outbox and Source mechanisms; the
-QR-code sign-in and AppSecret provisioning of dsh-im are replaced by the credentials a person enters in this installation's
-settings.
+Not adapted and not copied: the session, queue and artifact-delivery parts of `qq-bridge.mjs`, `qq-menu.mjs`, `config-store.mjs`,
+`state-store.mjs`, `qr-auth.mjs`, `state-error.mjs`, `harness-client.mjs`, and every file under `src/channels/shared/`. Session
+binding, commands, approvals, workspaces, deferred delivery and artifact delivery stay this repository's own Ticket, Outbox
+and Source mechanisms; the QR-code sign-in and AppSecret provisioning of dsh-im are replaced by the credentials a person
+enters in this installation's settings.
 
 ### WeChat (iLink)
 
