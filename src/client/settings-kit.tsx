@@ -237,6 +237,8 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
     </li>)}</ul>}
   </div>
 }
+/** Text fields whose value is a credential render as password inputs, so a secret is not readable on screen. */
+const SECRET_FIELD = /(?:secret|token|password|passwd|apikey|aeskey)/i
 export function SourceField({ field, value, saved, fact, onChange, labels, refreshLabels }: {
   field: FieldSpec; value: unknown; saved: unknown; fact: Localized | string | undefined; onChange: (next: unknown) => void
   labels: Record<string, string>
@@ -262,6 +264,7 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
           {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
         </select>
         : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
+          type={SECRET_FIELD.test(field.key) ? 'password' : undefined} autoComplete="off"
           onChange={event => onChange(event.target.value)} />}
     </Field>
     case 'fact': return <div className="dt-field">

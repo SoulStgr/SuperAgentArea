@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "dsh-superagent",
   "author": "DeepSeek Harness Team <team@dsh.dev>",
   "license": "MIT",
@@ -18,6 +18,7 @@
     "./feishu-watch": "./lib/feishu-watch.js",
     "./folder-watch": "./lib/folder-watch.js",
     "./remote-watch": "./lib/remote-watch.js",
+    "./dingtalk-watch": "./lib/dingtalk-watch.js",
     "./connectors": "./lib/connectors.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
@@ -27,6 +28,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "README.md",
+    "THIRD_PARTY_NOTICES.md",
     "prompts",
     "skills"
   ],
@@ -59,6 +61,7 @@
   },
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
+    "dingtalk-stream": "2.1.4",
     "proper-lockfile": "4.1.2",
     "zod": "4.4.3"
   },

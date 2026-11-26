@@ -1,8 +1,8 @@
 /**
- * Placeholder Source kinds for the eleven-kind catalog: Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email are listed
- * so a person can create and keep their accounts now, while each kind only validates and stores its credentials. None of
- * them watches anything, has a Channel, or reports health beyond the fixed paused "coming soon" state the Source views give
- * a placeholder kind's instances.
+ * Placeholder Source kinds for the eleven-kind catalog: Gitee, WeChat, QQ, Telegram, WeCom app and Email are listed so a
+ * person can create and keep their accounts now, while each kind only validates and stores its credentials. None of them
+ * watches anything, has a Channel, or reports health beyond the fixed paused "coming soon" state the Source views give a
+ * placeholder kind's instances.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
@@ -39,18 +39,6 @@ const wechatKind = placeholderKind({
   description: { zh: '接收微信机器人的消息（凭据与扫码方式随接入提供，开发中）。', en: 'Receives a WeChat bot\'s messages; credentials and sign-in arrive with the connection (coming soon).' },
   schema: WechatConfig,
   fields: [credential('appId', { zh: '应用 ID', en: 'App ID' }), credential('appSecret', { zh: '应用密钥', en: 'App secret' })],
-})
-
-const DingtalkConfig = z.object({ clientId: secret, clientSecret: secret, robotCode: secret }).strict()
-const dingtalkKind = placeholderKind({
-  kind: 'dingtalk',
-  order: 4,
-  title: { zh: '钉钉', en: 'DingTalk' },
-  description: { zh: '接收钉钉机器人所在群的消息（接入开发中）。', en: 'Receives messages in the DingTalk groups a robot belongs to (coming soon).' },
-  schema: DingtalkConfig,
-  fields: [credential('clientId', { zh: 'Client ID', en: 'Client ID' }),
-    credential('clientSecret', { zh: 'Client Secret', en: 'Client secret' }),
-    credential('robotCode', { zh: '机器人代码', en: 'Robot code' })],
 })
 
 const QqConfig = z.object({ appId: secret, appSecret: secret }).strict()
@@ -96,12 +84,12 @@ const emailKind = placeholderKind({
     credential('user', { zh: '邮箱地址', en: 'Mailbox address' }), credential('secret', { zh: '密码或授权码', en: 'Password or app password' })],
 })
 
-/** The seven placeholder kinds, in the catalog order of plan/23: Gitee, WeChat, DingTalk, QQ, Telegram, WeCom app and Email. */
-export const connectorKinds = [giteeKind, wechatKind, dingtalkKind, qqKind, telegramKind, wecomKind, emailKind] as unknown as SourceKind[]
+/** The six placeholder kinds, in the catalog order of plan/23: Gitee, WeChat, QQ, Telegram, WeCom app and Email. */
+export const connectorKinds = [giteeKind, wechatKind, qqKind, telegramKind, wecomKind, emailKind] as unknown as SourceKind[]
 
 export const name = 'dsh-superagent-connectors'
 export const inject = ['orchestrator']
-/** Registers each placeholder kind, so the catalog lists eleven kinds while only folder, remote, GitHub and Feishu receive work. */
+/** Registers each placeholder kind, so the catalog lists eleven kinds while only folder, remote, GitHub, Feishu and DingTalk receive work. */
 export function apply(ctx: Context): void {
   for (const kind of connectorKinds) {
     ctx.effect(() => ctx.orchestrator.sources.register(kind), `${kind.kind}: placeholder source kind`)

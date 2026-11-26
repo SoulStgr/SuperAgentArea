@@ -7,6 +7,7 @@ import { Store } from '../src/app/store.ts'
 import { sourcesStatus } from '../src/app/views/sources.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { connectorKinds } from '../src/sources/connectors.ts'
+import { dingtalkKind } from '../src/sources/dingtalk.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { folderKind } from '../src/sources/folder.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -32,8 +33,8 @@ afterEach(() => {
 const links = () => ({ url: '', label: { zh: '', en: '' } })
 
 describe('placeholder Source kinds', () => {
-  it('declares seven coming-soon kinds with both languages, credential fields, a parseable schema and no loops', () => {
-    expect(connectorKinds.map(kind => kind.kind)).toEqual(['gitee', 'wechat', 'dingtalk', 'qq', 'telegram', 'wecom', 'email'])
+  it('declares six coming-soon kinds with both languages, credential fields, a parseable schema and no loops', () => {
+    expect(connectorKinds.map(kind => kind.kind)).toEqual(['gitee', 'wechat', 'qq', 'telegram', 'wecom', 'email'])
     for (const kind of connectorKinds) {
       expect(kind.placeholder, kind.kind).toBe(true)
       expect(kind.health).toEqual([kind.kind])
@@ -48,19 +49,21 @@ describe('placeholder Source kinds', () => {
       expect(kind.threadContext, kind.kind).toBeUndefined()
     }
   })
-  it('offers the eleven kinds in the catalog, in plan order, marking the seven placeholders', () => {
+  it('offers the eleven kinds in the catalog, in plan order, marking the six placeholders', () => {
     const store = storeOf()
     const sources = new SourceRegistry(() => store.settings())
-    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
+    for (const kind of [feishuKind, githubKind, folderKind, remoteKind, dingtalkKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
     const catalog = sources.catalog()
     expect(catalog.map(kind => kind.kind))
       .toEqual(['folder', 'remote', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
     expect(catalog.filter(kind => kind.placeholder).map(kind => kind.kind))
-      .toEqual(['qq', 'dingtalk', 'wechat', 'wecom', 'email', 'gitee', 'telegram'])
+      .toEqual(['qq', 'wechat', 'wecom', 'email', 'gitee', 'telegram'])
     // The implemented kinds stay non-placeholder and keep their form defaults.
     expect(catalog.find(kind => kind.kind === 'folder')).toMatchObject({ placeholder: false, defaults: { pollSeconds: 10 } })
     expect(catalog.find(kind => kind.kind === 'remote'))
       .toMatchObject({ placeholder: false, defaults: { port: 22, pollSeconds: 30, maxFileBytes: 1048576 } })
+    expect(catalog.find(kind => kind.kind === 'dingtalk')).toMatchObject({ placeholder: false,
+      defaults: { clientId: '', clientSecret: '', robotCode: '', allowedUserIds: [] } })
   })
   it('shows a placeholder account as paused and coming soon, while its kind receives nothing', () => {
     const settings = SettingsSchema.parse({ sources: {

@@ -144,11 +144,11 @@ it('lists the eleven Source types with their account counts and coming-soon mark
   await mount()
   await open_group(zh['settingsGroup.sources'])
   expect(all('.dt-source-kind .dt-source-kind-name').map(item => item.textContent)).toEqual(['飞书', 'GitHub', '本地文件夹', '远程文件夹',
-    'Gitee', '微信', '钉钉', 'QQ', 'Telegram', '企业微信应用', '邮箱'])
-  // The two configured accounts are counted under their types; the seven types still being built carry the mark.
+    '钉钉', 'Gitee', '微信', 'QQ', 'Telegram', '企业微信应用', '邮箱'])
+  // The two configured accounts are counted under their types; the six types still being built carry the mark.
   expect(all('.dt-source-kind').map(button => button.querySelector('.dt-count')?.textContent)).toEqual(['1', '1', '0', '0', '0', '0',
     '0', '0', '0', '0', '0'])
-  expect(all('.dt-source-kind .dt-tag').map(tag => tag.textContent)).toEqual(Array(7).fill(zh.sourceComingSoonTag))
+  expect(all('.dt-source-kind .dt-tag').map(tag => tag.textContent)).toEqual(Array(6).fill(zh.sourceComingSoonTag))
   // The selected type is Feishu: its account shows its settings summary, and an implemented type offers its Policy and prompts.
   expect(all('.dt-source-account')).toHaveLength(1)
   expect(all('.dt-source-account')[0]!.textContent).toContain(zh.sourceAccountOn)
