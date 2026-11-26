@@ -90,6 +90,8 @@ export interface TriggerContext {
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
   /** Stable ID; old data may name the bare kind for the kind's one instance, which `instanceFor` still resolves. */
   kind: string
+  /** Position of the kind in the catalog and the Settings type list; smaller first, `undefined` after the numbered ones. */
+  order?: number
   /** The kind is listed and its accounts may be configured, but it receives nothing yet: its instances report `paused`. */
   placeholder?: true
   title: Localized

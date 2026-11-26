@@ -2061,7 +2061,7 @@ it('serves one card per Source instance, an instance\'s page, added Sources and 
     expect((tickets.body as { items: { id: string }[] }).items.map(item => item.id).sort()).toEqual(['t-new', 't-old'])
   }
   expect(await api('GET', 'sources/folder:gone')).toMatchObject({ status: 404, body: { code: 'unknownSource' } })
-  expect((await api('GET', 'source-kinds')).body).toMatchObject([{ kind: 'feishu' }, { kind: 'folder' }, { kind: 'github' }])
+  expect((await api('GET', 'source-kinds')).body).toMatchObject([{ kind: 'folder' }, { kind: 'feishu' }, { kind: 'github' }])
   // A person adds a folder Source: its key names it beside the existing instance, and it listens at once.
   const created = await api('POST', 'sources', { kind: 'folder', key: 'Dev Drops', label: '开发投件',
     config: { inbox: path('in-dev'), outbox: path('out-dev'), operator: 'bob', pollSeconds: 10 } })

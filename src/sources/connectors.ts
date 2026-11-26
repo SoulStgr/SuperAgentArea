@@ -15,13 +15,14 @@ const credential = (key: string, label: Localized, hint: Localized = COMING_SOON
 const secret = z.string().trim().default('')
 /** One placeholder kind: its form, its minimal credential schema and its single health entry, named after the kind. */
 function placeholderKind(spec: { kind: string; title: Localized; description: Localized
-  schema: z.ZodType<Record<string, unknown>>; fields: FieldSpec[] }): SourceKind {
+  schema: z.ZodType<Record<string, unknown>>; fields: FieldSpec[]; order?: number }): SourceKind {
   return { ...spec, placeholder: true, health: [spec.kind] }
 }
 
 const GiteeConfig = z.object({ token: secret, repository: secret, apiBase: z.string().trim().default('https://gitee.com/api/v5') }).strict()
 const giteeKind = placeholderKind({
   kind: 'gitee',
+  order: 10,
   title: { zh: 'Gitee', en: 'Gitee' },
   description: { zh: '接收 Gitee 仓库里的 Issue 与 PR 讨论（接入开发中）。', en: 'Receives Issues and pull-request discussion in a Gitee repository (coming soon).' },
   schema: GiteeConfig,
@@ -33,6 +34,7 @@ const giteeKind = placeholderKind({
 const WechatConfig = z.object({ appId: secret, appSecret: secret }).strict()
 const wechatKind = placeholderKind({
   kind: 'wechat',
+  order: 5,
   title: { zh: '微信', en: 'WeChat' },
   description: { zh: '接收微信机器人的消息（凭据与扫码方式随接入提供，开发中）。', en: 'Receives a WeChat bot\'s messages; credentials and sign-in arrive with the connection (coming soon).' },
   schema: WechatConfig,
@@ -42,6 +44,7 @@ const wechatKind = placeholderKind({
 const DingtalkConfig = z.object({ clientId: secret, clientSecret: secret, robotCode: secret }).strict()
 const dingtalkKind = placeholderKind({
   kind: 'dingtalk',
+  order: 4,
   title: { zh: '钉钉', en: 'DingTalk' },
   description: { zh: '接收钉钉机器人所在群的消息（接入开发中）。', en: 'Receives messages in the DingTalk groups a robot belongs to (coming soon).' },
   schema: DingtalkConfig,
@@ -53,6 +56,7 @@ const dingtalkKind = placeholderKind({
 const QqConfig = z.object({ appId: secret, appSecret: secret }).strict()
 const qqKind = placeholderKind({
   kind: 'qq',
+  order: 3,
   title: { zh: 'QQ', en: 'QQ' },
   description: { zh: '接收 QQ 机器人的消息；一个来源项可以配置多个机器人账号（接入开发中）。', en: 'Receives a QQ bot\'s messages; one Source kind can hold several bot accounts (coming soon).' },
   schema: QqConfig,
@@ -62,6 +66,7 @@ const qqKind = placeholderKind({
 const TelegramConfig = z.object({ botToken: secret }).strict()
 const telegramKind = placeholderKind({
   kind: 'telegram',
+  order: 11,
   title: { zh: 'Telegram', en: 'Telegram' },
   description: { zh: '接收 Telegram 机器人的私聊与群消息（接入开发中）。', en: 'Receives a Telegram bot\'s direct and group messages (coming soon).' },
   schema: TelegramConfig,
@@ -71,6 +76,7 @@ const telegramKind = placeholderKind({
 const WecomConfig = z.object({ corpId: secret, agentId: secret, secret: secret, token: secret, aesKey: secret }).strict()
 const wecomKind = placeholderKind({
   kind: 'wecom',
+  order: 6,
   title: { zh: '企业微信应用', en: 'WeCom app' },
   description: { zh: '接收企业微信自建应用的消息回调（接入开发中）。', en: 'Receives the message callback of a WeCom self-built app (coming soon).' },
   schema: WecomConfig,
@@ -82,6 +88,7 @@ const wecomKind = placeholderKind({
 const EmailConfig = z.object({ imapHost: secret, smtpHost: secret, user: secret, secret: secret }).strict()
 const emailKind = placeholderKind({
   kind: 'email',
+  order: 7,
   title: { zh: '邮箱', en: 'Email' },
   description: { zh: '接收发到邮箱的邮件，并以邮件回复（接入开发中）。', en: 'Receives mail sent to a mailbox and replies by mail (coming soon).' },
   schema: EmailConfig,

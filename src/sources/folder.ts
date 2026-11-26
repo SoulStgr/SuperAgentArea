@@ -188,6 +188,7 @@ export async function sendFolder(message: OutboundMessage): Promise<'sent' | 'go
 
 export const folderKind: SourceKind<FolderConfig> = {
   kind: 'folder',
+  order: 1,
   title: { zh: '本地文件夹', en: 'Local folder' },
   description: { zh: '监听收件目录的投件；回复与产物写入交付目录。', en: 'Watches an inbox for drops; replies and artifacts land in its outbox.' },
   schema: ConfigSchema,

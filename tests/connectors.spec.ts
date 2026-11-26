@@ -52,9 +52,9 @@ describe('placeholder Source kinds', () => {
     const sources = new SourceRegistry(() => store.settings())
     for (const kind of [feishuKind, githubKind, folderKind, ...connectorKinds] as SourceKind[]) sources.register(kind)
     const catalog = sources.catalog()
-    expect(catalog.map(kind => kind.kind)).toEqual(['dingtalk', 'email', 'feishu', 'folder', 'gitee', 'github', 'qq', 'telegram', 'wechat', 'wecom'])
+    expect(catalog.map(kind => kind.kind)).toEqual(['folder', 'qq', 'dingtalk', 'wechat', 'wecom', 'email', 'feishu', 'github', 'gitee', 'telegram'])
     expect(catalog.filter(kind => kind.placeholder).map(kind => kind.kind))
-      .toEqual(['dingtalk', 'email', 'gitee', 'qq', 'telegram', 'wechat', 'wecom'])
+      .toEqual(['qq', 'dingtalk', 'wechat', 'wecom', 'email', 'gitee', 'telegram'])
     // The implemented kinds stay non-placeholder and keep their form defaults.
     expect(catalog.find(kind => kind.kind === 'folder')).toMatchObject({ placeholder: false, defaults: { pollSeconds: 10 } })
   })

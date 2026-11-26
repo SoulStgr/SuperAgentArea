@@ -143,11 +143,12 @@ export class SourceRegistry implements SourceScope {
   }
   /** Every installed kind in id order, with the form a new instance of it is configured by, as the panel's add-Source form reads it. */
   catalog(): { kind: string; title: Localized; description: Localized; fields: FieldSpec[]; defaults: Record<string, unknown>; placeholder: boolean }[] {
-    return [...this.kinds.keys()].sort((a, b) => a.localeCompare(b)).map(name => {
-      const kind = this.kinds.get(name)!
-      return { kind: kind.kind, title: kind.title, description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}),
-        placeholder: kind.placeholder === true }
-    })
+    // The panel lists the kinds in this order: the numbered ones first (local folder, remote folder, the IM kinds, mail,
+    // Feishu, the code hosts), then any kind without an `order`, in id order.
+    return [...this.kinds.values()]
+      .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER) || a.kind.localeCompare(b.kind))
+      .map(kind => ({ kind: kind.kind, title: kind.title, description: kind.description, fields: kind.fields,
+        defaults: kind.schema.parse({}), placeholder: kind.placeholder === true }))
   }
   /** One stored instance by id; an old bare kind with no stored instance is not an instance (see `instanceFor`). */
   instance<C extends Record<string, unknown>>(id: string, settings = this.settings()): SourceInstance<C> | undefined {
