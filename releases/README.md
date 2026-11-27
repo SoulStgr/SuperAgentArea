@@ -42,6 +42,7 @@
 | 0.3.18 | 2026-11-26 | `history/dsh-superagent-0.3.18.tgz` | 521,832 | `d03d4434ac195bcf` | `0057b6f` | 删除工作站、删除会话（会话代数）、规则编辑布局、发布包统一入 history |
 | 0.3.19 | 2026-11-26 | `history/dsh-superagent-0.3.19.tgz` | 522,459 | `12f902101815a207` | `7fd5d8d` | 会话直达（Workspace 预建/命名 SAA-工作站名、不再选工作区）、agent 段精简 |
 | 0.3.20 | 2026-11-26 | `history/dsh-superagent-0.3.20.tgz` | 521,499 | `be07ea133079e9c0` | `9b04b4b` | agent 段再精简（移除工单/产物/报告历史，只保留要求与规则） |
+| 0.3.21 | 2026-11-27 | `history/dsh-superagent-0.3.21.tgz` | 522,006 | `aef73cf8e6c9529d` | `ee5ccd4` | 钉钉扫码接入接受 CREATING/PUBLISHING/APPROVING 等中间状态，凭据齐全即建号 |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -247,6 +248,14 @@
 - 测试：更新 panel-workstations（agent 段只断言规则、无工作历史、无工单工作站仍可打开会话）；`pnpm check` 全绿（77 个测试文件 / 1603 项：1589 passed / 14 skipped + build）。
 
 对比 0.3.19：agent 段从「要求与规则 + 历史」精简为「要求与规则」，更聚焦该功能；历史不丢失、只是回到各自归属页面。
+
+### 0.3.21
+
+- **钉钉扫码接入修复**：DingTalk 的设备注册在 `WAITING` 之后还会经过 `CREATING`、`PUBLISHING`，企业开启「应用审批」时还会停在 `APPROVING`；`APPROVING` 阶段凭据（`client_id` / `client_secret`）已经发放。旧实现只认 `SUCCESS`，遇到这些状态直接报 `DingTalk reported an unknown sign-in state` 并失败，于是手机上已选完机器人、面板却显示失败。
+- 现在由 `DingtalkDeviceAuth.poll` 归一化 7 个已知状态，并且**只要两个凭据都返回就携带**；`DingtalkLoginManager` 以凭据齐全判定成功，`WAITING/CREATING/PUBLISHING/APPROVING`、未知状态、以及只返回一半凭据的情况都继续轮询到 TTL，`FAIL`/`EXPIRED` 仍立即终止。企业待审批时账号会先创建，管理员通过后机器人才连上（面板扫码说明已补充）。
+- 测试：中间状态、`APPROVING` + 凭据、未知状态继续等待、半凭据继续等待；`pnpm check` 全绿（77 个测试文件 / 1604 项：1590 passed / 14 skipped + build）。
+
+对比 0.3.20：修复钉钉扫码接入在真实设备注册中间态（尤其 `APPROVING`）下误判失败的问题；扫码后能正常创建并启用账号。
 
 ## 3. 回退与复现
 

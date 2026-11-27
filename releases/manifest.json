@@ -373,6 +373,19 @@
       "stateSchema": 12,
       "architecture": "workstation agent section trimmed to its requirements and rules; work history stays on its own pages",
       "comparison": "The workstation agent section only edits the requirements and rules its conversations and workers follow; the Ticket, artifact and report history it used to list stays on the Execution and Artifacts pages, and the history API remains for callers",
+      "note": "superseded by 0.3.21"
+    },
+    {
+      "version": "0.3.21",
+      "tgz": "history/dsh-superagent-0.3.21.tgz",
+      "bytes": 522006,
+      "sha256": "aef73cf8e6c9529d3f082652f7f1dbb9898191dd52cbcae09bb4e7621a64ab5c",
+      "date": "2026-11-27",
+      "sourceCommit": "ee5ccd4f4011ee6e89a2f510a87504ebe3eba4ca",
+      "recordedCommit": "ee5ccd4f4011ee6e89a2f510a87504ebe3eba4ca",
+      "stateSchema": 12,
+      "architecture": "twelve source kinds; DingTalk scan accepts intermediate registration states",
+      "comparison": "DingTalk QR onboarding accepts the intermediate registration states (CREATING, PUBLISHING, APPROVING) and treats the credentials as issued whenever both are present, so an organization that approves new apps creates its account at APPROVING; unknown states and half-issued credentials keep polling until the attempt's TTL, and the scan hint mentions the admin approval",
       "note": "current latest"
     }
   ]
