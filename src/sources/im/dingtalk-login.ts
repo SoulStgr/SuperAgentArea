@@ -177,11 +177,13 @@ export class DingtalkLoginManager {
         if (this.now() >= session.expiresAt) { session.status = 'expired'; session.deviceCode = ''; return }
         const poll = await auth.poll({ deviceCode: session.deviceCode, signal: session.controller.signal })
         if (session.controller.signal.aborted) return
-        if (poll.status === 'SUCCESS') {
-          const clientId = poll.clientId ?? ''
-          const clientSecret = poll.clientSecret ?? ''
+        // DingTalk issues the credentials once the app exists — including while an organization still has to approve it
+        // (state APPROVING) — so both credentials decide success, not the state's name. Intermediate states (CREATING,
+        // PUBLISHING, APPROVING) are just more waiting, as is a state this version does not know yet.
+        const clientId = poll.clientId ?? ''
+        const clientSecret = poll.clientSecret ?? ''
+        if (clientId && clientSecret) {
           session.deviceCode = ''
-          if (!clientId || !clientSecret) { fail('DingTalk returned an incomplete registration'); return }
           try {
             session.sourceId = await create({ clientId, clientSecret })
             session.status = 'confirmed'
@@ -193,7 +195,8 @@ export class DingtalkLoginManager {
         }
         if (poll.status === 'EXPIRED') { session.status = 'expired'; session.deviceCode = ''; return }
         if (poll.status === 'FAIL') { fail('DingTalk refused the QR sign-in'); return }
-        if (poll.status !== 'WAITING') { fail('DingTalk reported an unknown sign-in state'); return }
+        // WAITING, CREATING, PUBLISHING, APPROVING, an unrecognized state, or a success that has issued only one of the
+        // two credentials: poll again until the attempt's TTL ends.
         session.status = 'waiting'
         if (!await nap(session.pollIntervalMs, session.controller.signal)) return
       }

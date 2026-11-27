@@ -3,8 +3,11 @@
  *
  * A scan starts with `/app/registration/init` (`source: 'DING_DWS_CLAW'`, answering a nonce), then
  * `/app/registration/begin` (`nonce`, answering the `device_code`, the `verification_uri_complete` a person scans, the
- * poll interval and the lifetime), and repeats `/app/registration/poll` (`device_code`) until DingTalk answers WAITING,
- * SUCCESS (with `client_id`/`client_secret`), FAIL or EXPIRED. Every call is a POST to the registration base
+ * poll interval and the lifetime), and repeats `/app/registration/poll` (`device_code`) until credentials are issued or
+ * the registration fails. DingTalk walks through intermediate states — `WAITING`, `CREATING`, `PUBLISHING` and
+ * `APPROVING` (an organization that approves new apps issues the credentials at this state, before its admin approves) —
+ * and answers `SUCCESS`, `FAIL` or `EXPIRED`; credentials are accepted whenever both `client_id` and `client_secret` are
+ * present, because the status name alone changes as DingTalk adds steps. Every call is a POST to the registration base
  * (`https://oapi.dingtalk.com`), never follows a redirect, is bounded to 15 s, and every failure is sanitized: no answer
  * body, nonce, device code or credential appears in an error message.
  *
@@ -20,8 +23,13 @@ export const DINGTALK_REGISTRATION_BASE = 'https://oapi.dingtalk.com'
 export const DINGTALK_REGISTRATION_SOURCE = 'DING_DWS_CLAW'
 /** How long one registration call may take before it is abandoned. */
 export const DINGTALK_REGISTRATION_TIMEOUT_MS = 15_000
-/** The statuses DingTalk's poll answers with; an unrecognized one is reported as `UNKNOWN` and fails the attempt. */
-export const DINGTALK_REGISTRATION_STATUSES = ['WAITING', 'SUCCESS', 'FAIL', 'EXPIRED'] as const
+/**
+ * The registration states DingTalk has answered with so far; `CREATING`, `PUBLISHING` and `APPROVING` are intermediate
+ * steps before success, and an unrecognized one is reported as `UNKNOWN` while the attempt keeps waiting. Credentials
+ * decide success, not the state name.
+ */
+export const DINGTALK_REGISTRATION_STATUSES = ['WAITING', 'CREATING', 'PUBLISHING', 'APPROVING', 'SUCCESS', 'FAIL',
+  'EXPIRED'] as const
 export type DingtalkRegistrationStatus = typeof DINGTALK_REGISTRATION_STATUSES[number] | 'UNKNOWN'
 /** The kinds of failure a device-registration call can have; never carries an answer body or a credential. */
 export type DingtalkDeviceAuthFailure = 'invalid-route' | 'network-error' | 'timeout' | 'http-error' | 'invalid-json'
@@ -152,7 +160,7 @@ export class DingtalkDeviceAuth {
     }
   }
 
-  /** Polls one registration; on SUCCESS it carries the provisioned Client ID and Secret, nowhere else. */
+  /** Polls one registration; whenever DingTalk has issued both credentials they are carried, whatever the state's name. */
   async poll(request: { deviceCode: string; signal?: AbortSignal }): Promise<DingtalkRegistrationPoll> {
     const deviceCode = nonEmpty(request?.deviceCode)
     if (!deviceCode) throw new TypeError('deviceCode is required')

@@ -78,14 +78,22 @@ describe('the device registration client', () => {
     expect(() => new DingtalkDeviceAuth({ fetchImpl, baseUrl: 'https://evil.example' })).toThrow(/HTTPS DingTalk URL/)
     expect(() => new DingtalkDeviceAuth({ fetchImpl, timeoutMs: 0 })).toThrow(TypeError)
   })
-  it('polls a registration and normalizes its four states and the provisioned credentials', async () => {
-    const responses: unknown[] = [{ status: 'WAITING' }, { status: 'SUCCESS', client_id: 'client-1', client_secret: 'secret-1' },
-      { status: 'FAIL', fail_reason: 'denied' }, { status: 'EXPIRED' }, { status: 'what' }]
+  it('normalizes the registration states and carries credentials whenever DingTalk has issued them', async () => {
+    const responses: unknown[] = [{ status: 'WAITING' }, { status: 'CREATING' }, { status: 'PUBLISHING' },
+      { status: 'APPROVING' }, { status: 'APPROVING', client_id: 'client-1', client_secret: 'secret-1' },
+      { status: 'SUCCESS', client_id: 'client-2', client_secret: 'secret-2' }, { status: 'FAIL', fail_reason: 'denied' },
+      { status: 'EXPIRED' }, { status: 'what' }]
     const { fetchImpl, calls } = fakeFetch(() => json(responses.shift()))
     const auth = new DingtalkDeviceAuth({ fetchImpl })
     expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'WAITING' })
-    expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'SUCCESS', clientId: 'client-1',
+    expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'CREATING' })
+    expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'PUBLISHING' })
+    expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'APPROVING' })
+    // An organization that approves new apps issues the credentials while the app waits for its admin.
+    expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'APPROVING', clientId: 'client-1',
       clientSecret: 'secret-1' })
+    expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'SUCCESS', clientId: 'client-2',
+      clientSecret: 'secret-2' })
     expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'FAIL', failReason: 'denied' })
     expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'EXPIRED' })
     expect(await auth.poll({ deviceCode: 'dev-1' })).toEqual({ status: 'UNKNOWN' })
@@ -126,8 +134,9 @@ describe('the login manager', () => {
       return 'dingtalk'
     }
   it('creates the account once a scanned registration is confirmed, and never returns its secret', async () => {
-    const { fetchImpl } = registration([{ errcode: 0, status: 'WAITING' },
-      { errcode: 0, status: 'SUCCESS', client_id: 'client-1', client_secret: 'secret-1' }])
+    const { fetchImpl } = registration([{ errcode: 0, status: 'WAITING' }, { errcode: 0, status: 'CREATING' },
+      { errcode: 0, status: 'PUBLISHING' },
+      { errcode: 0, status: 'APPROVING', client_id: 'client-1', client_secret: 'secret-1' }])
     const settings = settingsOf()
     const manager = new DingtalkLoginManager({ fetchImpl, pollIntervalMs: 1,
       renderQr: async content => `rendered:${content}` })
@@ -146,6 +155,20 @@ describe('the login manager', () => {
       expect(JSON.stringify(manager.poll(started.loginId))).not.toContain('secret-1')
       // Only the newest attempt is readable; an unknown attempt reads expired.
       expect(manager.poll('unknown')).toEqual({ status: 'expired' })
+    } finally { manager.clear() }
+  })
+  it('keeps waiting through a state this version does not know, or a half-issued credential, until both arrive', async () => {
+    const { fetchImpl } = registration([{ errcode: 0, status: 'BRAND_NEW' },
+      { errcode: 0, status: 'SUCCESS', client_id: 'client-1' },
+      { errcode: 0, status: 'APPROVING', client_id: 'client-1', client_secret: 'secret-1' }])
+    const settings = settingsOf()
+    const manager = new DingtalkLoginManager({ fetchImpl, pollIntervalMs: 1, renderQr: async () => 'rendered' })
+    try {
+      const attempt = await manager.start({ create: createIn(settings) })
+      // Neither an unrecognized state nor a sole credential fails the scan; the next poll carries both.
+      await vi.waitFor(() => expect(manager.poll(attempt.loginId))
+        .toMatchObject({ status: 'confirmed', sourceId: 'dingtalk' }))
+      expect(settings.sources.dingtalk).toMatchObject({ config: { clientId: 'client-1', clientSecret: 'secret-1' } })
     } finally { manager.clear() }
   })
   it('keeps one attempt at a time: a new scan supersedes the previous one as expired', async () => {
