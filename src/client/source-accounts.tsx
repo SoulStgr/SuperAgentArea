@@ -54,6 +54,15 @@ export function SourceConfigForm({ source, reload }: { source: SourceDetailView;
   })
   const value = draft.value
   const label = typeof value.label === 'string' ? value.label : ''
+  const targets = source.deliveryTargets ?? []
+  const savedTarget = source.value.reportTo
+  const targetId = savedTarget ? targets.find(target => target.source === savedTarget.source && target.thread === savedTarget.thread
+    && JSON.stringify(target.address) === JSON.stringify(savedTarget.address))?.id : undefined
+  const chooseTarget = (id: string) => {
+    const target = targets.find(item => item.id === id)
+    // `null` asks the server to clear the saved target; an absent field would keep it.
+    draft.edit({ ...value, reportTo: target ? { source: target.source, thread: target.thread, address: target.address } : null } as typeof value)
+  }
   const changed = (key: string) => String(value.config[key] ?? '') !== String(source.value.config[key] ?? '')
   const restarts = draft.dirty && source.restarts.some(changed)
   const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
@@ -71,6 +80,13 @@ export function SourceConfigForm({ source, reload }: { source: SourceDetailView;
         <Input value={label} maxLength={100} spellCheck={false} placeholder={localized(t, source.title)}
           onChange={event => draft.edit({ ...value, label: event.target.value })} />
       </Field>
+      {source.kind === 'web' && <Field label={t('sourceReportTo')} hint={t('sourceReportToHint')}
+        note={savedTarget && !targetId ? t('sourceReportToMissing') : undefined}>
+        <select className="dt-select" value={targetId ?? ''} onChange={event => chooseTarget(event.target.value)}>
+          <option value="">{t('sourceReportToNone')}</option>
+          {targets.map(target => <option key={target.id} value={target.id}>{localized(t, target.label)}</option>)}
+        </select>
+      </Field>}
       {source.fields.filter(spec => !spec.advanced).map(field)}
       {advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}><div className="dt-disclosure-body">{advanced.map(field)}</div></DisclosureRow>}

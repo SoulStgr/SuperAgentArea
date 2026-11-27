@@ -1,7 +1,7 @@
 /** Shared base class and configuration for Engine domain parts. */
 import { UserError } from './errors.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
-import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
+import type { ChannelRef, Thread, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, People, Policy, Repositories, SourceScope } from './ports.ts'
 
 export interface EngineOptions {
@@ -14,6 +14,11 @@ export interface EngineOptions {
   outbox: Outbox
   /** The people a Source knows and how its conversations mention one; a host without it mentions nobody. */
   people?: People
+  /**
+   * The extra conversation a Ticket's result is delivered to, such as a monitored web Source's report target. The
+   * source result still goes to the Ticket's own Channel; a target equal to it is not sent twice.
+   */
+  reportTarget?: (ticket: Ticket) => ChannelRef | undefined
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
   now?: () => string
   emit?: (event: DomainEvent) => void

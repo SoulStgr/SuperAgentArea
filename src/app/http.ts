@@ -17,7 +17,7 @@ import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
-import type { ProjectService } from './project-service.ts'
+import { ProjectLocationInput, type ProjectService } from './project-service.ts'
 import type { Sessions } from './sessions.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
@@ -207,18 +207,14 @@ const SourcePatchRequest = z.object({ enabled: z.boolean().optional(), label: z.
 export function instanceKey(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
 }
-const ProjectLocationInput = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('managed') }).strict(),
-  z.object({ type: z.literal('folder'), path: z.string().trim().min(1) }).strict(),
-  z.object({ type: z.literal('repo'), path: z.string().trim().min(1).optional(), url: z.string().trim().min(1).optional(),
-    branch: z.string().trim().max(200).optional() }).strict(),
-])
-/** A person's answer to a Trigger's Project question: an existing Project, a new one, or the assessment's proposal confirmed. */
+/** A person's answer to a Trigger's Project question: an existing Project, a new one, the assessment's proposal confirmed, or
+ * the built-in workspace for temporary work. */
 const AnswerProjectRequest = z.union([
   z.object({ projectId: z.string().trim().min(1) }).strict(),
   z.object({ new: z.object({ name: z.string().trim().min(1).max(100), location: ProjectLocationInput,
     kind: z.enum(['station', 'adhoc']).optional() }).strict() }).strict(),
   z.object({ confirmProposal: z.literal(true) }).strict(),
+  z.object({ workspace: z.literal(true) }).strict(),
 ])
 /** The panel's new-workstation form: a name, an address, and the kind of Project it makes. */
 const NewProjectRequest = z.object({ name: z.string().trim().min(1).max(100), location: ProjectLocationInput,

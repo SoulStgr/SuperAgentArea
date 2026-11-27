@@ -11,7 +11,7 @@ import { githubKind } from '../src/sources/github.ts'
 import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/views/records.ts'
 import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
-import { droppedReplies, sourceDetail, sourcesStatus } from '../src/app/views/sources.ts'
+import { droppedReplies, deliveryTargets, sourceDetail, sourcesStatus } from '../src/app/views/sources.ts'
 import { projectDecisionList, projectDetail, projectHistory, projectList, projectThreadList, projectTicketList } from '../src/app/views/projects.ts'
 import { artifactDetail, artifactFile, artifactList, recentArtifacts } from '../src/app/views/artifacts.ts'
 import { overview } from '../src/app/views/overview.ts'
@@ -23,6 +23,8 @@ import { feishuChannel, feishuTriggerId } from '../src/sources/feishu-trigger.ts
 import { githubLink } from '../src/sources/github-channel.ts'
 import { githubChannel } from '../src/sources/github-trigger.ts'
 import { artifactRecordId, followupOwners, type ArtifactRecord, type ChannelRef, type ProjectRecord } from '../src/core/index.ts'
+import { dingtalkKind } from '../src/sources/dingtalk.ts'
+import { qqKind } from '../src/sources/qq.ts'
 
 let directory: string
 let store: Store
@@ -635,4 +637,35 @@ it('opens one artifact with its delivery and the chain back to its Ticket, Assig
   // A named Assignment is shown instead of the latest, and a missing one leaves the chain without an Assignment.
   expect(artifactDetail(host, 'a-station', 'as-missing')!.assignment).toBeUndefined()
   expect(artifactDetail(host, 'nope')).toBeUndefined()
+})
+
+it('lists the conversations a monitored Source may deliver results to, stripping reply ids and expiring webhooks', () => {
+  const sources = new SourceRegistry(() => store.settings())
+  sources.register(qqKind); sources.register(dingtalkKind)
+  store.saveSettings(SettingsSchema.parse({ sources: {
+    qq: { kind: 'qq', enabled: true, config: { appId: 'app', appSecret: 'secret' } },
+    dingtalk: { kind: 'dingtalk', enabled: true, config: { clientId: 'client', clientSecret: 'secret', robotCode: 'robot' } } },
+  policy: { rules: [] } }))
+  const receive = (id: string, source: string, thread: string, address: Record<string, string>) => store.triggers.save({
+    id, source, threads: [{ source, id: thread }], actor: { source, id: 'alice' }, human: true, addressed: 'mention',
+    at: new Date().toISOString(), text: id, channel: { source, thread: `${source}:${thread}`, address }, meta: {} })
+  receive('q1', 'qq', 'group-1', { row: 'qq', conversationType: 'group', conversationId: 'group-1', groupId: 'group-1',
+    senderId: 'alice', msgId: 'msg-1', messageId: 'msg-1', eventId: 'msg-1', receivedAt: '1' })
+  receive('q2', 'qq', 'group-1', { row: 'qq', conversationType: 'group', conversationId: 'group-1', groupId: 'group-1',
+    senderId: 'alice', msgId: 'msg-2', messageId: 'msg-2', eventId: 'msg-2', receivedAt: '2' })
+  receive('d1', 'dingtalk', 'conv-1', { row: 'dingtalk', conversationType: 'group', conversationId: 'conv-1',
+    openConversationId: 'open-1', robotCode: 'robot', sessionWebhook: 'https://oapi.dingtalk.com/robot/send?x=1',
+    sessionWebhookExpiresAt: '2026-09-22T00:10:00Z' })
+  const rows = deliveryTargets({ store, sources })
+  // One row per conversation; the QQ address keeps the conversation ids but loses the passive reply ids.
+  expect(rows).toHaveLength(2)
+  const qq = rows.find(row => row.kind === 'qq')!, dingtalk = rows.find(row => row.kind === 'dingtalk')!
+  expect(qq).toMatchObject({ source: 'qq', thread: 'qq:group-1' })
+  expect(qq.address).toMatchObject({ row: 'qq', conversationType: 'group', conversationId: 'group-1' })
+  expect(qq.address).not.toHaveProperty('msgId')
+  expect(qq.address).not.toHaveProperty('receivedAt')
+  expect(dingtalk.address).toMatchObject({ row: 'dingtalk', conversationType: 'group', openConversationId: 'open-1',
+    robotCode: 'robot' })
+  expect(dingtalk.address).not.toHaveProperty('sessionWebhook')
+  expect(JSON.stringify(rows)).not.toContain('secret')
 })

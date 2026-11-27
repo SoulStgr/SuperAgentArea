@@ -1,6 +1,6 @@
 /** 工单源 page: one card per Source instance with its last day and execution state, adding Sources, an instance's page with its sections, and Project answer dialogs. */
 import { useState } from 'react'
-import type { AnswerProject } from '../app/api.ts'
+import type { AnswerProject } from './api.ts'
 import { usePoll, type DroppedReply, type PendingProject, type SourceStatusRow, type TicketRow } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Modal, SegmentedControl, Switch, Tag } from './controls.tsx'
 import { sourceMark } from './marks.ts'
@@ -160,15 +160,17 @@ function SourceRecent({ source }: { source: Pick<SourceStatusRow, 'recent'> }) {
 
 const repositoryAddress = (address: string): boolean => /^(?:https|ssh|file):\/\/|^[\w.-]+@[\w.-]+:/.test(address.trim())
 
-/** The dialog that answers a Trigger's Project question: an existing station, the agent's proposal, or a new station. */
+/** The dialog that answers a Trigger's Project question: an existing station, the agent's proposal, the built-in workspace,
+ * or a new station. */
 function AnswerProjectDialog({ question, onClose, onAnswered }: {
   question: PendingProject; onClose: () => void; onAnswered: () => Promise<void>
 }) {
   const { t, call, notify } = usePanel()
-  type Mode = 'existing' | 'proposal' | 'new'
+  type Mode = 'existing' | 'proposal' | 'workspace' | 'new'
   const modes: { value: Mode; label: string }[] = [
     ...question.candidates.length ? [{ value: 'existing' as const, label: t('sourceAnswerExisting') }] : [],
     ...question.proposal ? [{ value: 'proposal' as const, label: t('sourceAnswerProposal') }] : [],
+    { value: 'workspace' as const, label: t('sourceAnswerWorkspace') },
     { value: 'new' as const, label: t('sourceAnswerNew') },
   ]
   const [mode, setMode] = useState<Mode>(question.proposal ? 'proposal' : question.candidates.length ? 'existing' : 'new')
@@ -182,7 +184,7 @@ function AnswerProjectDialog({ question, onClose, onAnswered }: {
       const location = !address.trim() ? { type: 'managed' as const }
         : repositoryAddress(address) ? { type: 'repo' as const, url: address.trim() } : { type: 'folder' as const, path: address.trim() }
       const body: AnswerProject = mode === 'existing' ? { projectId }
-        : mode === 'proposal' ? { confirmProposal: true } : { new: { name: name.trim(), location } }
+        : mode === 'proposal' ? { confirmProposal: true } : mode === 'workspace' ? { workspace: true } : { new: { name: name.trim(), location } }
       await call('POST triggers/:id/answer-project', { id: question.triggerId, body })
       notify(t('sourceAnswerDone'))
       await onAnswered()
@@ -205,6 +207,7 @@ function AnswerProjectDialog({ question, onClose, onAnswered }: {
       {mode === 'proposal' && question.proposal && <p className="dt-hint">{t('sourceAnswerProposalText', { name: question.proposal.name,
         location: question.proposal.location.type === 'folder' ? question.proposal.location.path
           : question.proposal.location.type === 'repo' ? question.proposal.location.url ?? '' : t('sourceAnswerManaged') })}</p>}
+      {mode === 'workspace' && <p className="dt-hint">{t('sourceAnswerWorkspaceHint')}</p>}
       {mode === 'new' && <>
         <label className="dt-field"><span className="dt-field-head">{t('sourceAnswerName')}</span>
           <span className="dt-input"><input aria-label={t('sourceAnswerName')} value={name}

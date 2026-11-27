@@ -166,6 +166,8 @@ export type DingtalkLoginPoll = ApiResponse<'GET sources/dingtalk/login/:loginId
 export type QqLoginStart = ApiResponse<'POST sources/qq/login'>
 export type QqLoginPoll = ApiResponse<'GET sources/qq/login/:loginId'>
 export type PendingProject = SourceStatusRow['pendingProjects'][number]
+/** A person's answer to an unanswered Project question, as the panel submits it. */
+export type AnswerProject = ApiRequest<'POST triggers/:id/answer-project'>['body']
 export type ProjectRow = ApiResponse<'GET projects'>[number]
 export type ProjectDetailView = ApiResponse<'GET projects/:id'>
 export type ProjectHistoryView = ApiResponse<'GET projects/:id/history'>

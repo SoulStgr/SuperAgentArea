@@ -2,12 +2,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople, type Trigger }
-  from '../../core/index.ts'
+import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople,
+  type PersonRef, type Trigger } from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
-import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
+import { AssessmentSchema, EvalReadSchema, ProjectProposalSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
-import { ASSESSOR_PERSON, needsProjectValues, type ProjectService } from '../project-service.ts'
+import { ASSESSOR_PERSON, locationOfAddress, locationOf, needsProjectValues, type ProjectAnswer, type ProjectService }
+  from '../project-service.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
@@ -20,15 +21,15 @@ const RoutingNoteSchema = z.string().trim()
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
 export interface MainToolsHost {
   readonly context: Context
-  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
+  readonly engine: Pick<EngineForMainSession, 'candidate' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
-  /** Project ownership: the Project a routed request already belongs to, and the question a person may answer. */
-  readonly projects: Pick<ProjectService, 'resolve' | 'pending' | 'create'>
+  /** Project ownership: the Project a routed request already belongs to, the question a person may answer, and its answer. */
+  readonly projects: Pick<ProjectService, 'resolve' | 'pending' | 'create' | 'answer'>
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -187,6 +188,106 @@ function routeTool(host: MainToolsHost): Tool {
     },
   })
 }
+/**
+ * `orchestrator_ask_project`: the Project question for a request that clearly starts a new project, asked before any ticket
+ * exists. It records the same `needsProject` stop an assessment's refusal records and asks the request's conversation; only
+ * a person's answer through `orchestrator_answer_project` or the panel places the work.
+ */
+function askProjectTool(host: MainToolsHost): Tool {
+  return tool({
+    name: 'orchestrator_ask_project',
+    description: 'Ask where a request that clearly starts a new project belongs, before any ticket exists, as dispatch says: it records the Project question in that request\'s conversation and creates no ticket; a person answers with orchestrator_answer_project or in the panel. Proposal is a new workstation the request implies, with a name and optionally a local folder or a repository address; a person confirms or replaces it.',
+    schema: z.object({
+      trigger_id: z.string().min(1).describe('The candidate card\'s trigger_id: the request that starts a new project, before it is accepted.'),
+      proposal: ProjectProposalSchema.nullish().describe('Optional: a new workstation the request implies; a person confirms it.'),
+    }).strict(),
+    execute: async args => {
+      const trigger = host.store.triggers.get(args.trigger_id)
+      if (!trigger) throw new UserError('unknownTrigger')
+      const pending = host.projects.pending(trigger)
+      // Asking again keeps the one question the request already has.
+      if (pending?.decision.triggerIds.includes(trigger.id)) {
+        return { trigger_id: trigger.id, decision: pending.decision.kind, project_question: true, asked: true,
+          reason: alreadyAsked(trigger), candidates: pending.candidates, ...pending.proposal ? { proposal: pending.proposal } : {} }
+      }
+      if (!host.engine.candidate(trigger.id)) throw new Error('No assessment holds that trigger: ask about a request the host delivered as a candidate, before any accept')
+      const { candidates } = host.projects.resolve(trigger)
+      const proposal = args.proposal ? { name: args.proposal.name, location: locationOfAddress(args.proposal.address) } : undefined
+      const decision = host.engine.decide(trigger.id, { kind: 'needsProject', candidates,
+        reason: { code: 'said', values: { text: 'The request starts a new project; a person is asked where it belongs' } },
+        ...proposal ? { proposal } : {} })
+      host.requestPass()
+      return { trigger_id: trigger.id, decision: decision.kind, project_question: true, reason: askedToPlace(trigger), candidates,
+        ...proposal ? { proposal } : {} }
+    },
+  })
+}
+/** What the model reads after asking a request's Project question: no ticket, who was asked, and how the answer comes back. */
+function askedToPlace(trigger: Trigger): string {
+  return `No ticket was created: the host asked ${trigger.source} whether this request needs a workstation of its own and where it belongs. `
+    + 'A person answers in that conversation or in the panel, and orchestrator_answer_project records the answer; the request is then evaluated again and becomes its ticket.'
+}
+/** What asking again answers: the question already waits for its person, and asking it twice would change nothing. */
+function alreadyAsked(trigger: Trigger): string {
+  return `No ticket was created: ${trigger.source} already has this request's Project question, which waits for the person's answer.`
+}
+/** The location a new workstation's answer gives, as the model writes it; `locationOf` validates it before any Project exists. */
+const AnsweredLocationSchema = z.object({ type: z.enum(['managed', 'folder', 'repo']), path: z.string().trim().min(1).optional(),
+  url: z.string().trim().min(1).optional(), branch: z.string().trim().max(200).optional() }).strict()
+/** A person's answer to a Project question, as `orchestrator_answer_project` takes it: the built-in workspace, an existing
+ * workstation, a new one, or the proposal the question carries. */
+const AnsweredProjectSchema = z.union([
+  z.object({ workspace: z.literal(true) }).strict(),
+  z.object({ project_id: z.string().trim().min(1) }).strict(),
+  z.object({ new: z.object({ name: z.string().trim().min(1).max(100), location: AnsweredLocationSchema }).strict() }).strict(),
+  z.object({ confirm_proposal: z.literal(true) }).strict(),
+])
+/** The `ProjectAnswer` a tool answer names, validating the address a person gave. */
+function projectAnswerOf(answer: z.infer<typeof AnsweredProjectSchema>): ProjectAnswer {
+  if ('workspace' in answer) return { workspace: true }
+  if ('project_id' in answer) return { projectId: answer.project_id }
+  if ('confirm_proposal' in answer) return { confirmProposal: true }
+  const location = locationOf(answer.new.location)
+  if (!location) throw new UserError('projectLocationInvalid', { reason: 'a folder needs its path, and a repository its local path or its address' })
+  return { new: { name: answer.new.name, location } }
+}
+/**
+ * `orchestrator_answer_project`: a person's answer to a Project question, given in the conversation. Only a person answers;
+ * the answer is recorded for the Thread and the request the question refused is queued for a fresh Eval that creates its
+ * ticket in the answered Project.
+ */
+function answerProjectTool(host: MainToolsHost): Tool {
+  return tool({
+    name: 'orchestrator_answer_project',
+    description: 'Record a person\'s answer to a Project question, when a candidate card or thread carries pending_project and a person says in the conversation where the work belongs: workspace true for temporary work with no workstation, project_id for an existing workstation, new with a name and location for one they name, or confirm_proposal for the proposal the question carries. Only a person answers; the answering message is not itself work, and the request the question refused is evaluated again and becomes its ticket.',
+    schema: z.object({
+      trigger_id: z.string().min(1).describe('The person\'s message that answered the Project question, not the request it refused.'),
+      answer: AnsweredProjectSchema.describe('Where the refused request belongs, as that person said.'),
+    }).strict(),
+    execute: async args => {
+      const trigger = host.store.triggers.get(args.trigger_id)
+      if (!trigger) throw new UserError('unknownTrigger')
+      if (!trigger.human) throw new Error('Only a person answers a Project question; a bot, CI or an automated report cannot place work')
+      const pending = host.projects.pending(trigger)
+      if (!pending) throw new UserError('notNeedsProject')
+      if (pending.trigger.id === trigger.id) throw new Error('Answer with the person\'s message that answered the question, not the request the question refused')
+      const answer = projectAnswerOf(args.answer)
+      const answeredBy: PersonRef = { source: trigger.source, id: trigger.actor.id }
+      // The answer, closing its own message and queueing the refused request are one quiet step: no notice for the main
+      // Session's own requeue reaches it, as after orchestrator_trigger_requeue.
+      const { resolved, queued } = host.quietly(() => {
+        const result = host.projects.answer(pending.trigger.id, answer, answeredBy)
+        // The message that answered the question asks for no work; the request the question refused becomes the ticket.
+        host.engine.decide(trigger.id, { kind: 'ignore', reason: { code: 'said', values: {
+          text: 'Answered the Project question; the request it refused is queued for a fresh Eval' } } })
+        return { resolved: result.resolved, queued: host.engine.reevaluate(pending.trigger.id) }
+      })
+      host.requestPass()
+      return { trigger_id: trigger.id, answered: pending.trigger.id, project: resolved, queued,
+        reason: 'The answer is recorded: the original request is queued for a fresh Eval, which creates its ticket in that Project.' }
+    },
+  })
+}
 /** Builds the main Session's tools; `agent` scopes prompt preview resources to that Session. */
 export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
   const resources: MainResourceHost = { ...host.resources, sessions: host.sessions, settings: host.settings }
@@ -194,6 +295,8 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
     routeTool(host),
+    askProjectTool(host),
+    answerProjectTool(host),
     tool({
       name: 'orchestrator_ticket_retry',
       description: 'Start a new assignment on an explicit human request to retry a ticket whose worker reported failed or blocked, or whose input was not delivered; the stalled one ends.',

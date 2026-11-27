@@ -29,10 +29,13 @@ function defaultProject(id: string): void {
   const settings = h.runtime.store.settings()
   h.runtime.store.saveSettings({ ...settings, sources: { ...settings.sources, feishu: { ...settings.sources.feishu!, defaultProjectId: id } } })
 }
-/** An acceptance the main Session records for `id`, with every enabled rule judged (`copy` and `visual` by default). */
+/** The enabled rules of the installation's current defaults, judged with only the first matched. */
+const judgedRules = () => h.runtime.store.settings().policy.rules.filter(rule => rule.enabled)
+  .map((rule, index) => ({ rule_id: rule.id, matched: index === 0, reason: rule.id }))
+/** An acceptance the main Session records for `id`, judging every enabled rule of the current defaults. */
 const decision = (id: string, extra: Record<string, unknown> = {}) => ({ trigger_id: id, decision: 'accept', title: '文案修订',
-  worktree_name: 'copy-fix', scope: '改副标题', reason: 'copy change', intent_evidence: 'quoted', acknowledgement: '收到，改好了。',
-  rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy' }, { rule_id: 'visual', matched: false, reason: 'not visual' }],
+  worktree_name: 'copy-fix', scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，改好了。',
+  rule_assessments: judgedRules(),
   direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'names the text' },
   ...extra })
 const decide = async (id: string, extra: Record<string, unknown> = {}) => {
@@ -173,7 +176,7 @@ it('renders the ticket card with each Source\'s mention syntax: GitHub login, Fe
 
 it('maps an assessment\'s Project refusal and its people into the outcome the Engine records', () => {
   const settings = h.runtime.store.settings()
-  const judged = [{ rule_id: 'copy', matched: true, reason: 'copy' }, { rule_id: 'visual', matched: false, reason: 'no' }]
+  const judged = judgedRules()
   const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'e' }
   const base = { rule_assessments: judged, direction, title: 't', scope: 's', reason: 'r', worktree_name: 'w', intent_evidence: 'e' }
   // A refused Project keeps its proposal's address as a location, and only a person's confirmation turns it into a Project.

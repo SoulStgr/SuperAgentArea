@@ -1,24 +1,25 @@
 /**
  * The QQ Source without QQ: message normalization, the passive reply path over a fake bot, gateway normalization of the
- * attachment references and their download and storage over a fake `fetch`, the gateway connection over a fake SDK client,
- * and the watch loop's health over a fake `SourceContext`. Nothing here opens a socket, calls the QQ API or fetches a real
- * attachment.
+ * attachment references and their download and storage over a fake `fetch`, the outbound file path over a fake bot and a
+ * temporary directory, the gateway connection over a fake SDK client, and the watch loop's health over a fake
+ * `SourceContext`. Nothing here opens a socket, calls the QQ API or fetches a real attachment.
  */
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { key, type OutboundMessage, type Trigger } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { apply, qqAttachmentDirectory, qqKind, qqTrigger, receiveQq, watchQq, type QqConfig, type QqSavedAttachment,
-  type QqWatchOptions } from '../src/sources/qq.ts'
+import { apply, clearQqSentAttachmentFailures, qqAttachmentDirectory, qqKind, qqSentAttachmentFailures, qqTrigger,
+  receiveQq, watchQq, type QqConfig, type QqSavedAttachment, type QqWatchOptions } from '../src/sources/qq.ts'
 import type { Health, SourceContext } from '../src/sources/host.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
 import { clearQqLiveBots, liveQqBot, normalizeQqInbound, QqApiError, QqConnection, QQ_ATTACHMENT_BYTES,
-  QQ_ATTACHMENTS_PER_MESSAGE, QQ_PASSIVE_REPLY_LIMIT, QQ_REPLY_CHARS, QQ_TEXT_CHARS, QQ_TRUNCATION_NOTICE, qqMention,
-  replySeqOf, replyTargetOf, replyWindowOpen, sendQqReply, splitQqText, trustedQqDownloadUrl, type QqAttachmentRef,
+  QQ_ATTACHMENTS_PER_MESSAGE, QQ_PASSIVE_REPLY_LIMIT, QQ_REPLY_CHARS, QQ_SENT_ATTACHMENT_BYTES,
+  QQ_SENT_ATTACHMENTS_PER_MESSAGE, QQ_TEXT_CHARS, QQ_TRUNCATION_NOTICE, qqMention, replySeqOf, replyTargetOf, replyWindowOpen,
+  sendQqAttachment, sendQqMessage, sendQqReply, splitQqText, trustedQqDownloadUrl, type QqAttachmentRef,
   type QqBotClient, type QqBotFactory, type QqMessage, type QqRawInbound, type QqReplyTarget, type QqSendOptions,
-  type QqSkipEvent } from '../src/sources/im/qq-transport.ts'
+  type QqSender, type QqSkipEvent } from '../src/sources/im/qq-transport.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 
 /** A validated configuration with both credentials filled, as an operator would save it. */
@@ -47,30 +48,53 @@ const target = (overrides: Partial<QqReplyTarget> = {}): QqReplyTarget => ({ sco
 const address = (): Record<string, string> => qqTrigger(message(), 'qq:ops', config()).channel!.address
 const reply = (text: string, route: Record<string, string> = address()): OutboundMessage =>
   ({ id: 'm-1', kind: 'reply', text, channel: { source: 'qq:ops', thread: 'qq:ops:group-1', address: route } })
-/** A fake bot that records its sends; a reply path unit test only needs `send`. */
-interface FakeSender { sent: QqSendOptions[]; send: (options: QqSendOptions) => Promise<{ id: string }> }
-function fakeSender(answer?: (options: QqSendOptions) => void): FakeSender {
+/** One recorded media send: its route, QQ's media type (1 picture, 4 file), the bytes and the display name. */
+interface FakeMediaSend { target: QqSendOptions['target']; fileType: 1 | 4 | undefined; buffer: Buffer
+  fileName: string | undefined }
+/** A fake bot that records its text sends, its media sends and the order of both; a reply path unit test needs only these. */
+interface FakeSender extends QqSender {
+  sent: QqSendOptions[]
+  media: FakeMediaSend[]
+  /** The order of the calls it served, `text` or `media`, so a test can prove the text went first. */
+  events: string[]
+}
+function fakeSender(answer?: (options: QqSendOptions) => void,
+  mediaAnswer?: (call: FakeMediaSend) => void): FakeSender {
   const sent: QqSendOptions[] = []
-  return { sent, send: async options => { sent.push(options); answer?.(options); return { id: `sent-${sent.length}` } } }
+  const media: FakeMediaSend[] = []
+  const events: string[] = []
+  return { sent, media, events,
+    send: async options => { sent.push(options); events.push('text'); answer?.(options); return { id: `sent-${sent.length}` } },
+    sendMedia: async options => {
+      const call: FakeMediaSend = { target: options.target, fileType: options.fileType, buffer: options.buffer,
+        fileName: options.fileName }
+      media.push(call)
+      events.push('media')
+      mediaAnswer?.(call)
+      return { upload: {}, message: undefined }
+    } }
 }
 /** QQ's own API error shape as the SDK throws it, for the classification tests. */
 const apiFailure = (httpStatus: number, bizCode?: number): Error => Object.assign(new Error(`QQ answered HTTP ${httpStatus}`),
   { name: 'ApiError', httpStatus, bizCode })
 
-/** A fake SDK bot: recorded handlers and sends, a start that settles on stop, and a way to push events. */
+/** A fake SDK bot: recorded handlers, text and media sends, a start that settles on stop, and a way to push events. */
 interface FakeBot extends QqBotClient {
   handlers: Map<string, ((...args: unknown[]) => unknown)[]>
   sent: QqSendOptions[]
+  media: FakeMediaSend[]
   stops: number
   finishStart: () => void
   emit(event: string, ...args: unknown[]): void
 }
-function fakeBot(options: { ready?: boolean; startError?: Error; connectTimeout?: boolean } = {}): FakeBot {
+function fakeBot(options: { ready?: boolean; startError?: Error; connectTimeout?: boolean; mediaError?: Error } = {}): FakeBot {
   const handlers = new Map<string, ((...args: unknown[]) => unknown)[]>()
   const sent: QqSendOptions[] = []
+  const media: FakeMediaSend[] = []
+  const mediaError = options.mediaError
   let finishStart = (): void => {}
   const bot: FakeBot = {
-    handlers, sent, stops: 0,
+    handlers, sent, media, stops: 0,
     finishStart: () => finishStart(),
     on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); return bot },
     start(signal) {
@@ -87,6 +111,12 @@ function fakeBot(options: { ready?: boolean; startError?: Error; connectTimeout?
     },
     stop() { bot.stops += 1; finishStart() },
     async send(options) { sent.push(options); return { id: `sent-${sent.length}` } },
+    async sendMedia(mediaOptions) {
+      if (mediaError) throw mediaError
+      media.push({ target: mediaOptions.target, fileType: mediaOptions.fileType, buffer: mediaOptions.buffer,
+        fileName: mediaOptions.fileName })
+      return { upload: {}, message: undefined }
+    },
     emit(event, ...args) { for (const handler of handlers.get(event) ?? []) handler(...args) },
   }
   return bot
@@ -156,7 +186,7 @@ const binaryResponse = (data: string | Uint8Array<ArrayBuffer>, type?: string): 
 /** The attachments a Trigger carries for its worker. */
 const attachmentsOf = (trigger: Trigger): QqSavedAttachment[] => trigger.meta.attachments as QqSavedAttachment[]
 
-beforeEach(() => { clearQqLiveBots() })
+beforeEach(() => { clearQqLiveBots(); clearQqSentAttachmentFailures() })
 
 describe('configuration', () => {
   it('validates the two credentials and the optional allow-list and sandbox switch, and refuses an unknown key', () => {
@@ -605,6 +635,179 @@ describe('replies', () => {
   })
 })
 
+/** One outbound attachment on disk: its display name, absolute path, MIME type and size. */
+async function outboundFile(stateDir: string, name: string, content: string | Uint8Array,
+  mime = 'application/octet-stream') {
+  const path = join(stateDir, name)
+  await writeFile(path, content)
+  return { name, path, mime, bytes: Buffer.byteLength(content) }
+}
+/** The reply of the default outbound message, carrying `attachments` beside its text. */
+const withFiles = (attachments: OutboundMessage['attachments']): OutboundMessage =>
+  ({ ...reply('Artifacts delivered'), attachments })
+
+describe('outbound attachments', () => {
+  it('delivers the text first, then each file as a picture or a file under its own name', async () => {
+    await withStateDir(async stateDir => {
+      const sender = fakeSender()
+      const files = [await outboundFile(stateDir, 'chart.png', 'png-bytes', 'image/png'),
+        await outboundFile(stateDir, 'report.pdf', 'pdf-bytes', 'application/pdf')]
+      expect(await sendQqMessage(withFiles(files), { sender, target: target() }))
+        .toEqual({ result: 'sent', sentFiles: 2, failedFiles: 0 })
+      // The text goes out before the first file; the files follow in their own order.
+      expect(sender.events).toEqual(['text', 'media', 'media'])
+      expect(sender.sent[0]).toMatchObject({ msgType: 2, markdown: { content: 'Artifacts delivered' },
+        target: { scope: 'group', targetId: 'group-1', msgId: 'msg-1' } })
+      expect(sender.media.map(call => ({ fileType: call.fileType, name: call.fileName, route: call.target }))).toEqual([
+        { fileType: 1, name: 'chart.png', route: { scope: 'group', targetId: 'group-1', msgId: 'msg-1' } },
+        { fileType: 4, name: 'report.pdf', route: { scope: 'group', targetId: 'group-1', msgId: 'msg-1' } }])
+      expect(sender.media.map(call => call.buffer.toString('utf8'))).toEqual(['png-bytes', 'pdf-bytes'])
+    })
+  })
+  it('sends to an active route without an inbound message as a proactive message with no msg_seq', async () => {
+    await withStateDir(async stateDir => {
+      const sender = fakeSender()
+      expect(await sendQqMessage(withFiles([await outboundFile(stateDir, 'notes.txt', 'note', 'text/plain')]),
+        { sender, target: { scope: 'c2c', targetId: 'user-1' } }))
+        .toEqual({ result: 'sent', sentFiles: 1, failedFiles: 0 })
+      expect(sender.sent).toHaveLength(1)
+      expect(sender.sent[0]).toMatchObject({ target: { scope: 'c2c', targetId: 'user-1' }, msgType: 2 })
+      expect(sender.sent[0]!.extra).toBeUndefined()
+      expect(sender.media[0]).toMatchObject({ target: { scope: 'c2c', targetId: 'user-1' }, fileType: 4,
+        fileName: 'notes.txt' })
+    })
+  })
+  it('delivers at most ten files per reply and counts the rest, keeping the text delivered', async () => {
+    await withStateDir(async stateDir => {
+      const sender = fakeSender()
+      const attachments = []
+      for (let index = 0; index < QQ_SENT_ATTACHMENTS_PER_MESSAGE + 2; index += 1) {
+        attachments.push(await outboundFile(stateDir, `file-${index}.txt`, `file ${index}`, 'text/plain'))
+      }
+      expect(await sendQqMessage(withFiles(attachments), { sender, target: target() }))
+        .toEqual({ result: 'sent', sentFiles: QQ_SENT_ATTACHMENTS_PER_MESSAGE, failedFiles: 2 })
+      expect(sender.sent).toHaveLength(1)
+      expect(sender.media).toHaveLength(QQ_SENT_ATTACHMENTS_PER_MESSAGE)
+    })
+  })
+  it('skips a file over 20 MiB, a relative path and a missing file, counting each', async () => {
+    await withStateDir(async stateDir => {
+      const sender = fakeSender()
+      const big = await outboundFile(stateDir, 'big.bin', Buffer.alloc(QQ_SENT_ATTACHMENT_BYTES + 1))
+      const ok = await outboundFile(stateDir, 'ok.txt', 'ok', 'text/plain')
+      expect(await sendQqMessage(withFiles([big, ok,
+        { name: 'relative.txt', path: join('relative', 'relative.txt'), mime: 'text/plain' },
+        { name: 'gone.txt', path: join(stateDir, 'missing.txt'), mime: 'text/plain' }]),
+      { sender, target: target() })).toEqual({ result: 'sent', sentFiles: 1, failedFiles: 3 })
+      // The oversized file is refused before it is read, and only the usable one reaches the bot.
+      expect(sender.media.map(call => call.fileName)).toEqual(['ok.txt'])
+    })
+  })
+  it('counts a failed file and keeps the delivered text, never sending it again', async () => {
+    await withStateDir(async stateDir => {
+      const sender = fakeSender(undefined, call => {
+        if (call.fileName === 'second.png') throw apiFailure(500)
+      })
+      const files = [await outboundFile(stateDir, 'first.png', 'a', 'image/png'),
+        await outboundFile(stateDir, 'second.png', 'b', 'image/png'),
+        await outboundFile(stateDir, 'third.png', 'c', 'image/png')]
+      expect(await sendQqMessage(withFiles(files), { sender, target: target() }))
+        .toEqual({ result: 'sent', sentFiles: 2, failedFiles: 1 })
+      expect(sender.events).toEqual(['text', 'media', 'media', 'media'])
+      expect(sender.sent).toHaveLength(1)
+    })
+  })
+  it('sends no file when the passive reply is gone or the route names no conversation', async () => {
+    await withStateDir(async stateDir => {
+      const sender = fakeSender()
+      const files = [await outboundFile(stateDir, 'late.txt', 'x', 'text/plain')]
+      expect(await sendQqMessage(withFiles(files), { sender, target: target({ receivedAt: past() }) }))
+        .toEqual({ result: 'gone', sentFiles: 0, failedFiles: 0 })
+      expect(await sendQqMessage(withFiles(files), { sender, target: { scope: 'group', targetId: '' } }))
+        .toEqual({ result: 'gone', sentFiles: 0, failedFiles: 0 })
+      expect(sender.events).toEqual([])
+    })
+  })
+  it('keeps the passive msg_seq and the plain fallback when a reply carries files', async () => {
+    await withStateDir(async stateDir => {
+      let calls = 0
+      const sender = fakeSender(() => { if (++calls === 1) throw apiFailure(400, 304036) })
+      expect(await sendQqMessage(withFiles([await outboundFile(stateDir, 'chart.png', 'x', 'image/png')]),
+        { sender, target: target() })).toEqual({ result: 'sent', sentFiles: 1, failedFiles: 0 })
+      expect(sender.sent).toHaveLength(2)
+      expect(sender.sent[0]).toMatchObject({ msgType: 2 })
+      expect(sender.sent[1]).toMatchObject({ msgType: 0, content: 'Artifacts delivered' })
+      expect(sender.sent[1]!.extra).toEqual({ msg_seq: replySeqOf('m-1', 0) })
+      expect(sender.media).toHaveLength(1)
+    })
+  })
+  it('uses sendMedia when the bot offers it and sendImage/sendFile when it does not', async () => {
+    const media = fakeSender()
+    await sendQqAttachment({ name: 'a.png', mime: 'image/png', data: Buffer.from('x') },
+      { sender: media, target: { scope: 'group', targetId: 'group-1' } })
+    expect(media.media).toEqual([{ target: { scope: 'group', targetId: 'group-1' }, fileType: 1,
+      buffer: Buffer.from('x'), fileName: 'a.png' }])
+    // The convenience methods of a client without sendMedia: a picture through sendImage, a file through sendFile.
+    const calls: string[] = []
+    const convenience: QqSender = { send: async () => ({}),
+      sendImage: async () => { calls.push('image'); return {} },
+      sendFile: async (_target, _source, options) => { calls.push(`file:${options?.fileName}`); return {} } }
+    await sendQqAttachment({ name: 'b.png', mime: 'image/png', data: Buffer.from('x') },
+      { sender: convenience, target: { scope: 'c2c', targetId: 'user-1' } })
+    await sendQqAttachment({ name: 'c.pdf', mime: 'application/pdf', data: Buffer.from('x') },
+      { sender: convenience, target: { scope: 'c2c', targetId: 'user-1' } })
+    expect(calls).toEqual(['image', 'file:c.pdf'])
+    // A client with no media operation at all, a route without a conversation, and QQ's own refusal are all classified.
+    const noMedia: QqSender = { send: async () => ({}) }
+    await expect(sendQqAttachment({ name: 'd.txt', mime: 'text/plain', data: Buffer.from('x') },
+      { sender: noMedia, target: { scope: 'c2c', targetId: 'user-1' } })).rejects.toMatchObject({ code: 'rejected' })
+    await expect(sendQqAttachment({ name: 'e.txt', mime: 'text/plain', data: Buffer.from('x') },
+      { sender: media, target: { scope: 'group', targetId: '' } })).rejects.toMatchObject({ code: 'invalid-route' })
+    const refused = fakeSender(undefined, () => { throw apiFailure(429) })
+    await expect(sendQqAttachment({ name: 'f.txt', mime: 'text/plain', data: Buffer.from('x') },
+      { sender: refused, target: { scope: 'c2c', targetId: 'user-1' } })).rejects.toMatchObject({ code: 'rate-limit' })
+  })
+  it('delivers a reply\'s files through the Channel after its text, and counts what it cannot deliver', async () => {
+    await withStateDir(async stateDir => {
+      const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+      const trigger = qqTrigger(message({ createdAt: new Date().toISOString() }), 'qq:ops', config())
+      const bot = fakeBot()
+      const connection = new QqConnection({ appId: 'app-1', appSecret: 'secret-1', onMessage: () => {},
+        botFactory: (async () => bot) as QqBotFactory })
+      await connection.connect()
+      try {
+        expect(await qqKind.channel!.send({ commands: qqKind.commands!(config(), commands) },
+          { ...reply('Artifacts delivered', trigger.channel!.address),
+            attachments: [await outboundFile(stateDir, 'chart.png', 'png-bytes', 'image/png'),
+              await outboundFile(stateDir, 'report.pdf', 'pdf-bytes', 'application/pdf')] })).toBe('sent')
+        expect(bot.sent).toHaveLength(1)
+        expect(bot.media.map(call => call.fileName)).toEqual(['chart.png', 'report.pdf'])
+        expect(bot.media.map(call => call.fileType)).toEqual([1, 4])
+        expect(bot.media.every(call => call.target.targetId === 'group-1' && call.target.msgId === 'msg-1')).toBe(true)
+        expect(qqSentAttachmentFailures('qq:ops')).toBe(0)
+      } finally { await connection.close() }
+    })
+  })
+  it('counts a reply file the Channel cannot deliver per instance, keeping the text delivered', async () => {
+    await withStateDir(async stateDir => {
+      const failing = fakeBot({ mediaError: apiFailure(500) })
+      const connection = new QqConnection({ appId: 'app-1', appSecret: 'secret-1', onMessage: () => {},
+        botFactory: (async () => failing) as QqBotFactory })
+      await connection.connect()
+      try {
+        const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+        const trigger = qqTrigger(message({ createdAt: new Date().toISOString() }), 'qq:ops', config())
+        expect(await qqKind.channel!.send({ commands: qqKind.commands!(config(), commands) },
+          { ...reply('Artifacts delivered', trigger.channel!.address),
+            attachments: [await outboundFile(stateDir, 'report.pdf', 'pdf', 'application/pdf')] })).toBe('sent')
+        expect(failing.sent).toHaveLength(1)
+        expect(failing.media).toHaveLength(0)
+        expect(qqSentAttachmentFailures('qq:ops')).toBe(1)
+      } finally { await connection.close() }
+    })
+  })
+})
+
 describe('the gateway connection', () => {
   it('registers the handlers, becomes ready, registers the live sender and dispatches a message', async () => {
     const bot = fakeBot()
@@ -753,6 +956,31 @@ describe('the plugin loop', () => {
           await vi.waitFor(() => expect(lastHealth(source)!.detail).toContain('skipped (attachment-download-failed 1)'))
           expect(source.receive).not.toHaveBeenCalled()
         })
+    })
+  }, 20_000)
+  it('counts a reply file it cannot deliver in the instance\'s health detail', async () => {
+    await withStateDir(async stateDir => {
+      const bots: FakeBot[] = []
+      const source = fakeSource([config()], { stateDir })
+      const factory = (async () => {
+        const bot = fakeBot({ mediaError: apiFailure(500) })
+        bots.push(bot)
+        return bot
+      }) as QqBotFactory
+      await watching(source, { botFactory: factory, backoffMs: [1], reconcileSeconds: 0.05 }, async () => {
+        await vi.waitFor(() => expect(lastHealth(source)).toMatchObject({ state: 'ready' }))
+        // The Channel sends through the live bot the watch loop registered; its file delivery fails there.
+        const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+        const trigger = qqTrigger(message({ createdAt: new Date().toISOString() }), 'qq:ops', config())
+        expect(await qqKind.channel!.send({ commands: qqKind.commands!(config(), commands) },
+          { ...reply('Artifacts delivered', trigger.channel!.address),
+            attachments: [await outboundFile(stateDir, 'report.md', 'done', 'text/markdown')] })).toBe('sent')
+        // The next report names the file it could not deliver, without its path and without the AppSecret.
+        bots[0]!.emit('message', undefined, rawInbound())
+        await vi.waitFor(() => expect(lastHealth(source)!.detail).toContain('1 reply attachments could not be delivered'))
+        expect(lastHealth(source)!.detail).not.toContain(stateDir)
+        expect(lastHealth(source)!.detail).not.toContain('secret-1')
+      })
     })
   }, 20_000)
   it('registers the kind and starts its loop from the plugin entry', async () => {

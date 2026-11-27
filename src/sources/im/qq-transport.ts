@@ -1,22 +1,26 @@
 /**
  * QQ transport: the bot's WebSocket gateway long connection over the public `@tencent-connect/qqbot-nodejs` SDK, inbound
- * message normalization (including the attachment references QQ sends and the download that turns one into bytes), and the
- * passive reply path (a reply anchored to the inbound message's `msg_id` inside QQ's window).
+ * message normalization (including the attachment references QQ sends and the download that turns one into bytes), the
+ * passive reply path (a reply anchored to the inbound message's `msg_id` inside QQ's window), and the outbound file path
+ * that uploads a reply's files and sends them as pictures or files beside its text.
  *
  * Protocol details adapted from dsh-im (MIT, Copyright (c) 2026 xmanrui, upstream 5.10.0), files
  * `src/channels/qq/qq-runtime.mjs` (QQBot connection/events), `src/channels/qq/qq-controller.mjs` (the send path),
  * `src/channels/qq/markdown-reply.mjs` (markdown first, plain text on a definite rejection, passive reply budget),
  * `src/channels/qq/qq-mention.mjs` (self-mention detection and stripping), `src/channels/qq/qq-bridge.mjs` (the inbound
- * attachment fields, the image-or-file decision and the media-host list) and `src/channels/shared/markdown-chunks.mjs`
- * (line-break-aware splitting); see THIRD_PARTY_NOTICES.md. Only the wire protocol is adapted: this module has no session,
- * command, approval or workspace logic, and imports no part of dsh-im.
+ * attachment fields, the image-or-file decision, the media-host list and the file/image upload send behavior) and
+ * `src/channels/shared/markdown-chunks.mjs` (line-break-aware splitting); see THIRD_PARTY_NOTICES.md. Only the wire protocol
+ * is adapted: this module has no session, command, approval or workspace logic, and imports no part of dsh-im.
  *
  * Nothing here reads configuration: the credentials come from a caller that stores them (the Source instance), and the
  * AppSecret never appears in a transport error, a log line, a health detail or a Trigger. A signed attachment URL is just as
- * restricted: no failure carries one, so neither a health detail nor a Trigger can. The SDK is loaded lazily by the
- * production bot factory, so a missing SDK is a connection error of one instance instead of a broken plugin.
+ * restricted: no failure carries one, so neither a health detail nor a Trigger can. A reply file is read from its local
+ * absolute path and never logged. The SDK is loaded lazily by the production bot factory, so a missing SDK is a connection
+ * error of one instance instead of a broken plugin.
  */
 import type { OutboundMessage } from '../../core/index.ts'
+import { readFile, stat } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 import { isIP } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -44,6 +48,12 @@ export const QQ_TRUNCATION_NOTICE = '(The reply was longer than QQ can deliver i
 export const QQ_ATTACHMENT_BYTES = 20 * 1024 * 1024
 /** The most attachments one QQ message may carry; a message with more is skipped instead of partly received. */
 export const QQ_ATTACHMENTS_PER_MESSAGE = 5
+/** The largest file one reply may deliver to QQ; a larger file is skipped and counted in the instance's health. */
+export const QQ_SENT_ATTACHMENT_BYTES = 20 * 1024 * 1024
+/** The most files one reply may deliver to QQ; the rest are skipped and counted in the instance's health. */
+export const QQ_SENT_ATTACHMENTS_PER_MESSAGE = 10
+/** QQ's media file types: 1 is a picture and 4 a generic file (`MediaFileType` of the QQ SDK). */
+const QQ_MEDIA_FILE_TYPE = Object.freeze({ image: 1 as const, file: 4 as const })
 /** How long one attachment download may take before it is abandoned; a download that times out keeps none of its bytes. */
 const DOWNLOAD_TIMEOUT_MS = 30_000
 /**
@@ -180,20 +190,33 @@ export interface QqSendOptions {
 }
 /** The SDK's answer to one send: the message id QQ assigned. */
 export interface QqSendResponse { id?: string; timestamp?: number | string }
-/** The one operation a reply needs, so the Channel can send through a live bot or a test double. */
-export interface QqSender { send(options: QqSendOptions): Promise<QqSendResponse> }
-/** The immutable route a Trigger carries for its replies, read back from its Channel address. */
-export interface QqReplyTarget {
+/** One file read from a reply's own local absolute path, ready to upload: its display name, MIME type and bytes. */
+export interface QqOutboundFile { name: string; mime: string; data: Buffer }
+/** The SDK's outbound media operations, as a reply's files use them; the tests' fake bot implements this shape. */
+export interface QqMediaSender {
+  /** Uploads and sends one media message typed by `MediaFileType`; a route with a `msgId` makes it a passive reply. */
+  sendMedia?(options: { target: QqSendOptions['target']; fileType: 1 | 4; buffer: Buffer; fileName?: string }): Promise<unknown>
+  /** Uploads and sends one picture (the SDK's convenience method; it takes no file name). */
+  sendImage?(target: QqSendOptions['target'], source: { buffer: Buffer }): Promise<unknown>
+  /** Uploads and sends one generic file under its display name (the SDK's convenience method). */
+  sendFile?(target: QqSendOptions['target'], source: { buffer: Buffer }, options?: { fileName?: string }): Promise<unknown>
+}
+/** The operations one outbound message needs, so the Channel can send through a live bot or a test double. */
+export interface QqSender extends QqMediaSender { send(options: QqSendOptions): Promise<QqSendResponse> }
+/** A route one outbound message may take: a passive reply when it names the inbound message, otherwise a proactive send. */
+export interface QqDeliveryTarget {
   scope: 'c2c' | 'group'
   /** The user openid of a direct chat or the group openid of a group. */
   targetId: string
-  /** The inbound message id the passive reply is anchored to; empty when the address names no message. */
-  msgId: string
+  /** The inbound message id a passive reply is anchored to; empty or absent makes the send proactive. */
+  msgId?: string
   /** The sender a group reply may mention; empty when unknown. */
-  senderId: string
+  senderId?: string
   /** When the inbound message was received, as epoch milliseconds; not finite when the address did not say. */
-  receivedAt: number
+  receivedAt?: number
 }
+/** The immutable route a Trigger carries for its replies: a passive reply anchored to the inbound message's `msg_id`. */
+export interface QqReplyTarget extends QqDeliveryTarget { msgId: string; senderId: string; receivedAt: number }
 
 const nonEmpty = (value: unknown): string => typeof value === 'string' && value.trim() ? value.trim() : ''
 /** The short reason of an error, for a health detail; the AppSecret is redacted wherever it would appear. */
@@ -428,6 +451,21 @@ export function replyTargetOf(address: Record<string, string>): QqReplyTarget | 
   return { scope, targetId, msgId, senderId: nonEmpty(address.senderId),
     receivedAt: Number.isFinite(receivedAt) ? receivedAt : Number.NaN }
 }
+/**
+ * The conversation a stored Channel address names, whether or not it still carries the inbound message id: a route with
+ * an id is a passive reply, one without it a proactive send. A configured report target stores the id-less form, because
+ * the message that opened the conversation is long gone by the time a monitored result arrives.
+ */
+export function deliveryTargetOf(address: Record<string, string>): QqDeliveryTarget | undefined {
+  const scope = address.conversationType === 'group' ? 'group' as const
+    : address.conversationType === 'direct' ? 'c2c' as const : undefined
+  const targetId = nonEmpty(address.conversationId)
+  if (!scope || !targetId) return undefined
+  const msgId = nonEmpty(address.msgId)
+  const receivedAt = Number(address.receivedAt)
+  return { scope, targetId, ...msgId ? { msgId } : {}, ...nonEmpty(address.senderId) ? { senderId: nonEmpty(address.senderId) } : {},
+    ...Number.isFinite(receivedAt) ? { receivedAt } : {} }
+}
 /** Whether a route's passive reply window is still open; a route with no timestamps is tried once and classified by QQ. */
 export function replyWindowOpen(target: QqReplyTarget, now: number): boolean {
   const window = QQ_PASSIVE_WINDOW_MS[target.scope]
@@ -504,13 +542,17 @@ function apiErrorOf(error: unknown): QqApiError {
   return new QqApiError(code, message, { ...status !== undefined ? { status } : {}, ...bizCode !== undefined ? { bizCode } : {},
     ...bizMessage !== undefined ? { bizMessage } : {}, cause: error })
 }
-/** One outbound text piece: markdown first (QQ renders mentions, links and formatting in it), plain text on rejection. */
-async function sendQqPiece(sender: QqSender, target: QqSendOptions['target'], text: string, seq: number,
+/**
+ * One outbound text piece: markdown first (QQ renders mentions, links and formatting in it), plain text on rejection.
+ * `seq` is the passive reply's `msg_seq`; a piece with no sequence is a proactive message the SDK sends without one.
+ */
+async function sendQqPiece(sender: QqSender, target: QqSendOptions['target'], text: string, seq: number | undefined,
   options: { markdown?: boolean } = {}): Promise<void> {
   const markdown = options.markdown ?? true
+  const sequence = seq === undefined ? {} : { extra: { msg_seq: seq } }
   if (markdown) {
     try {
-      await sender.send({ target, msgType: 2, markdown: { content: text }, extra: { msg_seq: seq } })
+      await sender.send({ target, msgType: 2, markdown: { content: text }, ...sequence })
       return
     } catch (error) {
       const failure = classifyQqFailure(error)
@@ -524,7 +566,7 @@ async function sendQqPiece(sender: QqSender, target: QqSendOptions['target'], te
   const plain = text.replace(QQ_MENTION, '').replace(/[ \t]{2,}/g, ' ').trim()
   if (!plain) return
   try {
-    await sender.send({ target, msgType: 0, content: plain, extra: { msg_seq: seq } })
+    await sender.send({ target, msgType: 0, content: plain, ...sequence })
   } catch (error) {
     if (classifyQqFailure(error) === 'duplicate') return
     throw apiErrorOf(error)
@@ -567,6 +609,109 @@ export async function sendQqReply(message: OutboundMessage, options: { target: Q
     }
   }
   return 'sent'
+}
+/** The display name one reply file is sent under: its own base name, without a directory part and never empty. */
+function sentAttachmentName(value: string, fallback: string): string {
+  const base = (typeof value === 'string' ? value : '').split(/[\\/]/).pop()?.trim() ?? ''
+  const cleaned = base.replace(/[\u0000-\u001f<>:"|?*]+/g, '-').trim()
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned.slice(0, 200) : fallback
+}
+/**
+ * Sends one reply file to one QQ route as a picture (`image/*`) or a file: the SDK's `sendMedia` when the client offers it,
+ * its `sendImage`/`sendFile` convenience methods otherwise, and the file's own name as the display name QQ shows. A route
+ * with a `msgId` makes this a passive reply; one without it is a proactive send whose quota QQ limits per user and per day.
+ * A failure is thrown as a credential-free `QqApiError`: the transport never reads the AppSecret, so no failure can carry
+ * it.
+ */
+export async function sendQqAttachment(file: QqOutboundFile,
+  options: { target: QqSendOptions['target']; sender: QqSender }): Promise<void> {
+  const { target, sender } = options
+  if (!nonEmpty(target.targetId)) throw new QqApiError('invalid-route', 'The QQ route names no conversation for a file')
+  const image = (file.mime ?? '').toLowerCase().startsWith('image/')
+  const name = nonEmpty(file.name) || (image ? 'image.png' : 'file')
+  try {
+    if (typeof sender.sendMedia === 'function') {
+      await sender.sendMedia({ target, fileType: image ? QQ_MEDIA_FILE_TYPE.image : QQ_MEDIA_FILE_TYPE.file,
+        buffer: file.data, fileName: name })
+      return
+    }
+    // A client that offers only the convenience methods sends a picture through `sendImage`; when it has no picture
+    // method either, `sendFile` still carries the bytes under the display name (QQ then shows it as a file).
+    if (image && typeof sender.sendImage === 'function') { await sender.sendImage(target, { buffer: file.data }); return }
+    if (typeof sender.sendFile === 'function') { await sender.sendFile(target, { buffer: file.data }, { fileName: name }); return }
+    throw new QqApiError('rejected', 'The connected QQ bot cannot deliver files')
+  } catch (error) {
+    if (error instanceof QqApiError) throw error
+    throw apiErrorOf(error)
+  }
+}
+/** What delivering the files of one outbound message did: how many went out and how many were skipped or failed. */
+export interface QqFilesOutcome { sent: number; failed: number }
+/**
+ * Delivers the files one outbound message carries, after its text: each is read from its own absolute local path (a
+ * relative path, an unreadable file and a file over 20 MiB are skipped), the first ten are sent in order, and a picture
+ * (`image/*`) goes as an image while anything else goes as a file under its display name. A skipped or failed file is
+ * counted and never thrown: the text is already delivered, so the Outbox must not send it again and the person must not
+ * receive it twice.
+ */
+export async function sendQqFiles(message: OutboundMessage,
+  options: { target: QqSendOptions['target']; sender: QqSender }): Promise<QqFilesOutcome> {
+  const attachments = message.attachments ?? []
+  let sent = 0
+  let failed = 0
+  for (const [index, attachment] of attachments.entries()) {
+    try {
+      if (index >= QQ_SENT_ATTACHMENTS_PER_MESSAGE) {
+        throw new Error('The reply carries more files than one QQ message may deliver')
+      }
+      const path = typeof attachment.path === 'string' ? attachment.path : ''
+      // A reply file is internal state named by an absolute path; a relative one could resolve anywhere and is never read.
+      if (!path || !isAbsolute(path)) throw new Error('The reply file path is not absolute')
+      const size = (await stat(path)).size
+      if (size > QQ_SENT_ATTACHMENT_BYTES) throw new Error('The reply file is larger than one QQ message may deliver')
+      const data = await readFile(path)
+      await sendQqAttachment({ name: sentAttachmentName(attachment.name, `attachment-${index + 1}`),
+        mime: (attachment.mime ?? '').trim(), data }, { target: options.target, sender: options.sender })
+      sent += 1
+    } catch { failed += 1 }
+  }
+  return { sent, failed }
+}
+/** What one outbound message's delivery did: whether the text went out, and how many of its files followed it. */
+export interface QqDeliveryOutcome { result: 'sent' | 'gone'; sentFiles: number; failedFiles: number }
+/**
+ * Sends a proactive message's text pieces: markdown first with the same definite-rejection plain fallback as a passive
+ * reply, and no `msg_seq` (QQ only sequences a reply anchored to a `msg_id`).
+ */
+async function sendQqProactively(sender: QqSender, target: QqSendOptions['target'], text: string): Promise<void> {
+  for (const piece of splitQqText(text)) await sendQqPiece(sender, target, piece, undefined)
+}
+/**
+ * Sends one message to one QQ route, then its files: a route that names the inbound message takes the passive reply path
+ * (its window and budget included), while a route without a `msgId` is a proactive send whose quota QQ limits per user and
+ * per day. Exported for a Channel whose delivery route carries no inbound message id, such as a future web delivery
+ * target; the QQ Source itself only replies passively. A file that cannot follow the text is counted in the outcome and
+ * never thrown, and the delivered text is never sent again.
+ */
+export async function sendQqMessage(message: OutboundMessage,
+  options: { target: QqDeliveryTarget; sender: QqSender; now?: () => number }): Promise<QqDeliveryOutcome> {
+  const { target, sender } = options
+  if (!nonEmpty(target.targetId)) return { result: 'gone', sentFiles: 0, failedFiles: 0 }
+  const msgId = nonEmpty(target.msgId)
+  let result: 'sent' | 'gone'
+  if (msgId) {
+    result = await sendQqReply(message, { target: { scope: target.scope, targetId: target.targetId, msgId,
+      senderId: nonEmpty(target.senderId),
+      receivedAt: typeof target.receivedAt === 'number' ? target.receivedAt : Number.NaN }, sender,
+    ...options.now === undefined ? {} : { now: options.now } })
+    if (result === 'gone') return { result, sentFiles: 0, failedFiles: 0 }
+  } else {
+    await sendQqProactively(sender, target, message.text)
+    result = 'sent'
+  }
+  const files = await sendQqFiles(message, { target: { scope: target.scope, targetId: target.targetId,
+    ...msgId ? { msgId } : {} }, sender })
+  return { result, sentFiles: files.sent, failedFiles: files.failed }
 }
 /** One gateway connection failure's description, for a health detail: its stage and a credential-free reason. */
 export function qqFailureText(error: unknown): string {

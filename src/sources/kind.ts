@@ -144,4 +144,6 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
 
 export interface SourceInstance<C extends Record<string, unknown> = Record<string, unknown>> {
   id: string; kind: string; enabled: boolean; config: C; label?: string; defaultProjectId?: string
+  /** The conversation a monitored instance's results are also delivered to, stored as a frozen Channel address. */
+  reportTo?: { source: string; thread: string; address: Record<string, string>; label?: string }
 }

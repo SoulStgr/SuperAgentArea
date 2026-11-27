@@ -3,7 +3,8 @@
  * or the registered names and addresses), creating the station a person answered with, and keeping the answer a thread
  * gave until a Project resolves it. An assessment may propose an address, but only a person's answer creates one.
  */
-import { threadKey, type Decision, type PersonRef, type ProjectCandidate, type ProjectHint, type ProjectKind,
+import { z } from 'zod'
+import { threadKey, WORKSPACE_PROJECT_ID, type Decision, type PersonRef, type ProjectCandidate, type ProjectHint, type ProjectKind,
   type ProjectLocation, type ProjectProposal, type ProjectRecord, type ProjectValue, type Trigger } from '../core/index.ts'
 import { isWorkspaceProject, UserError } from '../core/index.ts'
 import { KV } from '../kv.ts'
@@ -55,8 +56,18 @@ export interface NewProject { name: string; location: ProjectLocation; kind?: Ex
 /** What a person changes on a Project's page: its name, aliases, whether it is archived, the Sources it names, and the
  * requirements its agent follows. */
 export interface ProjectChanges { name?: string; aliases?: string[]; archived?: boolean; sourceIds?: string[]; agentRules?: string[] }
-/** A person's answer to a Project question: an existing Project, a new one, or the assessment's proposal confirmed. */
-export type ProjectAnswer = { projectId: string } | { new: NewProject } | { confirmProposal: true }
+/**
+ * A person's answer to a Project question: an existing Project, a new one, the assessment's proposal confirmed, or the
+ * built-in workspace when the work needs no station.
+ */
+export type ProjectAnswer = { projectId: string } | { new: NewProject } | { confirmProposal: true } | { workspace: true }
+/** The Project location a person or the main Session submits: a managed directory, a folder, or a repository. */
+export const ProjectLocationInput = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('managed') }).strict(),
+  z.object({ type: z.literal('folder'), path: z.string().trim().min(1) }).strict(),
+  z.object({ type: z.literal('repo'), path: z.string().trim().min(1).optional(), url: z.string().trim().min(1).optional(),
+    branch: z.string().trim().max(200).optional() }).strict(),
+])
 /** A list of names with its repetitions and blanks dropped, keeping the first spelling of each. */
 const unique = (values: readonly string[]): string[] => [...new Set(values)]
 
@@ -193,29 +204,36 @@ export class ProjectService {
     return decision && values && refused ? { decision, trigger: refused, ...values } : undefined
   }
   /**
-   * Answers a Thread's Project question: an existing Project, a new station the person named, or the assessment's proposal
-   * the person confirmed. The answer is remembered for the Thread and the Trigger goes back to Eval, which then resolves the
-   * Project and accepts it.
+   * Answers a Thread's Project question: an existing Project, the built-in workspace for temporary work, a new station the
+   * person named, or the assessment's proposal the person confirmed. A new station records who named it and the person who
+   * confirmed a proposal; the panel is the person when no answerer is given, while a person answering in the conversation
+   * passes their own reference. The answer is remembered for the Thread and the Trigger goes back to Eval, which then
+   * resolves the Project and accepts it.
    * @throws UserError `unknownTrigger`, `notNeedsProject`, `projectUnknown` or `projectLocationInvalid`.
    */
-  answer(triggerId: string, answer: ProjectAnswer): { resolved: string; triggerId: string } {
+  answer(triggerId: string, answer: ProjectAnswer, answeredBy: PersonRef = PANEL_PERSON): { resolved: string; triggerId: string } {
     const trigger = this.host.store.triggers.get(triggerId)
     if (!trigger) throw new UserError('unknownTrigger')
     const pending = this.pending(trigger)
     // The panel answers the Trigger the question refused; another Trigger on the Thread is not waiting for it.
     if (!pending || !pending.decision.triggerIds.includes(trigger.id)) throw new UserError('notNeedsProject')
     let project: ProjectRecord
-    if ('projectId' in answer) {
+    if ('workspace' in answer) {
+      // The built-in workspace takes temporary work; it is fixed but always active.
+      const workspace = this.active(WORKSPACE_PROJECT_ID)
+      if (!workspace) throw new UserError('projectUnknown', { project: WORKSPACE_PROJECT_ID })
+      project = workspace
+    } else if ('projectId' in answer) {
       const found = this.active(answer.projectId)
       if (!found) throw new UserError('projectUnknown', { project: answer.projectId })
       project = found
     } else if ('new' in answer) {
       project = this.create({ ...answer.new, sourceIds: answer.new.sourceIds ?? [trigger.source],
-        specifiedBy: answer.new.specifiedBy ?? PANEL_PERSON, confirmedBy: answer.new.confirmedBy ?? PANEL_PERSON })
+        specifiedBy: answer.new.specifiedBy ?? answeredBy, confirmedBy: answer.new.confirmedBy ?? answeredBy })
     } else {
       if (!pending.proposal) throw new UserError('projectUnknown', { project: 'proposal' })
       project = this.create({ ...pending.proposal, kind: 'station', sourceIds: [trigger.source], specifiedBy: ASSESSOR_PERSON,
-        confirmedBy: PANEL_PERSON })
+        confirmedBy: answeredBy })
     }
     this.host.store.set(KV.projects.answers(threadKey(trigger.threads[0]!)), project.id)
     return { resolved: project.id, triggerId }

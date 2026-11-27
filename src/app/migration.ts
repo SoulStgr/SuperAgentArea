@@ -2,7 +2,9 @@
  * Migrates a schema 10 or 11 database to schema 12 in a single transaction so runtime readers never convert legacy shapes:
  * `migrateTo11` rewrites a schema 10 database in schema 11's shapes, and `migrateTo12` adds the Project registry and the
  * artifact index, gives each old ticket its Project, Source and reporter, and indexes the artifacts `KV.artifacts` recorded.
- * Databases older than schema 10 are rejected: this version cannot migrate them.
+ * Databases older than schema 10 are rejected: this version cannot migrate them. Opening a database also upgrades the current
+ * settings snapshot once: settings stored before Source instances become instance-shaped, and the previous build's default
+ * admission rules become the current defaults, both recorded as a `migration` settings revision.
  */
 import { basename, join } from 'node:path'
 import { z } from 'zod'
@@ -12,7 +14,7 @@ import { artifactRecordId, isoTime, said, WORKSPACE_PROJECT_ID, type AcceptMode,
 import type { Artifact } from './artifacts.ts'
 import { feishuChatLink } from '../sources/feishu-channel.ts'
 import { POLL_HORIZON_MS } from '../sources/poll.ts'
-import { SettingsSchema, policyVersion, type SettingsOrigin } from '../policy.ts'
+import { DEFAULT_RULES, LEGACY_DEFAULT_RULES, SettingsSchema, policyVersion, type Rule, type SettingsOrigin } from '../policy.ts'
 import { autoMergeThreshold, teamDefaults } from './context.ts'
 import { PromptConfigSchema, type PromptConfig, type PromptVersion } from './prompts.ts'
 import type { EffectKind, EffectPayloads } from './effects.ts'
@@ -230,16 +232,52 @@ export function settingsAsInstances(value: unknown): unknown {
   const nextPolicy = policy && policySources ? { ...policy, sources: { ...policySources, ...parts } } : policy
   return { ...value, sources, ...nextPolicy ? { policy: nextPolicy } : {} }
 }
+/** The current default rules as fresh mutable values, so a saved snapshot owns its own rules. */
+const currentRules = (): Rule[] => DEFAULT_RULES.map(rule => ({ ...rule }))
 /**
- * Upgrade the current settings snapshot to Source instances once, recorded as a `migration` revision so the panel shows
- * what changed and no later save bypasses the version history. Folder cursors that were keyed by row id move to the
+ * Whether a stored rules list is exactly `expected`: the same rule ids, names, enabled switches and instructions, in any
+ * order. A rules list with any other content — one edited rule, a removed rule, an added rule — is not the old defaults.
+ */
+export function sameRules(stored: unknown, expected: readonly Rule[]): boolean {
+  if (!Array.isArray(stored) || stored.length !== expected.length) return false
+  const wanted = new Map(expected.map(rule => [rule.id, rule]))
+  return stored.every(value => {
+    if (!isObject(value) || typeof value.id !== 'string') return false
+    const rule = wanted.get(value.id)
+    return rule !== undefined && value.name === rule.name && value.enabled === rule.enabled && value.instruction === rule.instruction
+  })
+}
+/**
+ * The raw settings value with every rule set that is still exactly the previous defaults replaced by the current default
+ * rules: the installation's rules as well as each Source instance's own rules. A customized rule set is left whole, even
+ * when one of its rules reuses a default rule's id, so a person's rules are never overwritten.
+ * @returns The upgraded value, or undefined when no stored rules are the previous defaults, so nothing is written.
+ */
+export function upgradeDefaultRules(value: unknown): unknown {
+  if (!isObject(value) || !isObject(value.policy)) return undefined
+  const policy = value.policy
+  const rules = policy.rules
+  const parts = isObject(policy.sources) ? policy.sources : {}
+  const sources = Object.entries(parts).flatMap(([id, part]): [string, Stored][] =>
+    isObject(part) && sameRules(part.rules, LEGACY_DEFAULT_RULES) ? [[id, { ...part, rules: currentRules() }]] : [])
+  const rulesChanged = sameRules(rules, LEGACY_DEFAULT_RULES)
+  if (!rulesChanged && !sources.length) return undefined
+  return { ...value, policy: { ...policy, ...rulesChanged ? { rules: currentRules() } : {},
+    ...sources.length ? { sources: { ...parts, ...Object.fromEntries(sources) } } : {} } }
+}
+/**
+ * Upgrade the current settings snapshot once: to Source instances when it was stored before them, and to the current
+ * admission rules when it still holds the previous build's default rules. Recorded as a `migration` revision so the panel
+ * shows what changed and no later save bypasses the version history; a settings snapshot already in the current shape
+ * and rules changes nothing, so a later start writes no revision. Folder cursors that were keyed by row id move to the
  * instance id so a migrated Row continues from where it was instead of re-ingesting its inbox.
  */
 export function migrateSettingsToInstances(store: Store): void {
   const versions = new Versions<SettingsVersion>(store, KV.settings.revision, KV.settings.version)
   const current = versions.current()?.settings as unknown
   if (current === undefined) return
-  const upgraded = settingsAsInstances(current)
+  const instances = settingsAsInstances(current)
+  const upgraded = upgradeDefaultRules(instances) ?? instances
   if (JSON.stringify(upgraded) === JSON.stringify(current)) return
   const settings = SettingsSchema.parse(upgraded)
   store.atomic(() => {

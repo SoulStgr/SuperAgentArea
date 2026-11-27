@@ -13,6 +13,66 @@ import { preview } from './text.ts'
 import { ticketList } from './tickets.ts'
 
 export type HealthMap = Record<string, Health>
+/** A conversation a monitored Source's results can be delivered to: a frozen address of a QQ or DingTalk chat. */
+export interface DeliveryTargetOption {
+  id: string
+  source: string
+  thread: string
+  address: Record<string, string>
+  label: Localized
+  kind: 'qq' | 'dingtalk'
+}
+/**
+ * A trigger Channel address reduced to what a later proactive send needs: the source conversation ids only. One-shot reply
+ * ids, expiring webhooks and display names are dropped, so a result can go to it after the original message's window.
+ */
+function frozenReportAddress(kind: string | undefined, address: Record<string, string>): Record<string, string> | undefined {
+  if (kind === 'qq') {
+    const conversationType = address.conversationType === 'group' ? 'group' : address.conversationType === 'direct' ? 'direct' : undefined
+    if (!conversationType || !address.conversationId) return undefined
+    return { row: address.row ?? '', conversationType, conversationId: address.conversationId,
+      ...address.groupId ? { groupId: address.groupId } : {}, ...address.senderId ? { senderId: address.senderId } : {} }
+  }
+  if (kind === 'dingtalk') {
+    const conversationType = address.conversationType === 'group' ? 'group' : address.conversationType === 'direct' ? 'direct' : undefined
+    if (!conversationType || !address.robotCode) return undefined
+    if (conversationType === 'group' ? !address.openConversationId : !address.userId) return undefined
+    return { row: address.row ?? '', conversationType, conversationId: address.conversationId ?? '',
+      openConversationId: conversationType === 'group' ? address.openConversationId ?? '' : '',
+      userId: conversationType === 'direct' ? address.userId ?? '' : '', senderStaffId: address.senderStaffId ?? '',
+      robotCode: address.robotCode ?? '' }
+  }
+  return undefined
+}
+/**
+ * The conversations recent Triggers came from that can receive a proactive result, newest first and one row per
+ * conversation: a monitored web Source's report target is chosen from this list. Nothing here exposes a session webhook,
+ * a passive reply id or a credential.
+ */
+export function deliveryTargets(host: Pick<ViewHost, 'store' | 'sources'>, limit = 20): DeliveryTargetOption[] {
+  const { store, sources } = host
+  const rows = new Map<string, DeliveryTargetOption>()
+  for (const trigger of store.read.recentTriggers(0, 1_000)) {
+    if (!trigger.channel) continue
+    const kind = sources.kind(trigger.source)
+    if (!kind || (kind.kind !== 'qq' && kind.kind !== 'dingtalk')) continue
+    const address = frozenReportAddress(kind.kind, trigger.channel.address)
+    if (!address) continue
+    const key = `${trigger.source}\u0000${trigger.channel.thread}\u0000${JSON.stringify(address)}`
+    if (rows.has(key)) continue
+    const instance = sources.instance(trigger.source)
+    const title = instance ? sourceTitle(kind, instance) : { zh: trigger.source, en: trigger.source }
+    const threadLabel = store.threads.get(trigger.channel.thread)?.meta.label
+    const label = kind.kind === 'qq'
+      ? (address.groupId ? { zh: 'QQ 群', en: 'QQ group' } : { zh: 'QQ 私聊', en: 'QQ direct chat' })
+      : (address.conversationType === 'group' ? { zh: '钉钉群', en: 'DingTalk group' } : { zh: '钉钉私聊', en: 'DingTalk direct chat' })
+    rows.set(key, { id: key, source: trigger.source, thread: trigger.channel.thread, address, kind: kind.kind,
+      label: { zh: `${title.zh} · ${label.zh}${threadLabel ? ` · ${threadLabel}` : ''}`,
+        en: `${title.en} · ${label.en}${threadLabel ? ` · ${threadLabel}` : ''}` } })
+    if (rows.size >= limit) break
+  }
+  return [...rows.values()]
+}
 /** A Source instance's display title: its label, its kind's title, or the kind and key for a named instance. */
 export function sourceTitle(kind: { title: Localized; kind: string } | undefined, instance: { id: string; label?: string }): Localized {
   if (instance.label) return { zh: instance.label, en: instance.label }
@@ -178,10 +238,12 @@ export function sourceDetail(host: ViewHost, id: string, health: HealthMap, setu
   const row = sourcesStatus(host, health, setup).find(item => item.id === id)!
   const kind = sources.kind(instance.kind)
   return { ...row, value: { enabled: instance.enabled, config: instance.config,
-    ...instance.label !== undefined ? { label: instance.label } : {} },
+    ...instance.label !== undefined ? { label: instance.label } : {},
+    ...instance.reportTo !== undefined ? { reportTo: instance.reportTo } : {} },
     revision: store.blockRevision(`source:${id}`), restarts: SETUP_FIELDS[instance.kind] ?? [],
     description: kind?.description ?? { zh: '', en: '' }, fields: kind?.fields ?? [],
     defaults: kind ? kind.schema.parse({}) : {}, labels: store.get(KV.sources.labels(id)) ?? {},
+    deliveryTargets: deliveryTargets(host),
     facts: kind?.facts?.(setup.deployment) ?? {}, ...instance.defaultProjectId ? { defaultProjectId: instance.defaultProjectId } : {},
     tickets: ticketList(host, 'open', offset, limit, id) }
 }

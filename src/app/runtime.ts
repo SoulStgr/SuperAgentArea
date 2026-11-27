@@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, key, reasonText, type ChannelRef, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
@@ -55,6 +55,11 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
+/** The frozen conversation a Ticket's result is also delivered to, from its Source instance's configured target. */
+function reportChannelOf(store: Store, ticket: Ticket): ChannelRef | undefined {
+  const target = ticket.sourceId ? store.settings().sources[ticket.sourceId]?.reportTo : undefined
+  return target ? { source: target.source, thread: target.thread, address: target.address } : undefined
+}
 
 /**
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
@@ -147,6 +152,8 @@ export class Runtime extends Service implements SourceHost {
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         people: { knows: (trigger, person) => !!knownPerson(peopleHost, trigger, person),
           mention: (person, channel) => mentionOf(peopleHost, person, channel) },
+        // A monitored web Source has no reply route; its Ticket results go to the conversation configured on the Source.
+        reportTarget: ticket => reportChannelOf(store, ticket),
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))

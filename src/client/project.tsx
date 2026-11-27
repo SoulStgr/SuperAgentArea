@@ -105,7 +105,7 @@ function NewProjectDialog({ open, onClose, onCreated }: { open: boolean; onClose
         options={(['managed', 'folder', 'repo'] as const).map(value => ({ value, label: t(`projectLocation.${value}`) }))}
         onChange={next => { setType(next); setError(undefined) }} />
       {type !== 'managed' && <label className="dt-field">
-        <span className="dt-field-head">{t(type === 'repo' ? 'projectRepoAddress' : 'projectPath')}</span>
+        <span className="dt-field-head">{t(type === 'repo' ? 'projectRepoAddress' : 'projectPath')}<InfoTip text={t('projectAddressHint')} /></span>
         <span className="dt-input"><input aria-label={t(type === 'repo' ? 'projectRepoAddress' : 'projectPath')} value={address}
           spellCheck={false} onChange={event => setAddress(event.target.value)} /></span>
       </label>}

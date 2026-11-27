@@ -90,14 +90,38 @@ function locationOf(address: string | undefined): ProjectLocation {
   if (!trimmed) return { type: 'managed' }
   return /^(?:https|ssh|file):\/\/|^[\w.-]+@[\w.-]+:/.test(trimmed) ? { type: 'repo', url: trimmed } : { type: 'folder', path: trimmed }
 }
-const DEFAULT_RULES = [
-  { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
-  { id: 'visual', name: 'Visual fixes', enabled: true, instruction: 'Explicit implementation requests for local spacing, alignment, overflow or styling, with a specified target or an objectively established existing standard/correct state to restore. Locating an element or calling it inconsistent, unattractive or hard to understand does not establish a target. Do not invent visual style, information hierarchy, rendering or interaction decisions. No redesign, new interaction or behavior. A known spacing defect does not authorize adjacent undefined restyling; assess only a clearly separable authorized scope. If direction or scope is unsettled, observe only: no acknowledgement, worker or unsolicited question.' },
-]
-/** An assessment rule; its instruction may also specify PR reviewers and whether to wait for their approval. */
+/**
+ * An assessment rule; its instruction may also specify PR reviewers and whether to wait for their approval.
+ * Rules only decide whether a proactive candidate may be accepted: they neither create a workstation nor move work into
+ * one or choose where deliverables land (the host asks a person when a new workstation is needed).
+ */
 export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().min(1).max(LIMITS.ruleName), enabled: z.boolean(),
   instruction: z.string().trim().min(1).max(LIMITS.ruleInstruction) }).strict()
 export type Rule = z.infer<typeof RuleSchema>
+/**
+ * The admission rules a new installation starts with, in English: the categories of proactive candidate the main Session
+ * may accept. They affect proactive candidate acceptance only: they never create a workstation, and a request that needs
+ * one is left to the host, which asks a person for its name and address. A person's own rule set replaces these defaults
+ * for a Source instance; an installation an earlier build configured keeps its customized rules.
+ */
+export const DEFAULT_RULES: Rule[] = [
+  { id: 'workstation-work', name: 'Workstation work', enabled: true,
+    instruction: 'An explicit request for concrete work in an existing workstation: a code, configuration, documentation, copy or visual change, or another deliverable a person can check. The discussion settles which workstation, which target and what result is wanted, and the change is clearly separable and verifiable against the repository, the running product or another named deliverable. Do not invent design, product, rendering or interaction decisions the request leaves open; a reported defect does not authorize adjacent undefined restyling, and while direction or scope is unsettled, observe only: no acknowledgement, worker or unsolicited question.' },
+  { id: 'new-workstation', name: 'New workstation', enabled: true,
+    instruction: 'A person asks for long-term work that should live in a workstation of its own rather than in a single change. Accept only what the discussion settles: the purpose of the workstation and the work it will hold. If the discussion does not state the workstation\'s name or address, do not invent either: the host asks a person, and only a person\'s answer creates the workstation. This rule never creates a workstation or moves existing work into one; it only decides whether this candidate may be accepted once a person has settled where the work belongs.' },
+  { id: 'investigation', name: 'Investigation', enabled: true,
+    instruction: 'An explicit request to investigate a problem, review a change, or analyze a behaviour and report a conclusion: find a cause, judge code or a pull request, measure something, or answer a question with evidence. The deliverable is the finding, review or analysis itself, not an implementation; the discussion names what to examine and which question to answer, and the conclusion can be checked against the repository, logs, tests or another named source. An open-ended look at a topic with no question to answer is not a match: do not invent the question or the expected conclusion, and observe only.' },
+  { id: 'one-off-task', name: 'One-off task', enabled: true,
+    instruction: 'An explicit request for one temporary piece of work with a clear end, such as converting one file, producing one report, running one check or making one hotfix, that does not continue the ongoing work of any workstation. The request names the deliverable and what finished means. This work lands in the workspace unless a person places it in a workstation; do not create or propose a workstation for it, and do not treat repeated or open-ended work as one-off.' },
+]
+/**
+ * The admission rules installations of versions through 0.3.21 started with: copy and visual fixes. The one-time migration
+ * replaces stored rules that are exactly these, and only these; a rule a person wrote is never rewritten.
+ */
+export const LEGACY_DEFAULT_RULES: readonly Rule[] = [
+  { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
+  { id: 'visual', name: 'Visual fixes', enabled: true, instruction: 'Explicit implementation requests for local spacing, alignment, overflow or styling, with a specified target or an objectively established existing standard/correct state to restore. Locating an element or calling it inconsistent, unattractive or hard to understand does not establish a target. Do not invent visual style, information hierarchy, rendering or interaction decisions. No redesign, new interaction or behavior. A known spacing defect does not authorize adjacent undefined restyling; assess only a clearly separable authorized scope. If direction or scope is unsettled, observe only: no acknowledgement, worker or unsolicited question.' },
+]
 /** A Source instance's own rules: when present they replace the installation's default rules for that Source. */
 export const RuleArraySchema = z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs')
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
@@ -113,6 +137,19 @@ export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).def
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
 /** A Source instance's id: a kind id, or `<kind>:<key>` for a named instance (old data keeps the bare kind). */
 export const SourceInstanceIdSchema = z.string().regex(/^[a-z][a-z0-9-]*(?::[a-z0-9-]+)?$/)
+/**
+ * A stored conversation results are also delivered to, such as a monitored web Source's report destination. The
+ * address is a frozen Channel address: a QQ or DingTalk conversation without its one-shot reply ids or expiring
+ * session webhook, so the delivery is proactive. It never carries a credential.
+ */
+export const DeliveryTargetSchema = z.object({
+  source: SourceInstanceIdSchema,
+  thread: z.string().trim().min(1).max(500),
+  address: z.record(z.string(), z.string().max(2_000)),
+  /** A display name the panel shows for the destination; optional because a saved target may predate one. */
+  label: z.string().trim().max(100).optional(),
+}).strict()
+export type DeliveryTarget = z.infer<typeof DeliveryTargetSchema>
 export const PolicyConfigSchema = z.object({
   rules: RuleArraySchema.default(DEFAULT_RULES),
   sources: z.record(SourceInstanceIdSchema, SourcePolicySchema).default({}),
@@ -144,6 +181,8 @@ export const SourceInstanceSchema = z.object({
   label: z.string().trim().max(100).optional(),
   /** The Project that owns work from this instance (P2), kept as stored here. */
   defaultProjectId: z.string().trim().optional(),
+  /** The conversation this instance's Ticket results are also delivered to, when its own Source has no reply route. */
+  reportTo: DeliveryTargetSchema.optional(),
 }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),

@@ -6,8 +6,12 @@
  * with no text at all — is downloaded first into `<stateDir>/area/attachments/qq/<instance>/<messageId>/` and its Trigger
  * names every saved absolute path, so the worker can read the file. A message whose attachments cannot be received is
  * counted in the instance's health instead of opening an empty Ticket. A reply is always a passive reply anchored to the
- * inbound message's `msg_id` — QQ's official bots mainly deliver results that way — and goes nowhere else; replies are text
- * only.
+ * inbound message's `msg_id` — QQ's official bots mainly deliver results that way — and goes nowhere else; after its text
+ * it delivers the files the message carries (a ready ticket's deliverables): each is read from its own absolute path, a
+ * picture (`image/*`) goes as a picture and anything else as a file, at most ten files of at most 20 MiB each, while a
+ * file that cannot follow the delivered text is counted in the instance's health and never fails or delays the text. A
+ * route without an inbound message id is a proactive send (`sendQqMessage` of the transport), which this Source reserves
+ * for a future web delivery target and never uses itself.
  *
  * The two credentials (AppID, AppSecret) are required before the bot connects; an account saved with neither is a new
  * account and reports `paused` until it is filled, while filling only one is refused at save time. Saving does not contact
@@ -25,7 +29,7 @@ import { z } from 'zod'
 import { key, threadKey, type OutboundMessage, type Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { downloadQqAttachment, liveQqBot, QqApiError, QqAttachmentError, QQ_ATTACHMENT_BYTES, QQ_ATTACHMENTS_PER_MESSAGE,
-  QqConnection, QQ_TEXT_CHARS, qqFailureText, qqMention, replyTargetOf, sendQqReply, type QqAttachmentRef,
+  QqConnection, QQ_TEXT_CHARS, qqFailureText, qqMention, deliveryTargetOf, sendQqMessage, type QqAttachmentRef,
   type QqBotFactory, type QqMessage, type QqSkipEvent } from './im/qq-transport.ts'
 import { health, reportFailure, sourceContext, type SourceContext } from './host.ts'
 import type { FieldSpec, SourceKind } from './kind.ts'
@@ -289,8 +293,9 @@ export const qqKind: SourceKind<QqConfig> = {
     return { listened: true, observed: false, row: group ? 'group' : 'direct' }
   },
   channel: {
-    // A reply goes only to the instance's own live bot: the address names the conversation and the passive reply's msg_id.
-    allowed: (address, config) => !!replyTargetOf(address) && !!config.appId,
+    // A reply goes to the instance's own live bot: the address names the conversation and, for a reply, its msg_id. A
+    // report target has no msg_id and is sent proactively.
+    allowed: (address, config) => !!deliveryTargetOf(address) && !!config.appId,
     send: (host, message) => sendQq(message, host.commands),
     link: address => ({ url: '', label: { zh: `QQ 会话 ${address.row}`, en: `QQ conversation ${address.row}` } }),
     // A group reply may mention its sender with QQ's inline mention markup; the transport sends it as markdown so it renders.
@@ -324,17 +329,30 @@ export const qqKind: SourceKind<QqConfig> = {
     return scoped
   },
 }
+/** Files of replies to one instance that were skipped or could not be delivered since this process started. */
+const sentAttachmentFailures = new Map<string, number>()
+/** How many files a reply to `instance` could not deliver since this process started; its health detail names the count. */
+export function qqSentAttachmentFailures(instance: string): number { return sentAttachmentFailures.get(instance) ?? 0 }
+/** Forgets the recorded outbound file failures (tests). */
+export function clearQqSentAttachmentFailures(): void { sentAttachmentFailures.clear() }
+/** Counts reply files the Channel skipped or could not deliver; the delivered text is unaffected. */
+function countSentAttachmentFailures(instance: string, count: number): void {
+  if (count > 0) sentAttachmentFailures.set(instance, (sentAttachmentFailures.get(instance) ?? 0) + count)
+}
 /** Sends one message to the route it carries, through the connected bot of the instance the Registry resolved. */
 async function sendQq(message: OutboundMessage, commands: object): Promise<'sent' | 'gone'> {
   const config = scopedConfigs.get(commands)
   if (!config) throw new Error('The QQ Source has no configuration for this reply')
-  const target = replyTargetOf(message.channel.address)
+  const target = deliveryTargetOf(message.channel.address)
   if (!target) return 'gone'
   const sender = liveQqBot(config.appId)
   // A reply is anchored to a message id, so only the instance's own connection can send it; the Outbox retries once it is
   // connected again, and an already closed window is reported as gone by the transport instead of being retried.
   if (!sender) throw new QqApiError('network', 'The QQ bot is not connected; the reply waits for the connection')
-  return sendQqReply(message, { target, sender })
+  const outcome = await sendQqMessage(message, { target, sender })
+  // The text is already delivered; a file that could not follow it is counted in the instance's health, never thrown.
+  countSentAttachmentFailures(message.channel.address.row || 'qq', outcome.failedFiles)
+  return outcome.result
 }
 
 /** The per-instance counters a health detail reports: messages received, duplicates, skips and receive failures. */
@@ -351,11 +369,12 @@ function skipText(counters: QqCounters): string {
   const total = skipped.reduce((sum, [, count]) => sum + count, 0)
   return total ? `; ${total} skipped (${skipped.map(([reason, count]) => `${reason} ${count}`).join(', ')})` : ''
 }
-/** One instance's health detail while connected: what it received and skipped since it connected. */
-function connectedText(counters: QqCounters): string {
+/** One instance's health detail while connected: what it received, skipped and could not deliver since it connected. */
+function connectedText(counters: QqCounters, sentFailures = 0): string {
   const duplicates = counters.duplicates ? `; ${counters.duplicates} duplicate messages` : ''
   const failed = counters.failed ? `; ${counters.failed} messages could not be received` : ''
-  return `Connected to the QQ bot gateway; ${counters.received} messages received${duplicates}${failed}${skipText(counters)}`
+  const sent = sentFailures ? `; ${sentFailures} reply attachments could not be delivered` : ''
+  return `Connected to the QQ bot gateway; ${counters.received} messages received${duplicates}${failed}${skipText(counters)}${sent}`
 }
 /** One connection's options, as the caller injected them; every field has a production default. */
 export interface QqWatchOptions {
@@ -384,7 +403,10 @@ async function runQqInstance(ctx: SourceContext, id: string, config: QqConfig, s
   options: QqWatchOptions): Promise<void> {
   const counters = countersOf()
   const counter = (reason: string): void => { counters.skipped.set(reason, (counters.skipped.get(reason) ?? 0) + 1) }
-  const reportReady = (): void => { ctx.report(id, { state: 'ready', detail: connectedText(counters), at: iso() }) }
+  // Reply files are delivered by the Channel, not by this loop; the detail reports the ones this connection saw fail.
+  const sentBaseline = qqSentAttachmentFailures(id)
+  const reportReady = (): void => { ctx.report(id, { state: 'ready',
+    detail: connectedText(counters, qqSentAttachmentFailures(id) - sentBaseline), at: iso() }) }
   const backoff = options.backoffMs ?? BACKOFF_MS
   const failureThreshold = options.failureThreshold ?? FAILURES_BEFORE_ERROR
   const waited = (ms: number): number => Math.max(1, Math.round(ms / 1_000))

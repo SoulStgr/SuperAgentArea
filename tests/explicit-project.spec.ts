@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import type { Trigger } from '../src/core/index.ts'
+import { WORKSPACE_PROJECT_ID, type Trigger } from '../src/core/index.ts'
 import { folderKind, folderTrigger, readDrop } from '../src/sources/folder.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
@@ -95,4 +95,21 @@ it('accepts a drop that names no Project into the built-in workspace, without as
   expect(ticketOf(routed).projectId).toBe('prj_workspace')
   await h.runtime.sendReplies()
   expect(existsSync(join(outbox, 'QUESTION.md'))).toBe(false)
+})
+
+it('answers an unregistered drop with the built-in workspace when the work needs no station', async () => {
+  station('aps')
+  const trigger = await drop('sort-files', { 'TASK.md': '整理这一批文件。\n', 'PROJECT.md': '报销系统\n' })
+  h.runtime.receive(trigger); await h.runtime.idle()
+  expect(await accept(trigger)).toMatchObject({ decision: 'stop', project_question: true })
+  // The question offers the workspace as the answer for temporary work that needs no station.
+  await h.runtime.sendReplies()
+  expect(readFileSync(join(outbox, 'QUESTION.md'), 'utf8')).toContain('不需要工作站')
+  // A person answers in the panel; the drop's fresh Eval resolves the workspace and its accept starts the ticket there.
+  expect((await h.api('POST', `triggers/${trigger.id}/answer-project`, { workspace: true })).body).toEqual({ resolved: WORKSPACE_PROJECT_ID })
+  await h.runtime.idle()
+  const routed = await accept(trigger)
+  await h.runtime.idle()
+  expect(ticketOf(routed)).toMatchObject({ projectId: WORKSPACE_PROJECT_ID, sourceId: 'folder:ops' })
+  expect(h.runtime.store.projects.list().filter(project => project.value.kind === 'station')).toHaveLength(1)
 })

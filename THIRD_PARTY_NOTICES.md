@@ -33,14 +33,16 @@ mechanisms.
 | `src/channels/qq/qq-controller.mjs` | `src/sources/im/qq-transport.ts` (`QqConnection`, `sendQqReply`) | The send path over the connected bot: `msg_id` and `msg_seq` on a passive reply, `markdownSupport: false` for the bot client, and the credential-free failure classification. The QR sign-in, credential store, workspace state and rename/delete flows are deliberately **not** part of this adaptation |
 | `src/channels/qq/markdown-reply.mjs` | `src/sources/im/qq-transport.ts` (`sendQqPiece`, `sendQqReply`, `QQ_PASSIVE_REPLY_LIMIT`, `QQ_MARKDOWN_REJECTION_CODES`) | Markdown (`msg_type=2`) first and plain text (`msg_type=0`) on a definite markdown rejection, the passive reply budget of 4 direct / 5 group messages per inbound `msg_id`, and the rule that an uncertain delivery is never retried as a second transport |
 | `src/channels/qq/qq-mention.mjs` | `src/sources/im/qq-transport.ts` (`addressedToBot`, `withoutSelfMention`, `normalizeQqInbound`, `qqMention`) | The group @-message decision from the raw event type, an `is_you` mention or an inline `<@id>` marker, learning the bot's own ids from READY, and stripping only the bot's own mention markers from the content |
-| `src/channels/qq/qq-bridge.mjs` | `src/sources/im/qq-transport.ts` (`attachmentsOf`, `attachmentOf`, `trustedQqDownloadUrl`, `downloadQqAttachment`, `QQ_DOWNLOAD_HOSTS`, `QQ_IMAGE_FILENAME`) and `src/sources/qq.ts` (`saveQqAttachments`, `qqTrigger`) | The inbound attachment fields (`url`, `filename`, `content_type`/`contentType`, `size`), the rule that an `image/` Content-Type or a `.gif`/`.jpg`/`.jpeg`/`.png`/`.webp` file name makes a picture and anything else a file, the media host list (`myqcloud.com`, `qpic.cn`, `qq.com`, `qq.com.cn`, `tencentcos.com`, `ugcimg.cn`), the protocol-relative address completion and the file-buffer download. This repository adds its own HTTPS-only media-host check, redirect refusal, 30 s timeout and 20 MiB cap; the saving layout under the state directory, the path and file-name sanitization, the size and count limits, the Trigger text lines and `meta.attachments` are its own |
+| `src/channels/qq/qq-bridge.mjs` | `src/sources/im/qq-transport.ts` (`attachmentsOf`, `attachmentOf`, `trustedQqDownloadUrl`, `downloadQqAttachment`, `QQ_DOWNLOAD_HOSTS`, `QQ_IMAGE_FILENAME`, `sendQqAttachment`, `sendQqFiles`, `sendQqMessage`) and `src/sources/qq.ts` (`saveQqAttachments`, `qqTrigger`, `sendQq`) | The inbound attachment fields (`url`, `filename`, `content_type`/`contentType`, `size`), the rule that an `image/` Content-Type or a `.gif`/`.jpg`/`.jpeg`/`.png`/`.webp` file name makes a picture and anything else a file, the media host list (`myqcloud.com`, `qpic.cn`, `qq.com`, `qq.com.cn`, `tencentcos.com`, `ugcimg.cn`), the protocol-relative address completion and the file-buffer download, and the outbound file/image send behavior (`sendQqFile`/`sendQqImage`: the bytes go to the SDK's `sendFile`/`sendImage` — `sendMedia` when the client offers it — under the display name QQ shows, from a 120 s-bounded upload). This repository adds its own HTTPS-only media-host check, redirect refusal, 30 s timeout and 20 MiB cap for the download; the saving layout under the state directory, the path and file-name sanitization, the size and count limits, the Trigger text lines and `meta.attachments` are its own. For the outbound path it adds reading each reply file from its own absolute local path, the at-most-ten-files and 20 MiB limits, the image-or-file decision from the reply's MIME type, the proactive send for a route without a message id and its own per-instance failure counting |
 | `src/channels/shared/markdown-chunks.mjs` | `src/sources/im/qq-transport.ts` (`splitQqText`) | Line-break-aware text splitting for a reply longer than one QQ message |
 
-Not adapted and not copied: the session, queue and artifact-delivery parts of `qq-bridge.mjs`, `qq-menu.mjs`, `config-store.mjs`,
-`state-store.mjs`, `qr-auth.mjs`, `state-error.mjs`, `harness-client.mjs`, and every file under `src/channels/shared/`. Session
-binding, commands, approvals, workspaces, deferred delivery and artifact delivery stay this repository's own Ticket, Outbox
-and Source mechanisms. dsh-im's `qr-auth.mjs` was read only as background; this repository reimplements QQ's QR bind flow
-itself (see below) and takes the AppID and AppSecret from its own settings.
+Not adapted and not copied: the session, queue and artifact-orchestration parts of `qq-bridge.mjs`, `qq-menu.mjs`,
+`config-store.mjs`, `state-store.mjs`, `qr-auth.mjs`, `state-error.mjs`, `harness-client.mjs`, and every file under
+`src/channels/shared/`. Session binding, commands, approvals, workspaces, deferred delivery and artifact collection stay
+this repository's own Ticket, Outbox and Source mechanisms; only the wire-level file upload send behavior
+(`sendQqFile`/`sendQqImage`, table row above) was adapted as protocol detail. dsh-im's `qr-auth.mjs` was read only as
+background; this repository reimplements QQ's QR bind flow itself (see below) and takes the AppID and AppSecret from its
+own settings.
 
 ### QQ QR bind flow — protocol behavior reimplemented, no code copied
 
@@ -112,8 +114,9 @@ license; the DingTalk Source builds on its client and topic constants.
 
 `@tencent-connect/qqbot-nodejs` 1.0.4 (the QQ Open Platform Node.js SDK, MIT License, Copyright Tencent) is installed from
 npm as a normal dependency and is not copied into this repository. Its own package carries its license; the QQ Source
-builds on its `QQBot` WebSocket gateway client, its passive reply send path and its `ApiError` failure shape (read
-structurally, so the transport module does not import the SDK; only the production bot factory loads it, lazily).
+builds on its `QQBot` WebSocket gateway client, its passive reply send path, its media upload-and-send path
+(`sendMedia`/`sendImage`/`sendFile` for a reply's files) and its `ApiError` failure shape (read structurally, so the
+transport module does not import the SDK; only the production bot factory loads it, lazily).
 
 `@tencent-connect/qqbot-connector` 1.2.0 is deliberately **not** a dependency: its upstream package is marked
 `UNLICENSED`, so it is neither redistributed nor installed here. Its QR-code sign-in behavior is the protocol flow this

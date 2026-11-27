@@ -2,7 +2,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { UserError, type EngineForSettings, type PolicyEffect } from '../core/index.ts'
-import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, SourcePolicySchema, policyEffects, policyVersion, rulesFor } from '../policy.ts'
+import { DeliveryTargetSchema, EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema, SourcePolicySchema,
+  policyEffects, policyVersion, rulesFor } from '../policy.ts'
 import type { Settings as SettingsValue, SettingsBlock, SettingsOrigin, SettingsSave } from '../policy.ts'
 import type { SourceHost } from '../sources/host.ts'
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
@@ -22,9 +23,9 @@ export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, prepare commands, and command shims. */
 const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands])
-/** One Source instance's saved block: its switch and kind configuration, plus the optional label and default Project its routes set. */
+/** One Source instance's saved block: its switch and kind configuration, plus the optional label, default Project and report target its routes set. */
 const SourceBlockValue = z.object({ enabled: z.boolean(), config: z.unknown(), label: z.string().trim().max(100).optional(),
-  defaultProjectId: z.string().trim().max(200).optional() })
+  defaultProjectId: z.string().trim().max(200).optional(), reportTo: DeliveryTargetSchema.nullable().optional() })
 /** A settings block's kind: the installation-wide `policy`/`eval`/`executor`, a Source instance's `source:<id>`, or its own `policy:<id>`. */
 type BlockKind = 'policy' | 'eval' | 'executor' | 'source' | 'sourcePolicy'
 /** Split a settings block into its kind and the Source instance id the `source:`/`policy:` blocks name. */
@@ -61,7 +62,9 @@ const BLOCKS: Record<BlockKind, Block> = {
       const parsed = SourceBlockValue.parse(value)
       return { ...sources.validate(id, { enabled: parsed.enabled, config: parsed.config }),
         ...parsed.label !== undefined ? { label: parsed.label } : {},
-        ...parsed.defaultProjectId !== undefined ? { defaultProjectId: parsed.defaultProjectId } : {} }
+        ...parsed.defaultProjectId !== undefined ? { defaultProjectId: parsed.defaultProjectId } : {},
+        // `null` clears a saved target; an absent field keeps it, as a save of the rest of the form does.
+        ...parsed.reportTo !== undefined ? { reportTo: parsed.reportTo ?? undefined } : {} }
     },
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources,
       [id]: { ...settings.sources[id], ...value as SettingsValue['sources'][string] } } }),
@@ -168,7 +171,8 @@ export class Settings {
     const value = block === 'pause' ? { paused: settings.paused }
       : kind === 'policy' || kind === 'eval' || kind === 'executor' ? settings[kind]
         : kind === 'source' ? (instance ? { enabled: instance.enabled, config: instance.config,
-          ...instance.label !== undefined ? { label: instance.label } : {} } : undefined)
+          ...instance.label !== undefined ? { label: instance.label } : {},
+          ...instance.reportTo !== undefined ? { reportTo: instance.reportTo } : {} } : undefined)
           : kind === 'sourcePolicy' ? (instance ? this.policyPart(id) : undefined) : undefined
     if (value === undefined) throw new UserError('unknownBlock', { block })
     return { block, revision: store.blockRevision(block as SettingsSave), value }

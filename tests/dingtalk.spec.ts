@@ -231,6 +231,15 @@ describe('configuration', () => {
     expect(dingtalkKind.channel!.link!(trigger.channel!.address, {}).label.zh).toContain('dingtalk:ops')
     expect(dingtalkKind.channel!.mention!({ source: 'dingtalk:ops', id: 'staff-1', name: 'Alice' })).toBe('@Alice')
   })
+  it('marks a group title as a strong Project hint and a direct conversation title as only a weak one', () => {
+    // A group named after a project places its requests there: a title no registered Project fits is asked about.
+    const group = dingtalkTrigger(message(), 'dingtalk:ops', config())
+    expect(dingtalkKind.projectHints!(group, config())).toEqual([{ name: 'Ops', strong: true }])
+    // A direct conversation's title, such as the bot's own name, only helps a match and never states a Project outright.
+    const direct = dingtalkTrigger(message({ conversationType: 'direct', openConversationId: '' }), 'dingtalk:ops', config())
+    expect(dingtalkKind.projectHints!(direct, config())).toEqual([{ name: 'Ops' }])
+    expect(dingtalkKind.projectHints!({ ...group, meta: { ...group.meta, conversationTitle: ' ' } }, config())).toEqual([])
+  })
   it('scopes a Trigger to the conversation it came from and to a sender on the instance allow-list', () => {
     expect(dingtalkKind.scope!({ meta: { conversationType: 'group', addressed: true, senderStaffId: 'staff-1' }, instance: 'dingtalk:ops' }, config()))
       .toEqual({ listened: true, observed: false, row: 'group' })

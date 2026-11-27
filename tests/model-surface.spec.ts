@@ -38,8 +38,11 @@ interface Skill { name: string; description: string; content: string }
  * Lower this limit when shrinking model-facing text; raise it only intentionally and explain why in the commit message.
  * P2 raised the orchestrator limit by 2,000: Project ownership (needsProject, the proposal, confirm_proposal) and the
  * reporter and mention ids add instructions and schema fields the assessment needs before any ticket exists.
+ * The workstation-confirmation change raised it by 6,000: `orchestrator_ask_project` and `orchestrator_answer_project`
+ * (with their schemas and prompt guidance for asking the trigger's author, choosing workspace, and never creating a
+ * station silently) are model-facing text the main Session needs to place work before a Ticket exists.
  */
-const BUDGET: Record<Role, number> = { orchestrator: 61_000, worker: 40_500 }
+const BUDGET: Record<Role, number> = { orchestrator: 67_000, worker: 40_500 }
 const PROMPTS = 'prompts/, skills/', TOOLS = 'src/app/tools/', SESSIONS = 'src/app/sessions.ts'
 const NOTICES = 'src/app/notices.ts', LINKS = 'src/app/links.ts', ASSESSMENT = 'src/app/assessment.ts'
 const EXECUTOR = 'src/executor/dsh.ts', ERRORS = 'src/core/errors.ts'
@@ -62,6 +65,11 @@ const BANNED: [rule: string, where: RegExp, phrase: RegExp][] = [
 const KNOWN_FAILURES: [owner: string, failure: string][] = []
 
 const MEMBER = 'ou_alice', CHAT = 'oc_team'
+/** The two admission rules this drive accepts work under, then changes: a fixture of its own, not the installation defaults. */
+const RULES = [
+  { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
+  { id: 'visual', name: 'Visual fixes', enabled: true, instruction: 'Explicit implementation requests for local spacing, alignment, overflow or styling, with a specified target or an objectively established existing standard/correct state to restore. Do not invent visual style, rendering or interaction decisions.' },
+]
 const feishu = (id: string, text: string, overrides: Record<string, unknown> = {}) => feishuTrigger({ message_id: `om_${id}`, chat_id: CHAT,
   chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: text, mentions: [{ id: 'ou_bot' }],
   create_time: String(Date.parse('2026-09-09T00:00:00Z') + Number(id) * 1000), ...overrides }, 'ou_bot', 'cli_bot')!
@@ -148,7 +156,7 @@ async function start() {
   const settings = runtime.store.settings()
   const allowed = { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } }
   const feishuSource = { kind: 'feishu', enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } }
-  runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: allowed }, eval: { ...settings.eval, mode: 'auto' },
+  runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: allowed, rules: RULES }, eval: { ...settings.eval, mode: 'auto' },
     sources: { ...settings.sources, feishu: feishuSource } })
   // A proactive acceptance needs a registered Project: this one is the Feishu instance's default, as a panel answer would make it.
   const at = new Date().toISOString()

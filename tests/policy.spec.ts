@@ -216,10 +216,11 @@ describe('revalidate and version', () => {
     const listed: MandateBasis = { via: 'listed', source: 'feishu', scope: { chatId: CHAT, direct: false }, sender: 'Alice' }
     expect(setup(silent).policy.revalidate({ ...mandate, basis: listed })).toBe(false)
     expect(policy.revalidate({ ...mandate, basis: listed })).toBe(true)
-    const inferred = { ...mandate, strength: 'inferred' as const, basis: { via: 'listed', observation: {}, rules: ['copy'] } satisfies MandateBasis }
+    const inferredRule = base.policy.rules[0]!.id
+    const inferred = { ...mandate, strength: 'inferred' as const, basis: { via: 'listed', observation: {}, rules: [inferredRule] } satisfies MandateBasis }
     expect(policy.revalidate(inferred)).toBe(true)
     expect(setup({ ...base, eval: { ...base.eval, mode: 'observe' } }).policy.revalidate(inferred)).toBe(false)
-    expect(setup({ ...base, policy: { ...base.policy, rules: base.policy.rules.map(rule => ({ ...rule, enabled: rule.id !== 'copy' })) } }).policy.revalidate(inferred)).toBe(false)
+    expect(setup({ ...base, policy: { ...base.policy, rules: base.policy.rules.map(rule => ({ ...rule, enabled: rule.id !== inferredRule })) } }).policy.revalidate(inferred)).toBe(false)
     expect(setup(nobody).policy.revalidate({ ...mandate, basis: { via: 'followup' } })).toBe(true)
   })
   it('changes the Policy version for rules, accept mode and the Sources\' parts, not for pause, concurrency, models or Source configuration', () => {
@@ -529,10 +530,11 @@ describe('source rules', () => {
   })
   it('admits an inferred candidate on the rules its own Source enables, not on another Source\'s or the default rules', () => {
     const policy = setup(auto(perSource([docs]))).policy
+    const inheritedRule = base.policy.rules[0]!.id
     expect(policy.admitsInferred(['docs'], 'feishu')).toBe(true)
     expect(policy.admitsInferred(['copy'], 'feishu')).toBe(false)
     expect(policy.admitsInferred(['docs'], 'github')).toBe(false)
-    expect(policy.admitsInferred(['copy'], 'github')).toBe(true)
+    expect(policy.admitsInferred([inheritedRule], 'github')).toBe(true)
     // Without a source only the installation's default rules admit, and a disabled own rule admits nothing.
     expect(policy.admitsInferred(['docs'])).toBe(false)
     expect(setup(auto(perSource([{ ...docs, enabled: false }]))).policy.admitsInferred(['docs'], 'feishu')).toBe(false)
@@ -548,13 +550,17 @@ describe('source rules', () => {
       basis: { ...followup.basis, source: 'github' } })).toBe(false)
   })
   it('reports changes to a Source\'s own rules only for its Tickets, and to the default rules for inheriting Sources', () => {
-    const old = perSource([copy]), changed = perSource([{ ...copy, instruction: 'Fix typos more carefully.' }])
+    /** These settings make `copy` the installation's default rule, so an inheriting Source's Tickets hold it. */
+    const withCopyDefaults = (rules: (typeof copy)[]) => {
+      const settings = perSource(rules)
+      return { ...settings, policy: { ...settings.policy, rules: [copy] } }
+    }
+    const old = withCopyDefaults([copy]), changed = withCopyDefaults([{ ...copy, instruction: 'Fix typos more carefully.' }])
     const effects = policyEffects([ticketOf('t1', 'feishu'), ticketOf('t2', 'github')], old, changed, scope)
     expect(effects.get('t1')).toEqual({ rules: [{ id: 'copy', name: 'Copy fixes', change: 'changed', instruction: 'Fix typos more carefully.' }] })
     expect(effects.has('t2')).toBe(false)
     // Changing the installation's default rules bears on the Source that inherits them, not on the one with its own.
-    const defaults = { ...changed, policy: { ...changed.policy, rules: changed.policy.rules.map(rule =>
-      rule.id === 'copy' ? { ...rule, instruction: 'Fix typos by default.' } : rule) } }
+    const defaults = { ...changed, policy: { ...changed.policy, rules: [{ ...copy, instruction: 'Fix typos by default.' }] } }
     const fallback = policyEffects([ticketOf('t1', 'feishu'), ticketOf('t2', 'github')], changed, defaults, scope)
     expect(fallback.has('t1')).toBe(false)
     expect(fallback.get('t2')).toEqual({ rules: [{ id: 'copy', name: 'Copy fixes', change: 'changed', instruction: 'Fix typos by default.' }] })

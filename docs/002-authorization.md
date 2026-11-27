@@ -90,6 +90,19 @@ An inferred candidate normally needs a full assessment. There is one shortcut: i
 
 Accepting an inferred candidate always requires an assessment. Direct accept refuses a Trigger that the gate did not admit as explicit.
 
+### Project questions
+
+A request that clearly starts a new project — new work for a workstation that does not exist yet, or a request naming an unregistered Project — is not accepted directly. The main Session asks about it with `orchestrator_ask_project`, which records the same `needsProject` stop an assessment's refusal records, optionally with a proposed name and address, and asks that request's conversation. A request whose event states an unregistered Project, such as a folder's `PROJECT.md` or a chat title, is refused the same way on accept.
+
+A person then answers in the conversation with `orchestrator_answer_project`, or in the panel through `POST triggers/:id/answer-project`:
+
+- `{project_id}` places the work in an existing workstation;
+- `{new:{name,location}}` creates one, recorded as specified and confirmed by that person;
+- `{confirmProposal:true}` creates the proposal the question carries, specified by the assessment and confirmed by the person;
+- `{workspace:true}` keeps temporary work in the built-in workspace and creates no workstation.
+
+Only a person may answer: a bot's, an automated report's or a worker's message cannot place work, and a chatbot or a report is a new-workstation lead only when its title or text explicitly names the project it concerns. The answering message starts no ticket; the request the question refused is evaluated again, and its accept becomes the Ticket in the answered Project.
+
 ## Accept mode and rules
 
 The accept mode is part of the Policy:

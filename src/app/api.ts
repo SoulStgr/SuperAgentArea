@@ -70,12 +70,13 @@ export interface QqLoginPoll {
 }
 /**
  * A person's answer to a Trigger's Project question: an existing Project, a new one (a station, or one temporary `adhoc`
- * task), or the assessment's proposal confirmed.
+ * task), the assessment's proposal confirmed, or the built-in workspace for temporary work.
  */
 export type AnswerProject =
   | { projectId: string }
   | { new: { name: string; location: ProjectLocation; kind?: 'station' | 'adhoc' } }
   | { confirmProposal: true }
+  | { workspace: true }
 /** A Source instance the panel creates: its kind, an optional key that names it, and its kind's single-instance configuration. */
 export interface NewSource { kind: string; key?: string; label?: string; config: Record<string, unknown> }
 /** What a Source instance's page changes: its switch, label, kind configuration, and default Project. */

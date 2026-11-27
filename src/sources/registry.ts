@@ -130,6 +130,7 @@ export class SourceRegistry implements SourceScope {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([id, stored]) => ({ id, kind: stored.kind, enabled: stored.enabled, config: stored.config,
         ...stored.label ? { label: stored.label } : {}, ...stored.defaultProjectId ? { defaultProjectId: stored.defaultProjectId } : {},
+        ...stored.reportTo ? { reportTo: stored.reportTo } : {},
         installed: false }))
     return [...installed, ...orphaned]
   }
@@ -325,6 +326,7 @@ export class SourceRegistry implements SourceScope {
   private resolve<C extends Record<string, unknown>>(kind: SourceKind<C>, id: string, stored: Stored | undefined): SourceInstance<C> {
     const parsed = kind.schema.safeParse(stored?.config ?? {})
     return { id, kind: kind.kind, enabled: parsed.success && (stored?.enabled ?? true), config: parsed.success ? parsed.data : kind.schema.parse({}),
-      ...stored?.label ? { label: stored.label } : {}, ...stored?.defaultProjectId ? { defaultProjectId: stored.defaultProjectId } : {} }
+      ...stored?.label ? { label: stored.label } : {}, ...stored?.defaultProjectId ? { defaultProjectId: stored.defaultProjectId } : {},
+      ...stored?.reportTo ? { reportTo: stored.reportTo } : {} }
   }
 }

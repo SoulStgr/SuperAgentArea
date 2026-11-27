@@ -1,13 +1,15 @@
 /** Session tool registration, role-scoped resource reads, and routing/settings tool contracts. */
+import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TICKET_STATES } from '../src/app/cards.ts'
 import { builtInBase, builtInParts, defaultPrompts } from '../src/app/prompts.ts'
-import { UserError } from '../src/core/index.ts'
+import { ASSESSOR_PERSON } from '../src/app/project-service.ts'
+import { UserError, WORKSPACE_PROJECT_ID } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { IM_WORDS, NOTE_WORDS } from '../src/infra/text.ts'
-import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
+import { CHAT, MEMBER, feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
 beforeEach(async () => { h = await startRuntime() })
@@ -161,6 +163,101 @@ it('routes several triggers in one call, in order, and answers a refused or fail
     { trigger_id: more.id, kind: 'attach', refused: 'Not recorded: database is locked; retry this item' },
   ])
   expect(h.runtime.store.tickets.list()).toHaveLength(2)
+})
+
+/** The texts the test host sent through lark-cli, one line per call. */
+const larkText = () => vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args.join(' ')).join('\n')
+/** Asks a Feishu request's Project question and returns it with the person's answer message on the same thread. */
+async function askedInConversation(requestId: string, answerId: string, proposal?: { name: string; address?: string }) {
+  const request = feishu(requestId, '@bot 这个项目想长期做，先确认放哪')
+  h.runtime.receive(request); await h.runtime.idle()
+  await h.runTool(h.runtime.masterId, 'orchestrator_ask_project', { trigger_id: request.id, ...proposal ? { proposal } : {} })
+  const answer = feishu(answerId, '按上面说的放就好', { root_id: `om_${requestId}` })
+  h.runtime.receive(answer); await h.runtime.idle()
+  return { request, answer }
+}
+/** Accepts a request whose Project question a person has answered, and returns its ticket. */
+async function acceptPlaced(request: { id: string }) {
+  const routed = await h.route({ kind: 'accept', trigger_id: request.id, title: '导出', worktree_name: 'export-work',
+    acknowledgement: '收到，开始做。' })
+  await h.runtime.idle()
+  return h.runtime.store.tickets.get((routed.ticket as { ticket_id: string }).ticket_id)!
+}
+
+it('asks an explicit request about its Project, records the person\'s workspace answer, and restarts the request as a ticket', async () => {
+  const aps = h.runtime.projects.create({ name: 'aps', location: { type: 'managed' }, specifiedBy: { source: 'panel', id: 'panel' } })
+  const request = feishu('60', '@bot 这个项目想长期做，先确认放哪')
+  h.runtime.receive(request); await h.runtime.idle()
+  const proposalPath = join(h.directory, 'work', 'reimbursement')
+  const asked = await h.runTool(h.runtime.masterId, 'orchestrator_ask_project', { trigger_id: request.id,
+    proposal: { name: '报销站', address: proposalPath } }) as Record<string, unknown>
+  // The request is asked about, not accepted: one needsProject stop, no ticket, and the candidates a person may choose.
+  expect(asked).toMatchObject({ trigger_id: request.id, decision: 'stop', project_question: true,
+    candidates: [expect.objectContaining({ id: aps.id, name: 'aps' })], proposal: { name: '报销站', location: { type: 'folder', path: proposalPath } } })
+  expect(h.runtime.store.tickets.list()).toEqual([])
+  const thread = `feishu:${CHAT}:om_60`
+  expect(h.runtime.store.decisions.byThread(thread).at(-1)!.reason).toContainEqual(expect.objectContaining({ code: 'needsProject' }))
+  // The question is asked in the request's conversation and names the workspace answer.
+  await h.runtime.sendReplies()
+  expect(larkText()).toContain('这单还没有归属的工作站')
+  expect(larkText()).toContain('不需要工作站')
+  // Asking again keeps the one question the request has.
+  expect(await h.runTool(h.runtime.masterId, 'orchestrator_ask_project', { trigger_id: request.id }))
+    .toMatchObject({ trigger_id: request.id, project_question: true, asked: true })
+  expect(h.runtime.store.decisions.byThread(thread).filter(decision => decision.kind === 'stop')).toHaveLength(1)
+  // The person answers in the conversation; its card carries the pending question.
+  const reply = feishu('61', '不用建站，临时放 workspace 吧', { root_id: 'om_60' })
+  h.runtime.receive(reply); await h.runtime.idle()
+  expect(h.relays(h.runtime.masterId).find(item => item.kind === 'candidate' && item.trigger_id === reply.id))
+    .toMatchObject({ pending_project: { trigger_id: request.id } })
+  const answered = await h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: reply.id, answer: { workspace: true } })
+  expect(answered).toMatchObject({ trigger_id: reply.id, answered: request.id, project: WORKSPACE_PROJECT_ID, queued: true })
+  // The original request is evaluated again and its ticket belongs to the workspace; the answering message is not work.
+  const ticket = await acceptPlaced(request)
+  expect(ticket).toMatchObject({ projectId: WORKSPACE_PROJECT_ID, sourceId: 'feishu' })
+  expect(h.runtime.store.tickets.list()).toHaveLength(1)
+})
+
+it('answers a Project question with an existing workstation, one the person names, or the proposal it carries', async () => {
+  const aps = h.runtime.projects.create({ name: 'aps', location: { type: 'managed' }, specifiedBy: { source: 'panel', id: 'panel' } })
+  // An existing workstation.
+  const first = await askedInConversation('70', '71')
+  expect(await h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: first.answer.id, answer: { project_id: aps.id } }))
+    .toMatchObject({ answered: first.request.id, project: aps.id })
+  expect((await acceptPlaced(first.request)).projectId).toBe(aps.id)
+  // A workstation the person names: they are both who specified and who confirmed it.
+  const path = join(h.directory, 'work', 'aps-fill')
+  const second = await askedInConversation('72', '73')
+  const created = await h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: second.answer.id,
+    answer: { new: { name: 'aps 填报', location: { type: 'folder', path } } } }) as { project: string }
+  const project = h.runtime.store.projects.get(created.project)!
+  expect(project.value).toMatchObject({ name: 'aps 填报', kind: 'station', location: { type: 'folder', path },
+    specifiedBy: { source: 'feishu', id: MEMBER }, confirmedBy: { source: 'feishu', id: MEMBER } })
+  expect((await acceptPlaced(second.request)).projectId).toBe(project.id)
+  // The proposal the question carries: the assessment specified it and the person confirmed it.
+  const proposedPath = join(h.directory, 'work', 'aps-proposed')
+  const third = await askedInConversation('74', '75', { name: 'aps 提案', address: proposedPath })
+  const confirmed = await h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: third.answer.id,
+    answer: { confirm_proposal: true } }) as { project: string }
+  const proposed = h.runtime.store.projects.get(confirmed.project)!
+  expect(proposed.value).toMatchObject({ name: 'aps 提案', kind: 'station', location: { type: 'folder', path: proposedPath },
+    specifiedBy: ASSESSOR_PERSON, confirmedBy: { source: 'feishu', id: MEMBER } })
+  expect((await acceptPlaced(third.request)).projectId).toBe(proposed.id)
+})
+
+it('refuses a Project answer that is not from a person, or when no question waits for it', async () => {
+  // A bot's or an automated report's message never places work, even when it looks like a project lead.
+  const bot = feishu('80', '@bot 自动日报：新项目启动了', { sender_type: 'bot', sender_id: 'cli_ci' })
+  h.runtime.receive(bot); await h.runtime.idle()
+  await expect(h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: bot.id, answer: { workspace: true } }))
+    .rejects.toThrow('Only a person answers a Project question')
+  // A person's ordinary message on a thread that asks nothing is not an answer, and an unknown trigger has no question either.
+  const quiet = feishu('81', '@bot 谢谢')
+  h.runtime.receive(quiet); await h.runtime.idle()
+  await expect(h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: quiet.id, answer: { workspace: true } }))
+    .rejects.toThrow('not waiting for a Project')
+  await expect(h.runTool(h.runtime.masterId, 'orchestrator_answer_project', { trigger_id: 'unknown', answer: { workspace: true } }))
+    .rejects.toThrow('Unknown trigger')
 })
 
 it('refuses alone an item that lacks a field its kind needs or breaks a field\'s limit, naming the field, and ignores unused fields', async () => {

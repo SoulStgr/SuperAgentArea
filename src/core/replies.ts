@@ -23,6 +23,9 @@ export type ReplyRequest =
   | { purpose: 'question'; triggerId: string; text: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
+/** Whether two Channel references name the same conversation; a result is not sent to its own source twice. */
+const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => a.source === b.source && a.thread === b.thread
+  && JSON.stringify(a.address) === JSON.stringify(b.address)
 
 /**
  * Replies writes the Engine's messages to Channels through the Outbox port: an acknowledgement, the answer to a person's
@@ -110,18 +113,42 @@ export class Replies extends EnginePart {
     if (request.purpose === 'answer' && !ready && !existing) throw new UserError('noAnswer')
     const asker = attention?.triggerId ? this.repo.triggers.get(attention.triggerId) : undefined
     const channel = request.purpose === 'answer' ? trigger!.channel : asker?.channel ?? (ticket ? this.sourceChannel(ticket) : undefined)
-    if (!channel) throw new UserError('noChannel')
-    // A result or a question for a person names the people it concerns where that conversation's Source can mention them.
-    const mentioned = request.purpose === 'attention' || request.purpose === 'result'
-      ? this.mentioned(request.text, ticket?.reporter, ticket?.mentions, channel) : request.text
     // A result's files travel with its text; the message id is the text's, so a reused reply keeps what it queued first.
     const attachments = request.purpose === 'result' ? request.attachments : undefined
-    this.options.outbox.send({ id, channel, text: mentioned, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {},
+    // A Ticket may have no replyable origin Channel (a monitored web page, for one). Its result still has a
+    // configured report target in that case; without either there is nowhere to deliver it.
+    const reportTarget = request.purpose === 'result' && ticket ? this.options.reportTarget?.(ticket) : undefined
+    if (!channel && !reportTarget) throw new UserError('noChannel')
+    if (!channel && reportTarget) {
+      return this.deliver(reportTarget, request.text, ticket, attachments, key('reply', trigger?.id ?? ticket?.id ?? '', request.text))
+    }
+    // A result or a question for a person names the people it concerns where that conversation's Source can mention them.
+    const mentioned = request.purpose === 'attention' || request.purpose === 'result'
+      ? this.mentioned(request.text, ticket?.reporter, ticket?.mentions, channel!) : request.text
+    this.options.outbox.send({ id, channel: channel!, text: mentioned, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {},
       ...attachments?.length ? { attachments } : {} })
     if (request.purpose === 'answer' && ticket && trigger && ticket.answers?.includes(trigger.id)) {
       ticket.answers = ticket.answers.filter(item => item !== trigger.id)
       this.repo.tickets.save(ticket)
     }
+    // A monitored request's own result is also delivered to its configured conversation; the target gets the raw text,
+    // because the origin conversation's mention syntax does not apply there.
+    if (reportTarget && !sameChannel(reportTarget, channel!)) {
+      const targetId = key('result-target', ticket!.id)
+      const existingTarget = this.options.outbox.status(targetId)
+      if (!existingTarget) {
+        this.options.outbox.send({ id: targetId, channel: reportTarget, text: request.text, kind: 'reply', ticketId: ticket!.id,
+          ...attachments?.length ? { attachments } : {} })
+      }
+    }
+    return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
+  }
+  /** Queue `text` and its files to a result's configured target, with an id a retry reuses. */
+  private deliver(channel: ChannelRef, text: string, ticket: Ticket | undefined, attachments: OutboundAttachment[] | undefined,
+    id: string): Reply {
+    const existing = this.options.outbox.status(id)
+    if (!existing) this.options.outbox.send({ id, channel, text, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {},
+      ...attachments?.length ? { attachments } : {} })
     return { id, status: this.options.outbox.status(id) ?? 'pending', reused: existing !== undefined }
   }
   /** `text` with the mentions its Source can render; unchanged when the host has no Source-side people adapter. */

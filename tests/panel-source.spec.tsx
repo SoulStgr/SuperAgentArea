@@ -256,6 +256,21 @@ it('answers by creating a workstation, from a local folder or a repository addre
     body: { new: { name: 'aps repo', location: { type: 'repo', url: 'git@github.com:acme/aps.git' } } } })
 })
 
+it('answers with the workspace when the work needs no workstation', async () => {
+  threeInstances()
+  ask(false, false)
+  await mount()
+  await click(zh['tab.source'])
+  await click(find('1 个请求还没有归属的工作站', '.dt-source-card button'))
+  await click(find(zh.sourceAnswerWorkspace, '[role="dialog"] [role="tab"]'))
+  expect(dialog().textContent).toContain(zh.sourceAnswerWorkspaceHint)
+  await click(find(zh.sourceAnswerSubmit, '[role="dialog"] button'))
+  expect(server.requests.find(request => request.path === 'triggers/e20/answer-project')).toMatchObject({ method: 'POST',
+    body: { workspace: true } })
+  expect([...document.querySelectorAll('.dt-toast')].at(-1)?.textContent).toBe(zh.sourceAnswerDone)
+  expect(server.pendingProjects['folder:ops']).toEqual([])
+})
+
 it('shows each Source\'s state on the Source page and opens its settings from a setup problem', async () => {
   await mount()
   await click(zh['tab.source'])

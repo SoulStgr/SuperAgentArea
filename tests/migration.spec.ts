@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
+import { SCHEMA_VERSION, Store, type SettingsVersion } from '../src/app/store.ts'
 import { WORKSPACE_PROJECT_ID, artifactRecordId } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
+import { LEGACY_DEFAULT_RULES } from '../src/policy.ts'
 import { basisOf, reasonsOf, withoutCopies } from '../src/app/migration.ts'
 import { Prompts, composePrompt, defaultPrompts } from '../src/app/prompts.ts'
 import { masterPrompt } from '../src/app/context.ts'
@@ -712,4 +713,133 @@ it('upgrades a schema 12 database saved before Source instances into one instanc
   expect(again.get(KV.settings.revision)).toBe(2)
   expect(Object.keys(again.settings().sources).sort()).toEqual(['feishu', 'folder:dev', 'folder:ops', 'github'])
   again.close()
+})
+
+/** A Source instance as the settings store reads it. */
+const instance = (kind: string, config: Record<string, unknown> = {}) => ({ kind, enabled: true, config })
+/** Save a settings snapshot as revision 1 of a fresh state directory, as a build before this one stored it. */
+function savedSettings(path: string, settings: unknown, source: SettingsVersion['source'] = 'panel'): void {
+  const store = new Store(path)
+  const version: SettingsVersion = { revision: 1, savedAt: '2026-09-01T00:00:00.000Z', source, policyVersion: '', policyChanged: false,
+    notified: [], settings: settings as SettingsVersion['settings'] }
+  store.set(KV.settings.version(1), version)
+  store.set(KV.settings.revision, 1)
+  store.close()
+}
+/** A person's own rule, which no default-rule migration may rewrite. */
+const customRule = { id: 'chat', name: 'Casual chat', enabled: true, instruction: 'Answer casual conversation without changing the product.' }
+const newRuleIds = ['workstation-work', 'new-workstation', 'investigation', 'one-off-task']
+const ruleIds = (rules: readonly { id: string }[] | undefined) => (rules ?? []).map(rule => rule.id)
+
+it('starts a new installation with the four workstation admission rules and records no settings revision', () => {
+  const path = join(directory, 'db.sqlite')
+  const store = new Store(path)
+  const rules = store.settings().policy.rules
+  expect(ruleIds(rules)).toEqual(newRuleIds)
+  expect(rules.map(rule => rule.name)).toEqual(['Workstation work', 'New workstation', 'Investigation', 'One-off task'])
+  expect(rules.every(rule => rule.enabled)).toBe(true)
+  // The default rules are English and state that they gate proactive acceptance only, not station creation.
+  for (const rule of rules) {
+    expect(rule.instruction).toMatch(/^[\x20-\x7E]+$/)
+    expect(rule.name).toMatch(/^[\x20-\x7E]+$/)
+  }
+  expect(rules.find(rule => rule.id === 'new-workstation')!.instruction).toContain('never creates a workstation')
+  // The defaults come from the schema: a new database stores no settings revision at all.
+  expect(store.get(KV.settings.revision)).toBeUndefined()
+  expect(store.settingsHistory()).toEqual([])
+  store.close()
+})
+
+it('replaces the previous build\'s default rules once, in the installation and in each Source that still had exactly them', () => {
+  const path = join(directory, 'db.sqlite')
+  savedSettings(path, {
+    sources: { feishu: instance('feishu'), qq: instance('qq'), wechat: instance('wechat') },
+    policy: {
+      rules: LEGACY_DEFAULT_RULES,
+      sources: {
+        feishu: { allowed: [{ id: 'alice' }], admission: {}, rules: LEGACY_DEFAULT_RULES },
+        // One old default beside a person's own rule is a customized set: it is kept whole.
+        qq: { allowed: [], admission: {}, rules: [LEGACY_DEFAULT_RULES[0]!, customRule] },
+        wechat: { allowed: [], admission: {}, rules: [customRule] },
+      },
+    },
+    eval: { mode: 'auto' },
+  })
+  const store = new Store(path)
+  const settings = store.settings()
+  expect(ruleIds(settings.policy.rules)).toEqual(newRuleIds)
+  expect(settings.policy.sources.feishu).toMatchObject({ allowed: [{ id: 'alice' }], rules: settings.policy.rules })
+  expect(ruleIds(settings.policy.sources.qq!.rules)).toEqual(['copy', 'chat'])
+  expect(settings.policy.sources.wechat!.rules).toEqual([customRule])
+  // A setting beside the rules is kept, and the upgrade is one settings revision whose origin is the migration.
+  expect(settings.eval.mode).toBe('auto')
+  expect(store.get(KV.settings.revision)).toBe(2)
+  expect(store.settingsHistory().map(item => item.revision)).toEqual([2, 1])
+  expect(store.settingsHistory(1)[0]).toMatchObject({ revision: 2, source: 'migration',
+    settings: { policy: { rules: settings.policy.rules, sources: { feishu: { rules: settings.policy.rules } } } } })
+  store.close()
+  // Opening it again writes nothing: the stored rules are no longer the old defaults.
+  const again = new Store(path)
+  expect(again.get(KV.settings.revision)).toBe(2)
+  expect(again.settingsHistory().map(item => item.revision)).toEqual([2, 1])
+  expect(ruleIds(again.settings().policy.rules)).toEqual(newRuleIds)
+  again.close()
+})
+
+it('replaces a Source\'s own rules that are the old defaults without touching the installation\'s customized rules', () => {
+  const path = join(directory, 'db.sqlite')
+  savedSettings(path, {
+    sources: { feishu: instance('feishu') },
+    policy: { rules: [customRule], sources: { feishu: { allowed: [], admission: {}, rules: LEGACY_DEFAULT_RULES } } },
+  })
+  const store = new Store(path)
+  const settings = store.settings()
+  expect(settings.policy.rules).toEqual([customRule])
+  expect(ruleIds(settings.policy.sources.feishu!.rules)).toEqual(newRuleIds)
+  expect(store.get(KV.settings.revision)).toBe(2)
+  store.close()
+  // A customized rule set is not the old default, whether or not it reuses a default rule's id and text.
+  const untouched = join(directory, 'custom.sqlite')
+  const edited = { ...LEGACY_DEFAULT_RULES[1]!, instruction: 'Fix colors only.' }
+  savedSettings(untouched, { sources: { feishu: instance('feishu') },
+    policy: { rules: [LEGACY_DEFAULT_RULES[0]!, edited], sources: { feishu: { allowed: [], admission: {}, rules: [edited] } } } })
+  const kept = new Store(untouched)
+  expect(kept.settings().policy.rules).toEqual([LEGACY_DEFAULT_RULES[0]!, edited])
+  expect(kept.settings().policy.sources.feishu!.rules).toEqual([edited])
+  expect(kept.get(KV.settings.revision)).toBe(1)
+  expect(kept.settingsHistory().map(item => item.revision)).toEqual([1])
+  kept.close()
+})
+
+it('keeps every rule a person wrote, and writes no revision when no stored rules are the old defaults', () => {
+  const path = join(directory, 'db.sqlite')
+  savedSettings(path, {
+    sources: { wechat: instance('wechat') },
+    policy: { rules: [customRule], sources: { wechat: { allowed: [], admission: {}, rules: [customRule] } } },
+  })
+  const store = new Store(path)
+  expect(store.settings().policy.rules).toEqual([customRule])
+  expect(store.settings().policy.sources.wechat!.rules).toEqual([customRule])
+  expect(store.get(KV.settings.revision)).toBe(1)
+  expect(store.settingsHistory().map(item => item.revision)).toEqual([1])
+  store.close()
+})
+
+it('upgrades the old default rules and settings stored before Source instances in one migration revision', () => {
+  const path = join(directory, 'db.sqlite')
+  savedSettings(path, {
+    // Settings stored before Source instances: one entry per kind, without `kind`.
+    sources: { feishu: { enabled: true, config: { chats: [], directMessages: true } }, github: { enabled: false, config: {} } },
+    policy: { rules: LEGACY_DEFAULT_RULES, sources: {} },
+  })
+  const store = new Store(path)
+  const settings = store.settings()
+  expect(Object.keys(settings.sources).sort()).toEqual(['feishu', 'github'])
+  expect(settings.sources.feishu).toMatchObject({ kind: 'feishu', enabled: true })
+  expect(ruleIds(settings.policy.rules)).toEqual(newRuleIds)
+  // Both upgrades went into the same settings revision.
+  expect(store.settingsHistory().map(item => item.revision)).toEqual([2, 1])
+  expect(store.settingsHistory(1)[0]).toMatchObject({ revision: 2, source: 'migration',
+    settings: { sources: { feishu: { kind: 'feishu' } }, policy: { rules: settings.policy.rules } } })
+  store.close()
 })

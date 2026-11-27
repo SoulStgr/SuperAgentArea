@@ -1,7 +1,8 @@
 /**
- * The host's question for a Trigger whose Project is not registered: the three ways a person may answer it (an existing
- * Project, a new one with an address, or the assessment's proposal), written in the Trigger's language. The assessment must
- * not create a Project itself, so this question and the person's answer are how ownership is settled before any ticket.
+ * The host's question for a Trigger whose Project is not registered: the ways a person may answer it (an existing Project,
+ * a new one with an address, the assessment's proposal, or the built-in workspace for temporary work), written in the
+ * Trigger's language. The assessment must not create a Project itself, so this question and the person's answer are how
+ * ownership is settled before any ticket.
  */
 import type { Trigger } from './model.ts'
 import type { ProjectCandidate, ProjectLocation, ProjectProposal } from './project.ts'
@@ -30,16 +31,21 @@ function listed(candidates: readonly ProjectCandidate[], chinese: boolean): stri
   }
   return names.join(chinese ? '、' : ', ')
 }
-/** The three answers of the question, in the Trigger's language, from the Projects it may choose and the proposal it may confirm. */
+/**
+ * The answers of the question, in the Trigger's language, from the Projects it may choose and the proposal it may confirm:
+ * an existing station, a new one with its address, the assessment's proposal, and the built-in workspace for temporary work.
+ */
 export function needsProjectQuestion(trigger: Pick<Trigger, 'text'>, candidates: readonly ProjectCandidate[] = [],
   proposal?: ProjectProposal): string {
   const chinese = readsChinese(trigger.text)
   const names = listed(candidates, chinese)
   const options = [
     ...names ? [chinese ? `①归到已有工作站：${names}` : `①an existing workstation: ${names}`] : [],
-    chinese ? '②新建工作站：给出名称和地址（本地目录或远程仓库）' : '②a new workstation: its name and address (a local folder or a repository)',
+    chinese ? '②新建工作站：给出名称和地址（远程仓库 URL 或本地文件夹绝对路径）'
+      : '②a new workstation: its name and address (a remote repository URL or a local folder\'s absolute path)',
     ...proposal ? [chinese ? `③确认建议：新建“${proposal.name.slice(0, NAME_CHARS)}”（${projectLocationText(proposal.location, true)}）`
       : `③confirm the proposal: new “${proposal.name.slice(0, NAME_CHARS)}” (${projectLocationText(proposal.location)})`] : [],
+    chinese ? '④ 不需要工作站（临时工作放 workspace）' : '④no workstation (temporary work in the workspace)',
   ]
   return chinese ? `这单还没有归属的工作站。请回复：${options.join('；')}。`
     : `This request belongs to no registered workstation. Reply with ${options.join('; ')}.`

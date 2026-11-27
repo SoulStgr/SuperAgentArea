@@ -302,10 +302,12 @@ export const dingtalkKind: SourceKind<DingtalkConfig> = {
   },
   // The staff ids the instance's own allow-list names are people this Source knows, beside the Policy's allowed list.
   people: config => config.allowedUserIds.map(id => ({ id })),
-  // A group's title is a weak Project hint: it helps a match and never states a Project outright.
+  // A group's title is a strong Project hint: a request in a group named after a project belongs there, so a group title
+  // no registered Project fits is asked about. A direct conversation's title, such as the bot's own name, only helps a match.
   projectHints: (trigger): ProjectHint[] => {
     const title = typeof trigger.meta.conversationTitle === 'string' ? trigger.meta.conversationTitle.trim() : ''
-    return title ? [{ name: title }] : []
+    if (!title) return []
+    return [trigger.meta.conversationType === 'group' ? { name: title, strong: true } : { name: title }]
   },
   policy: {
     schema: PolicySchema,

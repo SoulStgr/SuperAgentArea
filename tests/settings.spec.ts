@@ -218,14 +218,14 @@ it('shows a Source\'s own rule changes in the policy history without changing th
   const { settings, store } = h.runtime
   const history = () => policyHistory(store, h!.runtime.sources, policyVersion(store.settings()))
   const rules = [{ id: 'docs', name: 'Docs', enabled: true, instruction: 'Fix documentation.' }]
+  const defaultRules = store.settings().policy.rules
   const block = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
   await settings.save('policy:feishu', { ...block.value, rules }, block.revision, 'panel')
   expect(history().items[0]).toMatchObject({ block: 'policy:feishu' })
   // A Source that starts overriding the default rules reports the rules its work gains and loses.
   expect(history().items[0]!.changes).toEqual(expect.arrayContaining([
     { code: 'ruleAdded', name: 'Docs', source: 'feishu', part: true },
-    { code: 'ruleRemoved', name: 'Copy fixes', source: 'feishu', part: true },
-    { code: 'ruleRemoved', name: 'Visual fixes', source: 'feishu', part: true }]))
+    ...defaultRules.map(rule => ({ code: 'ruleRemoved', name: rule.name, source: 'feishu', part: true }))]))
   const changed = settings.block('policy:feishu') as { revision: number; value: Record<string, unknown> }
   await settings.save('policy:feishu', { ...changed.value, rules: [{ ...rules[0]!, instruction: 'Fix docs only.', enabled: false }] }, changed.revision, 'panel')
   expect(history().items[0]!.changes).toEqual(expect.arrayContaining([
@@ -319,4 +319,27 @@ it('renames a Source account through its settings block and refuses a name anoth
   await settings.add({ id: 'vault:d', kind: 'vault', label: 'Backup', config: {} })
   await expect(settings.add({ id: 'vault:e', kind: 'vault', label: ' backup ', config: {} }))
     .rejects.toThrow(new UserError('sourceLabelExists', { source: 'vault:d', label: 'backup' }))
+})
+
+it('keeps a frozen report target on a Source, and clears it only when a save asks to', async () => {
+  h = await startRuntime()
+  await settled(h)
+  const { settings, store } = h.runtime
+  type Block = { revision: number; value: Record<string, unknown> }
+  const block = () => settings.block('source:github') as Block
+  const target = { source: 'qq', thread: 'qq:group-1',
+    address: { row: 'qq', conversationType: 'group', conversationId: 'group-1' } }
+  const saved = block()
+  await settings.save('source:github', { ...saved.value, reportTo: target }, saved.revision, 'panel')
+  expect(store.settings().sources.github!.reportTo).toEqual(target)
+  expect((block().value as { reportTo?: unknown }).reportTo).toEqual(target)
+  // Saving the rest of the form without the field keeps the target; an explicit null clears it.
+  const kept = block()
+  await settings.save('source:github', { ...kept.value, config: { ...(kept.value.config as Record<string, unknown>), pollSeconds: 120 } },
+    kept.revision, 'panel')
+  expect(store.settings().sources.github!.reportTo).toEqual(target)
+  const cleared = block()
+  await settings.save('source:github', { ...cleared.value, reportTo: null }, cleared.revision, 'panel')
+  expect(store.settings().sources.github!.reportTo).toBeUndefined()
+  expect((block().value as { reportTo?: unknown }).reportTo).toBeUndefined()
 })

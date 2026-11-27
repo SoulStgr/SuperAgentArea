@@ -17,7 +17,7 @@ import type { DecisionRow, DroppedReply, HistoryView, Problem, ProjectDetailView
   TriggerRow,
   ArtifactDetailView, ArtifactRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
-import { AdmissionTableSchema, EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, RuleArraySchema, SettingsSchema }
+import { AdmissionTableSchema, DeliveryTargetSchema, EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, RuleArraySchema, SettingsSchema }
   from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { connectorKinds } from '../../src/sources/connectors.ts'
@@ -249,12 +249,13 @@ function healthOf(name: string): Health {
 const problemOf_ = (id: string) => server.setup.problems?.[id]
   ?? [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
 /** The fixture's configured instances, in the panel's order: kind order, then instance id order. */
-function instancesOf(): { id: string; kind: string; enabled: boolean; config: Record<string, unknown>; label?: string }[] {
+function instancesOf(): { id: string; kind: string; enabled: boolean; config: Record<string, unknown>; label?: string
+  reportTo?: { source: string; thread: string; address: Record<string, string>; label?: string } }[] {
   const order = KINDS.map(kind => kind.kind)
   return Object.entries(server.settings.sources).filter(([, instance]) => order.includes(instance.kind))
     .sort(([a, one], [b, two]) => order.indexOf(one.kind) - order.indexOf(two.kind) || a.localeCompare(b))
     .map(([id, instance]) => ({ id, kind: instance.kind, enabled: instance.enabled, config: instance.config,
-      ...instance.label ? { label: instance.label } : {} }))
+      ...instance.label ? { label: instance.label } : {}, ...instance.reportTo ? { reportTo: instance.reportTo } : {} }))
 }
 function sourceSettings(): SourceView[] {
   const instances = instancesOf()
@@ -328,7 +329,9 @@ function sourceDetailOf(id: string): SourceDetailView | undefined {
   const tickets = [...server.tickets.open, ...server.person]
     .filter(ticket => (server.ticketSources[ticket.id] ?? 'feishu') === id)
     .filter((ticket, index, list) => list.findIndex(item => item.id === ticket.id) === index)
-  return { ...status, value: { enabled: instance.enabled, config, ...instance.label !== undefined ? { label: instance.label } : {} },
+  return { ...status, value: { enabled: instance.enabled, config, ...instance.label !== undefined ? { label: instance.label } : {},
+    ...instance.reportTo !== undefined ? { reportTo: instance.reportTo } : {} },
+    deliveryTargets: [],
     revision: server.revisions[`source:${id}`] ?? 0,
     restarts: SETUP_FIELDS[kind.kind] ?? [], description: kind.description, fields: kind.fields, defaults: kind.schema.parse({}),
     labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {},
@@ -634,7 +637,8 @@ type Route<K extends keyof Api> = { query?: readonly Query<K>[]; answer: (reques
 const page = <T>(items: T[]) => ({ items, total: items.length, next_offset: null })
 const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
-const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown(), label: z.string().trim().max(100).optional() })
+const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown(), label: z.string().trim().max(100).optional(),
+  reportTo: DeliveryTargetSchema.nullable().optional() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
@@ -892,11 +896,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'POST triggers/:id/answer-project': { body: true, answer: ({ params, body }) => {
     // As the host does: the Trigger must wait for a Project question, and a new address is validated before it is created.
     if (!server.projectQuestions.has(params.id)) return refuse(400, 'This Trigger is not waiting for a Project', { code: 'notNeedsProject', values: {} })
-    const answer = body as { projectId?: string; new?: { name: string; location: { type: string; path?: string } }; confirmProposal?: true }
+    const answer = body as { projectId?: string; workspace?: true; new?: { name: string; location: { type: string; path?: string } }; confirmProposal?: true }
     if (answer.new?.location.type === 'folder' && !/^(?:[A-Za-z]:[\\/]|\/)/.test(answer.new.location.path ?? '')) {
       return refuse(400, 'The Project location is not usable', { code: 'projectLocationInvalid', values: { reason: 'the folder must be an absolute path' } })
     }
-    const resolved = answer.projectId ?? 'prj_aps'
+    // Temporary work may stay in the built-in workspace instead of any workstation.
+    const resolved = answer.workspace ? 'prj_workspace' : answer.projectId ?? 'prj_aps'
     server.projectQuestions.delete(params.id)
     for (const [source, items] of Object.entries(server.pendingProjects))
       server.pendingProjects[source] = items.filter(item => item.triggerId !== params.id)
@@ -947,7 +952,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       server.settings = { ...server.settings, policy: { ...server.settings.policy,
         sources: { ...server.settings.policy.sources, [instanceId]: part as typeof server.settings.policy.sources[string] } } }
     } else if (kind && instance) {
-      const { enabled, config: value, label } = SourceSave.parse(body.value)
+      const { enabled, config: value, label, reportTo } = SourceSave.parse(body.value)
       const config = kind.schema.parse(value)
       // As on the server, a changed CLI that fails its check refuses the save with the setup problem.
       if (config.cli === 'lark-broken') {
@@ -956,7 +961,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       }
       restarting = (config.cli ?? '') !== (instance.config.cli ?? '')
       server.settings = { ...server.settings, sources: { ...server.settings.sources, [instanceId!]: { ...instance, enabled, config,
-        ...label === undefined ? {} : { label } } } }
+        ...label === undefined ? {} : { label }, ...reportTo === undefined ? {} : { reportTo: reportTo ?? undefined } } } }
     }
     server.revisions[block] = (server.revisions[block] ?? 0) + 1
     return { restarting, revision: server.revisions[block] }
