@@ -43,6 +43,7 @@
 | 0.3.19 | 2026-11-26 | `history/dsh-superagent-0.3.19.tgz` | 522,459 | `12f902101815a207` | `7fd5d8d` | 会话直达（Workspace 预建/命名 SAA-工作站名、不再选工作区）、agent 段精简 |
 | 0.3.20 | 2026-11-26 | `history/dsh-superagent-0.3.20.tgz` | 521,499 | `be07ea133079e9c0` | `9b04b4b` | agent 段再精简（移除工单/产物/报告历史，只保留要求与规则） |
 | 0.3.21 | 2026-11-27 | `history/dsh-superagent-0.3.21.tgz` | 522,006 | `aef73cf8e6c9529d` | `ee5ccd4` | 钉钉扫码接入接受 CREATING/PUBLISHING/APPROVING 等中间状态，凭据齐全即建号 |
+| 0.3.22 | 2026-11-27 | `history/dsh-superagent-0.3.22.tgz` | 532,405 | `cbdd00537637fed5` | `848b4ef` | 默认接单规则换代、建站反问/workspace 闭环、网页来源结果投递 QQ/钉钉（QQ 出站文件） |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -256,6 +257,15 @@
 - 测试：中间状态、`APPROVING` + 凭据、未知状态继续等待、半凭据继续等待；`pnpm check` 全绿（77 个测试文件 / 1604 项：1590 passed / 14 skipped + build）。
 
 对比 0.3.20：修复钉钉扫码接入在真实设备注册中间态（尤其 `APPROVING`）下误判失败的问题；扫码后能正常创建并启用账号。
+
+### 0.3.22
+
+- **默认接单规则换代**：原型默认的 `copy`/`visual` 两条替换为 `workstation-work`（站内明确工作）、`new-workstation`（新工作站长期任务）、`investigation`（排查/评审）、`one-off-task`（一次性任务）四类；规则仍只影响主动候选，不负责建站。旧安装只在存储规则**完全等于**旧默认（id/name/enabled/instruction 全等）时一次性迁移，自定义规则（如某来源的“闲聊”）不覆盖；迁移写 settings history，二次启动不重复。
+- **建站反问闭环**：`needsProjectQuestion` 增加「④ 不需要工作站（临时工作放 workspace）」，新建站地址改为「远程仓库 URL 或本地文件夹绝对路径」；`ProjectService` 支持 `{ workspace: true }`；新增主 Session 工具 `orchestrator_ask_project`（显式请求也可询问）与 `orchestrator_answer_project`（人回答 workspace / 已有站 / 新建 / 确认提案，回答者记为 specifiedBy/confirmedBy；回答消息本身不成单）；面板未归属问题加 workspace 选项。机器人/自动日报只在标题/正文明确指代方向时作为新站线索，不明确则退会话/面板，不静默建站；DingTalk 群标题改为强项目提示；远程文件夹工作站本期未做。
+- **网页来源结果投递**：来源实例可保存 `reportTo`（从最近 QQ/钉钉会话中选，冻结会话 id、去掉 `msgId`/`receivedAt`/`sessionWebhook` 等一次性字段）；网页来源的工单 ready 时，结果文字与 Excel/Word 等附件会另发到该会话。QQ 增加出站文件/图片（官方 SDK `sendFile`/`sendMedia`，≤10 个/≤20 MiB，失败计数不影响文字；主动消息受平台配额/文件权限限制），DingTalk 已有出站文件，微信 iLink 不能主动发起会话，因此不作为投递目标。
+- 测试：`pnpm check` 全绿（78 个测试文件 / 1631 项：1617 passed / 14 skipped + build）；新增/更新规则迁移、建站反问/回答/workspace、DingTalk 强提示、QQ 出站文件、reportTo 保存/清除、投递目标列表与 `Replies` 目标投递。
+
+对比 0.3.21：接单规则从原型两条升级为当前四类；未知工作站不再只能人工在面板回答，触发者可在聊天里确认新站或“放 workspace”；网页监控结果可主动投递 Excel/Word 到 QQ/钉钉并支持 QQ 出站文件。
 
 ## 3. 回退与复现
 

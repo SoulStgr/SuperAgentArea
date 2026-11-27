@@ -386,6 +386,19 @@
       "stateSchema": 12,
       "architecture": "twelve source kinds; DingTalk scan accepts intermediate registration states",
       "comparison": "DingTalk QR onboarding accepts the intermediate registration states (CREATING, PUBLISHING, APPROVING) and treats the credentials as issued whenever both are present, so an organization that approves new apps creates its account at APPROVING; unknown states and half-issued credentials keep polling until the attempt's TTL, and the scan hint mentions the admin approval",
+      "note": "superseded by 0.3.22"
+    },
+    {
+      "version": "0.3.22",
+      "tgz": "history/dsh-superagent-0.3.22.tgz",
+      "bytes": 532405,
+      "sha256": "cbdd00537637fed5c62cec930adbc8a3f021e5981bb50442342ecf106a24f427",
+      "date": "2026-11-27",
+      "sourceCommit": "848b4ef4696c8277edde144c0ea7695dcdce4c08",
+      "recordedCommit": "848b4ef4696c8277edde144c0ea7695dcdce4c08",
+      "stateSchema": 12,
+      "architecture": "twelve source kinds; current default rules, workstation confirmation loop, web report targets to QQ and DingTalk",
+      "comparison": "Default accept rules become workstation-work, new-workstation, investigation and one-off-task with a one-time migration of untouched old defaults; a new-station question can be answered in chat with workspace, an existing station, a new repository or folder, or the proposal; a monitored web Source can deliver Ticket results and Excel/Word artifacts to a frozen recent QQ or DingTalk conversation, and QQ sends outbound files while WeChat iLink stays reply-only",
       "note": "current latest"
     }
   ]
