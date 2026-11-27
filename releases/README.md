@@ -1,6 +1,6 @@
 # Releases — SuperAgentArea（saa）
 
-本目录归档**每个已发布的构建包**，用于回退、复现或在某个版本上继续开发。包文件（`dsh-superagent-<version>.tgz`）统一保存在 `history/` 目录并随 git 跟踪，**不删除**；仓库根目录不再放包。
+本目录归档**每个已发布的构建包**，用于回退、复现或在某个版本上继续开发。包文件（历史版本为 `dsh-superagent-<version>.tgz`，0.4.0 起为 `dsh-superagentarea-<version>.tgz`）统一保存在 `history/` 目录并随 git 跟踪，**不删除**；仓库根目录不再放包。
 
 每个版本记录：包文件名、大小、SHA-256、源提交（git 仓库哈希）、功能主题、与上一版的对比。
 
@@ -45,6 +45,7 @@
 | 0.3.21 | 2026-11-27 | `history/dsh-superagent-0.3.21.tgz` | 522,006 | `aef73cf8e6c9529d` | `ee5ccd4` | 钉钉扫码接入接受 CREATING/PUBLISHING/APPROVING 等中间状态，凭据齐全即建号 |
 | 0.3.22 | 2026-11-27 | `history/dsh-superagent-0.3.22.tgz` | 532,405 | `cbdd00537637fed5` | `848b4ef` | 默认接单规则换代、建站反问/workspace 闭环、网页来源结果投递 QQ/钉钉（QQ 出站文件） |
 | 0.3.23 | 2026-11-27 | `history/dsh-superagent-0.3.23.tgz` | 532,830 | `60e2d590e9f47d51` | `36983e0` | 增加「闲聊」默认规则：日常问候/天气/能做什么直接回复，不建工单 |
+| 0.4.0 | 2026-11-27 | `history/dsh-superagentarea-0.4.0.tgz` | 533,635 | `713664b16fbef9ee` | `713d73f` | 插件统一更名 dsh-superagentarea；接单规则文档；开源致谢 |
 
 > **关于 0.1.0–0.1.3 的源提交**：本仓库历史被压平过一次（`73dfd0f Initialize`），这四个包是在压平前构建的，原始提交哈希已不可回溯；包文件与其校验和可用于回退，但无法从当前仓库重建出逐字节相同的源码树。
 >
@@ -277,6 +278,15 @@
 
 对比 0.3.22：默认规则从四条扩展为五条；日常问候/天气/能力询问默认就走直接回复，不需要每个来源手工加“闲聊”规则。
 
+### 0.4.0
+
+- **统一命名**：bundle 包名、`cordis.patch.yml` 中的全部插件 id、客户端 panel id、agent preset id、内置技能目录/名（`skills/dsh-superagentarea-*`）和服务脚本（`scripts/dsh-superagentarea`）统一改为 `dsh-superagentarea`，与上游 `dsh-superagent` 区分。
+- **保留数据**：状态目录仍为原来的 `…\state\superagent-desktop`；数据库、工单源、规则、工单、产物和 worker-bin 原样可用。旧 worker 环境文件标记 `Written by dsh-superagent` 会被识别并重写；prepare 命令继续接受旧 `DSH_SUPERAGENT_*` 变量别名；历史 skill/env 前缀迁移到新名。
+- **文档**：新增 [use/接单规则配置.md](../use/接单规则配置.md)，说明五条默认规则（含 casual-chat）、每个来源实例的配置方式、Policy version、评估到工单的完整链路、排障与安全边界；use/README 增加入口。
+- **致谢**：README/README.zh-CN 增加对开源 **dsh-superagent** 原型和 **dsh-im**（DingTalk/QQ/微信协议细节，MIT）的感谢；许可证全文仍在 THIRD_PARTY_NOTICES。
+- 测试：`pnpm check` 全绿（78 个测试文件 / 1632 项：1618 passed / 14 skipped + build）；改名后全量测试、旧环境标记兼容、提示词长度预算均通过。
+
+对比 0.3.23：包/插件/技能/脚本从旧名 `dsh-superagent` 分开；已装数据无需迁移；文档新增规则配置指南与开源致谢。
 ## 3. 回退与复现
 
 ### 3.1 安装某个已归档的包

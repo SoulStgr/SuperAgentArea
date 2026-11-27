@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "product": "SuperAgentArea (saa)",
-  "package": "dsh-superagent",
+  "package": "dsh-superagentarea",
   "artifactsKeptInGit": true,
   "entries": [
     {
@@ -412,6 +412,19 @@
       "stateSchema": 12,
       "architecture": "twelve source kinds; five default rules including casual chat",
       "comparison": "The default rule set adds casual-chat: greetings, small talk, weather, thanks and questions about what the agent can do are answered directly without a Ticket or workstation; an untouched 0.3.22 four-rule set is upgraded to the five-rule set, while legacy copy/visual defaults and any customized rules keep their existing migration behavior",
+      "note": "superseded by 0.4.0"
+    },
+    {
+      "version": "0.4.0",
+      "tgz": "history/dsh-superagentarea-0.4.0.tgz",
+      "bytes": 533635,
+      "sha256": "713664b16fbef9ee9df882b64a7ea91fde0b835c3e6c1eb4e4c6b946165e0c48",
+      "date": "2026-11-27",
+      "sourceCommit": "713d73f08defc9657aaed6b400435d02f79db3ba",
+      "recordedCommit": "713d73f08defc9657aaed6b400435d02f79db3ba",
+      "stateSchema": 12,
+      "architecture": "renamed dsh-superagentarea bundle; five default rules",
+      "comparison": "The package, bundle ids, client id, agent presets, bundled skill prefixes and service script become dsh-superagentarea; the existing state directory and database keep working, old worker environment markers and DSH_SUPERAGENT_* prepare variables remain accepted, and use/接单规则配置.md documents the five default rules and their assessment path. README adds thanks to the open-source dsh-superagent and dsh-im projects.",
       "note": "current latest"
     }
   ]

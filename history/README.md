@@ -1,6 +1,6 @@
 # 历史构建归档（history）
 
-这里是 SuperAgentArea 的**历史打包备份**：每个已发布版本的 `.tgz` 安装包。从 0.3.18 起所有发布包统一放在本目录，仓库根目录不再放包；当前最新版为 `history/dsh-superagent-0.3.20.tgz`。
+这里是 SuperAgentArea 的**历史打包备份**：每个已发布版本的 `.tgz` 安装包。从 0.3.18 起所有发布包统一放在本目录，仓库根目录不再放包；当前最新版为 `history/dsh-superagentarea-0.4.0.tgz`。
 
 ## 索引
 
@@ -39,6 +39,7 @@
 | 0.3.21 | `history/dsh-superagent-0.3.21.tgz` | 522,006 | `aef73cf8e6c9529d` | `ee5ccd4` |
 | 0.3.22 | `history/dsh-superagent-0.3.22.tgz` | 532,405 | `cbdd00537637fed5` | `848b4ef` |
 | 0.3.23 | `history/dsh-superagent-0.3.23.tgz` | 532,830 | `60e2d590e9f47d51` | `36983e0` |
+| 0.4.0 | `history/dsh-superagentarea-0.4.0.tgz` | 533,635 | `713664b16fbef9ee` | `713d73f` |
 
 最新版：`history/dsh-superagent-0.3.23.tgz`（本目录）。
 
