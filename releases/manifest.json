@@ -399,6 +399,19 @@
       "stateSchema": 12,
       "architecture": "twelve source kinds; current default rules, workstation confirmation loop, web report targets to QQ and DingTalk",
       "comparison": "Default accept rules become workstation-work, new-workstation, investigation and one-off-task with a one-time migration of untouched old defaults; a new-station question can be answered in chat with workspace, an existing station, a new repository or folder, or the proposal; a monitored web Source can deliver Ticket results and Excel/Word artifacts to a frozen recent QQ or DingTalk conversation, and QQ sends outbound files while WeChat iLink stays reply-only",
+      "note": "superseded by 0.3.23"
+    },
+    {
+      "version": "0.3.23",
+      "tgz": "history/dsh-superagent-0.3.23.tgz",
+      "bytes": 532830,
+      "sha256": "60e2d590e9f47d51d16d141f3c7d0d48aa97ae8fdf18263ff192ba94898f8369",
+      "date": "2026-11-27",
+      "sourceCommit": "36983e03a0230607ee825389a7b4feb6d3583a94",
+      "recordedCommit": "36983e03a0230607ee825389a7b4feb6d3583a94",
+      "stateSchema": 12,
+      "architecture": "twelve source kinds; five default rules including casual chat",
+      "comparison": "The default rule set adds casual-chat: greetings, small talk, weather, thanks and questions about what the agent can do are answered directly without a Ticket or workstation; an untouched 0.3.22 four-rule set is upgraded to the five-rule set, while legacy copy/visual defaults and any customized rules keep their existing migration behavior",
       "note": "current latest"
     }
   ]
