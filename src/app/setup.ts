@@ -41,7 +41,7 @@ export class Setup {
   /** Host command environment with agent git variables applied and the worker shim directory excluded from PATH. */
   get commandEnvironment(): Record<string, string | undefined> { return { ...this.variables, PATH: this.path } }
   get deployment(): Deployment {
-    if (!this.resolved) throw new Error(`dsh-superagent is waiting for setup: ${this.problem?.detail ?? 'setup has not run'}`)
+    if (!this.resolved) throw new Error(`dsh-superagentarea is waiting for setup: ${this.problem?.detail ?? 'setup has not run'}`)
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
@@ -82,7 +82,7 @@ export class Setup {
    */
   private async checkInstances(settings: Settings): Promise<void> {
     this.problems = await instanceProblems(this.host.machine, settings.sources, this.probe()).catch((error: unknown) => {
-      this.host.context.logger.warn('dsh-superagent could not check its Source instances: %s', String(error))
+      this.host.context.logger.warn('dsh-superagentarea could not check its Source instances: %s', String(error))
       return {}
     })
   }
@@ -98,7 +98,7 @@ export class Setup {
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
-      context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
+      context.logger.warn('dsh-superagentarea leaves Feishu out: %s', error.message)
       return undefined
     })
     const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }

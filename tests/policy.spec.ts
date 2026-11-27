@@ -268,7 +268,7 @@ describe('settings migration', () => {
 
 it('renames the variables a stored prepare command reads from earlier project names to the current one', () => {
   const settings = SettingsSchema.parse(migrateSettings({ executor: { prepare: 'git worktree add "$DSH_TAG_DIR" -b "agent/${DSH_GO_NAME}" "refs/x/$DSH_FREELANCER_TICKET"' } }))
-  expect(settings.executor.prepare).toBe('git worktree add "$DSH_SUPERAGENT_DIR" -b "agent/${DSH_SUPERAGENT_NAME}" "refs/x/$DSH_SUPERAGENT_TICKET"')
+  expect(settings.executor.prepare).toBe('git worktree add "$DSH_SUPERAGENTAREA_DIR" -b "agent/${DSH_SUPERAGENTAREA_NAME}" "refs/x/$DSH_SUPERAGENTAREA_TICKET"')
 })
 
 it('reads a stored GitHub Source configuration that names a merge account without it', () => {

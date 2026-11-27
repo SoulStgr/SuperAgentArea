@@ -1,6 +1,6 @@
 /** Pure mappers from domain states (Tickets, Threads, Sources, Decisions) to UI status indicators. */
 import type { DecisionRow, SourceStatusRow, ThreadRow, TicketStage, TicketSummary } from './api.ts'
-import type { DshSuperagentKey } from './locales.ts'
+import type { DshSuperagentAreaKey } from './locales.ts'
 import { valueLabel, type T } from './text.ts'
 import type { DotState, IconName, TagTone } from './controls.tsx'
 
@@ -33,7 +33,7 @@ export function ticketStageMark(t: T, { stage, action, outcome }: {
 export const reportDot = (report: string | undefined): DotState => report === 'failed' ? 'error'
   : report === 'blocked' || report === 'waiting' ? 'warning' : report === 'ready' ? 'done' : 'ongoing'
 
-const THREAD_MARKS: Record<ThreadRow['stage'], Omit<Mark, 'label' | 'tone'> & { label: DshSuperagentKey }> = {
+const THREAD_MARKS: Record<ThreadRow['stage'], Omit<Mark, 'label' | 'tone'> & { label: DshSuperagentAreaKey }> = {
   error: { dot: 'error', icon: 'alert', label: 'threadPollFailed' },
   evaluating: { dot: 'ongoing', icon: 'running', label: 'threadEvaluating' },
   queued: { dot: 'warning', icon: 'queue', label: 'threadQueued' },
@@ -46,7 +46,7 @@ export function threadMark(t: T, thread: Pick<ThreadRow, 'stage' | 'pending'>): 
   return { dot, icon, label: t(label, { count: thread.pending }) }
 }
 
-const SOURCE_MARKS: Record<SourceStatusRow['state'], { dot: DotState; label: DshSuperagentKey }> = {
+const SOURCE_MARKS: Record<SourceStatusRow['state'], { dot: DotState; label: DshSuperagentAreaKey }> = {
   missing: { dot: 'idle', label: 'sourceNotInstalled' }, off: { dot: 'idle', label: 'sourceOff' },
   error: { dot: 'error', label: 'sourceState.error' }, setup: { dot: 'idle', label: 'sourceState.setup' },
   starting: { dot: 'ongoing', label: 'sourceState.ongoing' }, paused: { dot: 'warning', label: 'sourceState.warning' },

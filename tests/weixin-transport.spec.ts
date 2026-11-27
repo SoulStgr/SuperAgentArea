@@ -127,7 +127,7 @@ describe('the message loop and replies', () => {
       { message_id: 'm1', from_user_id: 'user-1' }], cursor: 'cursor-2' })
     expect(calls[0]).toMatchObject({ method: 'POST', headers: expect.objectContaining({
       Authorization: 'Bearer bot-token-1', AuthorizationType: 'ilink_bot_token' }),
-      body: { get_updates_buf: 'cursor-1', base_info: { channel_version: WEIXIN_PROTOCOL_VERSION, bot_agent: 'dsh-superagent' } } })
+      body: { get_updates_buf: 'cursor-1', base_info: { channel_version: WEIXIN_PROTOCOL_VERSION, bot_agent: 'dsh-superagentarea' } } })
     expect(calls[0]!.url).toContain('ilink/bot/getupdates')
     // A long-poll timeout means "no messages yet", not a failed poll; iLink's own -14 means the token must be renewed.
     expect(await getWeixinUpdates({ token: 't', cursor: 'c', fetchImpl: hangingFetch(), timeoutMs: 10 }))
@@ -146,7 +146,7 @@ describe('the message loop and replies', () => {
     expect(calls[0]).toMatchObject({ method: 'POST', body: {
       msg: { from_user_id: '', to_user_id: 'user-1', client_id: 'client-1', message_type: 2, message_state: 2,
         item_list: [{ type: 1, text_item: { text: 'Done.' } }], context_token: 'ctx-1', run_id: 'msg-1' },
-      base_info: { channel_version: WEIXIN_PROTOCOL_VERSION, bot_agent: 'dsh-superagent' } } })
+      base_info: { channel_version: WEIXIN_PROTOCOL_VERSION, bot_agent: 'dsh-superagentarea' } } })
     expect(calls[0]!.url).toContain('ilink/bot/sendmessage')
     await expect(sendWeixinText({ token: 'stale', toUserId: 'user-1', text: 'x',
       fetchImpl: fakeFetch(() => ({ body: { ret: -14 } })).fetchImpl })).rejects.toMatchObject({ code: 'auth' })

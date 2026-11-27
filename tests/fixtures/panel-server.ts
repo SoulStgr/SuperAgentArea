@@ -146,7 +146,7 @@ const projectKeyOf = (name: string): string => name.toLowerCase().trim().replace
 // The kinds' configurations differ, and the fake reads them only as the records the views carry. The placeholder
 // connectors are listed last, after the kinds the fake's default instances use, so instance order stays as it was.
 const KINDS = [feishuKind, githubKind, folderKind, remoteKind, webKind, qqKind, dingtalkKind, wechatKind, ...connectorKinds] as unknown as SourceKind[]
-export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
+export const MACHINE = { stateDir: '/srv/dsh-superagentarea', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
@@ -487,11 +487,11 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
     executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 } },
   sources: sourceSettings(),
-  environment: { root: '/srv/dsh-superagent/work', variables: [
-    { owner: 'executor', enabled: true, variables: [{ key: 'DSH_SUPERAGENT_DIR', description: { zh: '工单的执行目录',
+  environment: { root: '/srv/dsh-superagentarea/work', variables: [
+    { owner: 'executor', enabled: true, variables: [{ key: 'DSH_SUPERAGENTAREA_DIR', description: { zh: '工单的执行目录',
       en: 'The ticket directory' } },
-      { key: 'DSH_SUPERAGENT_NAME', description: { zh: '工单短名', en: 'Short name' } }] },
-    { owner: 'github', enabled: false, variables: [{ key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: '仓库',
+      { key: 'DSH_SUPERAGENTAREA_NAME', description: { zh: '工单短名', en: 'Short name' } }] },
+    { owner: 'github', enabled: false, variables: [{ key: 'DSH_SUPERAGENTAREA_GITHUB_REPOSITORY', description: { zh: '仓库',
       en: 'Repository' } }] }] },
 })
 const overviewView = (): ApiResponse<'GET overview'> => {
@@ -529,8 +529,8 @@ const ticketDetail = (): TicketPageView => ({
   mandate: { strength: 'explicit', policyVersion: 'abcdef1234567890', basis: { via: 'addressed', sender: 'Alice', addressed: 'mention' },
     actor: actor('feishu', MEMBER), scope: '修复登录页回归' },
   basis: { facts: [{ name: 'sender', value: 'Alice' }, { name: 'addressed', value: 'mention' }], legacy: false },
-  environment: [{ key: 'DSH_SUPERAGENT_DIR', value: '/w/t1', description: { zh: '执行目录', en: 'Directory' }, owner: 'executor' },
-    { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', value: '', description: { zh: '编号', en: 'Number' }, owner: 'github' }],
+  environment: [{ key: 'DSH_SUPERAGENTAREA_DIR', value: '/w/t1', description: { zh: '执行目录', en: 'Directory' }, owner: 'executor' },
+    { key: 'DSH_SUPERAGENTAREA_GITHUB_NUMBER', value: '', description: { zh: '编号', en: 'Number' }, owner: 'github' }],
   channels: [{ source: 'feishu', url: 'https://applink.feishu.cn/client/chat/open?openChatId=oc_1', label: { zh: '飞书消息',
     en: 'Feishu message' } },
     { source: 'github', url: 'https://github.com/acme/widgets/issues/42', label: { zh: 'GitHub #42', en: 'GitHub #42' } }],
@@ -572,19 +572,19 @@ function initial(): PanelServer {
     requests: [], misuse: [], queued: new Set(), projectQuestions: new Set(['e10']),
     projects: [
       { id: 'prj_workspace', key: 'workspace', name: 'workspace', kind: 'workspace', location: { type: 'managed' },
-        status: 'active', sourceIds: [], aliases: [], outputDir: '/srv/dsh-superagent/area/workspace',
-        scratchDir: '/srv/dsh-superagent/area/workspace/.work', rulesDir: '/srv/dsh-superagent/area/workspace/.work/rules',
+        status: 'active', sourceIds: [], aliases: [], outputDir: '/srv/dsh-superagentarea/area/workspace',
+        scratchDir: '/srv/dsh-superagentarea/area/workspace/.work', rulesDir: '/srv/dsh-superagentarea/area/workspace/.work/rules',
         createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
       { id: 'prj_aps', key: 'aps', name: 'aps', kind: 'station', location: { type: 'folder', path: '/srv/aps' }, status: 'active',
-        sourceIds: ['feishu'], aliases: ['APS'], outputDir: '/srv/aps', scratchDir: '/srv/dsh-superagent/area/aps.work',
-        rulesDir: '/srv/dsh-superagent/area/aps.work/rules', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z',
+        sourceIds: ['feishu'], aliases: ['APS'], outputDir: '/srv/aps', scratchDir: '/srv/dsh-superagentarea/area/aps.work',
+        rulesDir: '/srv/dsh-superagentarea/area/aps.work/rules', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z',
         tickets: ['t1'], threads: ['feishu:oc_1:om_root'], decisions: [acceptDecision()],
         artifacts: [{ id: 'a1', name: 'report.md', size: 120, at: '2026-09-23T00:00:00Z', ticket: 't1', source: 'feishu',
           targetRoot: '/srv/aps', hash: 'abcdef0123456789' }], reporter: actor('feishu', MEMBER) },
       { id: 'prj_legacy', key: 'legacy', name: 'legacy', kind: 'station',
         location: { type: 'repo', url: 'https://github.com/acme/legacy' }, status: 'archived', sourceIds: [], aliases: [],
-        outputDir: '/srv/dsh-superagent/area/legacy', scratchDir: '/srv/dsh-superagent/area/legacy.work',
-        rulesDir: '/srv/dsh-superagent/area/legacy.work/rules', createdAt: '2026-09-03T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z',
+        outputDir: '/srv/dsh-superagentarea/area/legacy', scratchDir: '/srv/dsh-superagentarea/area/legacy.work',
+        rulesDir: '/srv/dsh-superagentarea/area/legacy.work/rules', createdAt: '2026-09-03T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z',
         archivedAt: '2026-09-20T00:00:00Z' },
     ],
     pendingProjects: { feishu: [{ triggerId: 'e10', thread: 'feishu:oc_team:om_10', at: '2026-09-23T00:03:00Z', preview: '把导出也做一下',
@@ -794,10 +794,10 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     }
     const at = new Date().toISOString()
     const outputDir = request.location.type === 'folder' ? request.location.path!
-      : request.location.type === 'repo' && request.location.path ? `${request.location.path}/artifacts` : `/srv/dsh-superagent/area/${key}`
+      : request.location.type === 'repo' && request.location.path ? `${request.location.path}/artifacts` : `/srv/dsh-superagentarea/area/${key}`
     const project: ProjectFixture = { id: `prj_${key}`, key, name, kind: 'station',
       location: request.location as ProjectFixture['location'], status: 'active', sourceIds: [], aliases: [], outputDir,
-      scratchDir: `/srv/dsh-superagent/area/${key}.work`, rulesDir: `/srv/dsh-superagent/area/${key}.work/rules`,
+      scratchDir: `/srv/dsh-superagentarea/area/${key}.work`, rulesDir: `/srv/dsh-superagentarea/area/${key}.work/rules`,
       createdAt: at, updatedAt: at }
     server.projects = [...server.projects, project]
     return { project: projectRecordOf(project) }

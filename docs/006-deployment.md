@@ -1,6 +1,6 @@
 # 006 Deployment
 
-Use this guide to install, configure and operate dsh-superagent. It covers accounts, startup checks, upgrades and troubleshooting, building on [001 Domain model](001-domain.md) through [005 Panel](005-panel.md).
+Use this guide to install, configure and operate dsh-superagentarea. It covers accounts, startup checks, upgrades and troubleshooting, building on [001 Domain model](001-domain.md) through [005 Panel](005-panel.md).
 
 ## What runs
 
@@ -15,9 +15,9 @@ Plugin configuration holds the state directory and machine limits. Use the panel
 
 ### Permissions and isolation
 
-The bundle defines `dsh-superagent-worker` for Executors and `dsh-superagent-router` for the main Session. They appear in the DeepSeek Harness preset list but are intended only for dsh-superagent. Do not select them for personal Sessions or disable their configuration rows. The application needs them to create and resume its Sessions.
+The bundle defines `dsh-superagentarea-worker` for Executors and `dsh-superagentarea-router` for the main Session. They appear in the DeepSeek Harness preset list but are intended only for dsh-superagentarea. Do not select them for personal Sessions or disable their configuration rows. The application needs them to create and resume its Sessions.
 
-Opening a blank managed Session in the Web UI can select the profile's default preset. dsh-superagent restores its role-specific preset before the first turn.
+Opening a blank managed Session in the Web UI can select the profile's default preset. dsh-superagentarea restores its role-specific preset before the first turn.
 
 Both presets run with `danger-full-access` as the operator's OS user and read messages from subscribed Threads. Account wrappers choose the agent's credentials by default; they do not isolate the process. A worker can execute programs by path and read the operator's home directory. For isolation, use a dedicated OS account containing only the agent's credentials.
 
@@ -25,10 +25,10 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 - Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
 - GitHub CLI (`gh`) 2.48 or later, only for a GitHub Source. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
-- For a remote folder Source: the OpenSSH client (`sftp` and `ssh-keygen`) on the `PATH` of the dsh-superagent process, and an SSH key the remote host accepts.
-- For a web page/feed Source: outbound http(s) access from the dsh-superagent process to the addresses it polls; no credential, key or extra program is needed.
+- For a remote folder Source: the OpenSSH client (`sftp` and `ssh-keygen`) on the `PATH` of the dsh-superagentarea process, and an SSH key the remote host accepts.
+- For a web page/feed Source: outbound http(s) access from the dsh-superagentarea process to the addresses it polls; no credential, key or extra program is needed.
 - For a GitHub Source, a repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
-- A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
+- A model provider configured for DeepSeek Harness. dsh-superagentarea uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
 - For DingTalk: an enterprise-internal DingTalk application with the robot capability, its Client ID, Client Secret and Robot Code. The bot uses Stream mode, so no public address or inbound port is needed
 - For QQ: a QQ open-platform bot with its AppID and AppSecret, created either by scanning a QR code with mobile QQ in the add-account dialog or by hand in the QQ open platform. It connects to the bot gateway over a WebSocket long connection, so no public address or inbound port is needed; a test bot can use QQ's sandbox environment
@@ -40,7 +40,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 Skip this section when the GitHub Source names no repository: setup then writes no GitHub credential helper and its `gh` shim says the installation has no GitHub account.
 
-1. Create a GitHub user account for the agent and give it write access to the repository. A GitHub App cannot be the agent, because dsh-superagent reads the account's notifications.
+1. Create a GitHub user account for the agent and give it write access to the repository. A GitHub App cannot be the agent, because dsh-superagentarea reads the account's notifications.
 2. Give it a GitHub CLI that uses only its own credentials:
 
    ```sh
@@ -54,7 +54,7 @@ Skip this section when the GitHub Source names no repository: setup then writes 
    gh-agent api user --jq .login
    ```
 
-   Sign in as the agent account; the last command prints its login. dsh-superagent reads the login the same way.
+   Sign in as the agent account; the last command prints its login. dsh-superagentarea reads the login the same way.
 
 ### Feishu bot (optional)
 
@@ -62,11 +62,11 @@ Skip this section when the GitHub Source names no repository: setup then writes 
 2. Give the bot its own `lark-cli` configuration, restricted to the bot identity, and a wrapper:
 
    ```sh
-   LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagent" lark-cli config init --app-id <cli_…> --app-secret-stdin
-   LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagent" lark-cli config strict-mode bot --global
+   LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagentarea" lark-cli config init --app-id <cli_…> --app-secret-stdin
+   LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagentarea" lark-cli config strict-mode bot --global
    cat > ~/.local/bin/lark-bot <<'EOF'
    #!/bin/sh
-   export LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagent"
+   export LARKSUITE_CLI_CONFIG_DIR="$HOME/.lark-cli-dsh-superagentarea"
    exec lark-cli "$@"
    EOF
    chmod +x ~/.local/bin/lark-bot
@@ -80,8 +80,8 @@ Skip this section when the GitHub Source names no repository: setup then writes 
 
 ### DingTalk bot (optional, Stream mode)
 
-1. Create an **enterprise-internal application** in the [DingTalk open platform](https://open.dingtalk.com/) and add the robot capability to it. Its **Credentials** page shows the **Client ID** (AppKey) and **Client Secret** (AppSecret); the robot's page shows its **Robot Code**. dsh-superagent asks for exactly those three values, because the robot authenticates and sends as that application.
-2. Choose **Stream mode** as the robot's message-receiving mode. No public callback URL, inbound port or public address is involved: dsh-superagent opens the long connection itself with the public `dingtalk-stream` SDK.
+1. Create an **enterprise-internal application** in the [DingTalk open platform](https://open.dingtalk.com/) and add the robot capability to it. Its **Credentials** page shows the **Client ID** (AppKey) and **Client Secret** (AppSecret); the robot's page shows its **Robot Code**. dsh-superagentarea asks for exactly those three values, because the robot authenticates and sends as that application.
+2. Choose **Stream mode** as the robot's message-receiving mode. No public callback URL, inbound port or public address is involved: dsh-superagentarea opens the long connection itself with the public `dingtalk-stream` SDK.
 3. Grant the application the permissions it uses: receive messages sent to the robot, and send messages as the robot. For group conversations, also grant the permission to send a message to a group; without it, a reply whose session webhook expired cannot be delivered through the robot API, and the instance's health names the failure.
 4. Publish the application version after changing permissions. An unpublished permission does not reach the running bot.
 5. Add the bot to the groups it should listen to, or leave it to be messaged directly.
@@ -98,10 +98,10 @@ Outbound files are supported for a ticket's result: a ready ticket's deliverable
 
 ### QQ bot (optional, bot gateway)
 
-1. Create a **bot** in the [QQ open platform](https://bot.q.qq.com/) (QQ 开放平台) and finish the developer verification it asks for. The bot's page under **开发管理** shows its **AppID**, and the **AppSecret** is shown once there; reset it if it was lost. dsh-superagent asks for exactly those two values.
+1. Create a **bot** in the [QQ open platform](https://bot.q.qq.com/) (QQ 开放平台) and finish the developer verification it asks for. The bot's page under **开发管理** shows its **AppID**, and the **AppSecret** is shown once there; reset it if it was lost. dsh-superagentarea asks for exactly those two values.
 2. A new bot starts in the **sandbox environment** (沙箱环境): only accounts added under **沙箱配置** can message it, and those messages are for testing. Turn on the bot's **sandbox switch** in its Source account for that phase. Switch the quality-assurance work to the production environment only after the bot passes review and the sandbox switch is off; the credentials are the same in both.
 3. Grant the bot the permissions it uses: receive direct messages and group messages that mention it, send messages back to those conversations, and — for replies that carry a ticket's files — the QQ open platform's **file-message permission** (文件消息权限). Add the bot to the groups it should listen to, or leave it to be messaged directly.
-4. No public callback URL or inbound port is involved: dsh-superagent opens the WebSocket long connection to the bot gateway itself with the public `@tencent-connect/qqbot-nodejs` SDK, and the SDK's heartbeat and RESUME keep a transient drop from losing the connection.
+4. No public callback URL or inbound port is involved: dsh-superagentarea opens the WebSocket long connection to the bot gateway itself with the public `@tencent-connect/qqbot-nodejs` SDK, and the SDK's heartbeat and RESUME keep a transient drop from losing the connection.
 
 Add a **QQ** account in the panel and fill in AppID and AppSecret, or let the dialog create it by scanning. The add-account dialog opens on its **Scan** tab: choose **Start scanning**, scan the QR code with mobile QQ and confirm the bind there. The QR code is QQ's connect page for a bind task this host started, it is valid for five minutes, and an expired code offers **Refresh QR code**. On confirmation the host has the bot's AppID, AppSecret and the scanning person's user openid; it creates the account enabled under the first free id (`qq`, then `qq-2`, …), labelled **QQ (scan)**, with the sandbox switch off and the scanning person's openid as its allowed sender, so the first direct message is received without hunting for the openid in a Trigger the account would otherwise never open; both are ordinary settings a person can change afterwards. The AppSecret goes only into this installation's settings and is never returned to the panel, logged or put in a health detail. The **Manual** tab keeps the older path: it links the QQ open platform and the steps below, and its fields take the AppID and AppSecret by hand. Saving performs no network check: a wrong credential, a bot that is not online, or a missing permission shows in that instance's health (`starting` while it retries, `error` after three consecutive failed connections, with the connection stage and reason), and never keeps the save from being stored. The connection is retried with a 5 s to 60 s backoff; a bot whose two credentials are still empty reports `paused`.
 
@@ -123,11 +123,11 @@ Outbound files are supported for a ticket's result: a ready ticket's deliverable
 2. Add a **WeChat** account in the panel (**Settings → Source types → WeChat → Add account**) and save it; the account needs no fields (the bot type defaults to 3). Saving performs no network check and does not block on the sign-in.
 3. In the saved account's row choose **Sign in with QR code**. The panel shows the QR code iLink returned, polls it every two seconds and reports when it is scanned and when it is confirmed; a code is valid for five minutes, and an expired code offers **Refresh QR code**. On confirmation the account id and sign-in time replace the button, and **Sign in again** repeats the flow at any time.
 4. The account's **Policy and prompts** part decides who may ask for work: add each WeChat user id (`from_user_id`) to the Policy's **allowed** list — copy it from the panel's Trigger rows — and save. Only a direct message from someone on that list becomes a request; there is no other receiving filter.
-5. dsh-superagent long-polls iLink for messages from then on. The instance's health entry is `ready` with the messages received, duplicates, skipped messages and attachments it could not receive, `paused` with **Needs a WeChat QR sign-in** while no account is signed in, and `error` with **The WeChat sign-in expired; sign in again** when iLink no longer accepts the token (the account then waits for a new sign-in; no restart is needed).
+5. dsh-superagentarea long-polls iLink for messages from then on. The instance's health entry is `ready` with the messages received, duplicates, skipped messages and attachments it could not receive, `paused` with **Needs a WeChat QR sign-in** while no account is signed in, and `error` with **The WeChat sign-in expired; sign in again** when iLink no longer accepts the token (the account then waits for a new sign-in; no restart is needed).
 
 This Source receives **direct messages**: text, pictures and files, and a message with no text at all becomes a request too. The account's own messages, group messages and messages that carry neither text nor an attachment are counted in the instance's health and never become Tickets. Inbound pictures and files are supported: a message iLink names an `image_item` or a `file_item` on is downloaded and decrypted before it becomes work. Only the encrypted download address under `https://novac2c.cdn.weixin.qq.com/c2c/` (built from `media.encrypt_query_param`, or a `full_url` on exactly that host and path) is fetched: a redirect is never followed, an address with credentials or a port other than 443 is refused, the request is bounded to 30 s and the ciphertext to 20 MiB plus one AES block, and one message may carry at most five attachments. The bytes are decrypted with `aes-128-ecb` and the key iLink sent (`aeskey` as 32 hex digits, or `media.aes_key` as base64) and saved under `<stateDir>/area/attachments/wechat/<instance>/<messageId>/` (directories `0700`, files `0600`; only the last path segment of the name iLink sent is used and it is reduced to `[A-Za-z0-9._-]`, so a name like `../../etc/passwd` can never leave the directory, and pictures are named from their decrypted bytes with an unknown type kept as `.bin`). The Trigger's text carries the original text (when iLink sent one) and one `附件：<absolute path>（<kind>/<mime>）` line per saved file, or `收到图片/文件：<absolute path>` when there is no text at all; `meta.attachments` holds `{ path, kind, name, mime, bytes }` with the same absolute paths, so the worker reads the files itself. A message with more than five attachments, an attachment larger than 20 MiB, an attachment without a usable download address or key, a failed or redirected download and an undecryptable body becomes no request: it is counted as `skipped` in the instance's health and opens no Ticket, and the signed address and its query string never reach a log line, a health detail or a Trigger. Group auto-replies are **not available** on this transport: Tencent's iLink bot service exposes only direct conversations for a personal account, with no group or room identity to listen to or reply in. For group work use the WeCom app Source (an enterprise app can receive group callbacks) or a Feishu/DingTalk group bot instead. A voice message iLink has already transcribed is read as text. A reply goes back to the sender's own direct chat only, as one or more text messages of at most 1,800 characters, each carrying the inbound message's conversation token and message id; a reply that fails to send is retried by the Outbox, and a conversation that can no longer receive it is dropped rather than sent elsewhere. Outbound messages are still text only: a reply carries no attachment. There is no way to add a friend, start a group or send a message to anyone else from this Source.
 
-The bot token is **not** part of the account's settings: the QR sign-in writes it to this installation's state database under `weixin.token:<instance>`, and the panel, the health entries and the Triggers carry only the account id and sign-in time. Signing in again replaces the old token and restarts that instance's poll loop without restarting dsh-superagent. Removing the account removes its configuration; the record left in the state database can be deleted with the state directory.
+The bot token is **not** part of the account's settings: the QR sign-in writes it to this installation's state database under `weixin.token:<instance>`, and the panel, the health entries and the Triggers carry only the account id and sign-in time. Signing in again replaces the old token and restarts that instance's poll loop without restarting dsh-superagentarea. Removing the account removes its configuration; the record left in the state database can be deleted with the state directory.
 
 ## Install
 
@@ -135,7 +135,7 @@ Run this block once, on a machine that has no `superagent` profile yet:
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.2.1-rc.3
-git clone <this repository> dsh-superagent && cd dsh-superagent
+git clone <this repository> dsh-superagentarea && cd dsh-superagentarea
 pnpm install && pnpm build
 dsh superagent --from-default-profile web --dump-config > /dev/null
 dsh plugin --profile superagent add "link:$PWD"
@@ -149,7 +149,7 @@ Run the profile-creation command only for a new installation. If the profile alr
 
 ## Machine configuration
 
-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
+Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagentarea-feishu` entry there. The `webserver` entry sets the panel's port.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -161,15 +161,15 @@ After the first start, edit machine limits in **Settings → Deployment** or the
 ## Start and stop
 
 ```sh
-scripts/dsh-superagent start
-scripts/dsh-superagent status
+scripts/dsh-superagentarea start
+scripts/dsh-superagentarea status
 ```
 
-`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
+`start` runs `dsh --profile superagent` in tmux session `dsh-superagentarea`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
 
 `stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
 
-`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
+`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENTAREA_PROFILE` and `DSH_SUPERAGENTAREA_URL`.
 
 `status`, `start` and `restart` exit with one of four codes:
 
@@ -186,7 +186,7 @@ A Source that is still starting counts as normal operation. So does a Feishu bot
 
 Each profile stores logs and control files under `.artifacts/`:
 
-- Startup logs: `dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the script. The newest 20 are kept.
+- Startup logs: `dsh-superagentarea-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the script. The newest 20 are kept.
 - Control files: `control/profiles/<profile>/`, containing the stop marker, lock and process id.
 
 Open the URL printed in the log, then choose **Superagent** in the sidebar.
@@ -196,7 +196,7 @@ Open the URL printed in the log, then choose **Superagent** in the sidebar.
 Create the hourly check in the DeepSeek Harness profile you normally use, not in `superagent`. It must keep running when the agent service is down. Ask an agent in that profile to create an hourly schedule using this prompt, with the checkout path filled in:
 
 ```text
-Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
+Check dsh-superagentarea: run `scripts/dsh-superagentarea --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagentarea --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagentarea-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
 `--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out.
@@ -211,8 +211,8 @@ Setup must succeed before polling or work starts. Overview lists missing require
 4. **Executor and environment.** The header gear's Executor and environment group sets the directory root and a prepare command. To give each Ticket a checkout of the repository:
 
    ```sh
-   git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
-   git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
+   git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENTAREA_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENTAREA_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagentarea/$DSH_SUPERAGENTAREA_TICKET" &&
+   git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENTAREA_NAME" "$DSH_SUPERAGENTAREA_DIR" "refs/dsh-superagentarea/$DSH_SUPERAGENTAREA_TICKET"
    ```
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
@@ -223,7 +223,7 @@ The first start of a new installation seeds one local folder Source, so dropping
 
 - Instance `folder`, label **本地文件夹**, enabled, polling every 10 seconds.
 - Inbox `<stateDir>/area/local/inbox` and outbox `<stateDir>/area/local/outbox`, separate from the workspace and its Tickets. Both directories are created with the instance; change them on the instance's page.
-- `operator`: the OS user name that runs dsh-superagent; drops are attributed to it.
+- `operator`: the OS user name that runs dsh-superagentarea; drops are attributed to it.
 - Policy part `sources.folder`: `allowed` names that operator, and the admission table keeps its defaults, so only the operator's direct drops start work.
 
 The seed runs once, after startup, and its one-time record is the KV entry `saa.defaults.seeded`. Deleting the instance later does not bring it back; an installation that already has a folder instance (such as `folder:ops`) keeps it as configured and only gets the record. A failed seed writes no record, so the next start tries again.
@@ -247,24 +247,24 @@ Configure one instance on its page (**Add Source**, then the instance's settings
 | `maxFileBytes` | 1 MiB by default, from 1 KiB to 16 MiB; a larger file is skipped and named in the health detail |
 | `operator` | The person a drop is attributed to; empty is the OS user name. The Policy's `allowed` list names it |
 
-Prepare a dedicated key and the known hosts file on the machine that runs dsh-superagent:
+Prepare a dedicated key and the known hosts file on the machine that runs dsh-superagentarea:
 
 ```sh
 # A dedicated key for this Source. BatchMode=yes cannot prompt, so use a key without a passphrase, or load a
-# passphrase-protected one into the ssh-agent of the dsh-superagent process.
-ssh-keygen -t ed25519 -N '' -C dsh-superagent-remote -f ~/.ssh/dsh-superagent-remote
+# passphrase-protected one into the ssh-agent of the dsh-superagentarea process.
+ssh-keygen -t ed25519 -N '' -C dsh-superagentarea-remote -f ~/.ssh/dsh-superagentarea-remote
 
 # Known hosts: copy the host's line from a known_hosts you already verified, or scan it once and compare the
 # fingerprint with the one `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints on the host.
-ssh-keyscan -t ed25519 files.example > ~/.ssh/dsh-superagent-known-hosts
-ssh-keygen -l -f ~/.ssh/dsh-superagent-known-hosts
+ssh-keyscan -t ed25519 files.example > ~/.ssh/dsh-superagentarea-known-hosts
+ssh-keygen -l -f ~/.ssh/dsh-superagentarea-known-hosts
 ```
 
 Put the key's public half into the remote account's `authorized_keys`, restricted to SFTP, and give the remote account only its own drop directories. On the remote host, a minimal `sshd` configuration dedicated to that account:
 
 ```
-# /etc/ssh/sshd_config.d/dsh-superagent-remote.conf
-# authorized_keys: restrict,command="internal-sftp" ssh-ed25519 AAAA… dsh-superagent
+# /etc/ssh/sshd_config.d/dsh-superagentarea-remote.conf
+# authorized_keys: restrict,command="internal-sftp" ssh-ed25519 AAAA… dsh-superagentarea
 Match User dsh-remote
   PasswordAuthentication no
   KbdInteractiveAuthentication no
@@ -300,7 +300,7 @@ Configure one instance on its page (**Add Source**, then the instance's settings
 
 RSS items are read from `item` (`title`, `link`, `guid`, `pubDate`, `description`), Atom entries from `entry` (`id`, `title`, `link[href]`, `updated`, `summary`) and JSON items by the configured dot paths. An item without an id uses its link, and without either a hash of its title and summary, so the same item is never received twice. The Trigger text is the item's title, link and summary (up to 8,000 characters), its Thread is `web:<instance>:<item id>` and the operator is its reporter. A seen item id is remembered for seven days (at most 1,000 ids), and the instance's health detail counts what a round read, how many new items it received, how many it skipped and how many wait.
 
-Every request carries the same SSRF guard: http and https only; no user name or password in the address; no `localhost`, `.local`, loopback, private, link-local or unique-local address. A host name is resolved and **every** address it names must be public. A redirect is followed at most three times and every hop is checked again, so a public feed cannot redirect the Source into the private network; a `file:` or other scheme is refused. Requests time out after 20 seconds, carry the `dsh-superagent/web` User-Agent and read at most 2 MiB of an answer. The address is checked again on every poll, and a save refuses an address that already names a local or private host.
+Every request carries the same SSRF guard: http and https only; no user name or password in the address; no `localhost`, `.local`, loopback, private, link-local or unique-local address. A host name is resolved and **every** address it names must be public. A redirect is followed at most three times and every hop is checked again, so a public feed cannot redirect the Source into the private network; a `file:` or other scheme is refused. Requests time out after 20 seconds, carry the `dsh-superagentarea/web` User-Agent and read at most 2 MiB of an answer. The address is checked again on every poll, and a save refuses an address that already names a local or private host.
 
 An account can be saved before it is complete; until `url` is set, the instance reports `paused` with what it waits for. The first poll reports `ready` with `baseline recorded the current items`. HTTP, parse, SSRF and timeout failures count toward the same three-consecutive-failures health error as the other Sources, which a later good poll clears.
 
@@ -327,7 +327,7 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 | `DELETE sources/<id>` | Deletes a Source instance's configuration, and its Policy part with it: `deleted: true`. An unknown id is 404 `unknownSource`; an instance still owning an open Ticket is 409 `sourceInUse` with the Ticket `count`. Its historical Tickets stay stored and readable |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `<block>` is `policy`, `eval`, `executor`, `source:<instance id>` or `policy:<instance id>`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
 | `POST executor/pause` with `{"paused": true}` or `false` | Pauses or resumes processing: `paused` |
-| `POST setup/check` | Runs setup again by restarting dsh-superagent: `restarting: true`. Refused only when setup, Feishu and every named instance are already healthy |
+| `POST setup/check` | Runs setup again by restarting dsh-superagentarea: `restarting: true`. Refused only when setup, Feishu and every named instance are already healthy |
 | `POST policy-sync/<source id>` | Syncs that Source's allowed list now: `policy`, the Source's part as saved |
 | `GET prompts`, `PUT prompts` with `{"config", "baseRevision"}` | Reads the installation's default prompt configuration, which the main Session reads and an unsaved Source inherits: `current`, with its `revision` and `config`, `defaults`, `sections`, the team sections in the order Sessions read them, `skillName`, the pattern of a team skill's name, `builtin`, the names a team skill cannot take, `skillPrefix`, which Sessions load a skill's name under, and `defaultSkills`, the default skills of the configured Source kinds. Or saves it: the new `revision` |
 | `GET sources/<id>/prompts`, `PUT sources/<id>/prompts` with `{"config", "baseRevision"}`, `POST sources/<id>/prompts/preview` | Reads, saves or previews one Source instance's own prompt configuration, which its Tickets' worker Sessions read: the same view, with `source` and the instance kind's `defaultSkills`, or the new `revision`. An instance that never saved shows the inherited installation configuration |
@@ -391,7 +391,7 @@ The process environment that setup writes:
 - **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI, or says the installation has no GitHub account; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
 - **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. With a GitHub account it selects the agent CLI as the github.com credential helper; without one it names no helper and says why. It rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
 
-A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
+A file in `worker-bin` or `worker-gitconfig` that dsh-superagentarea did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
 ## Try it
 
@@ -402,7 +402,7 @@ From an allowed GitHub account, open an Issue or post a comment containing `@<ag
 1. Wait until no Executor is in the middle of a turn.
 2. Back up `<stateDir>/orchestrator.sqlite`.
 3. Run `git pull && pnpm install && pnpm build`.
-4. Run `scripts/dsh-superagent restart` and inspect its status.
+4. Run `scripts/dsh-superagentarea restart` and inspect its status.
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained per scope: the installation default and each Source instance that saved its own. Parts without overrides follow the new defaults, and a Source that never saved a configuration follows the upgraded installation default. Overrides of removed parts, such as the old `skill/feishu` and `skill/github`, are dropped when that configuration is next saved. Review parts marked **Default updated** after upgrading.
 
@@ -410,7 +410,7 @@ A database migrated by a newer version cannot be opened by an older one. Rollbac
 
 ### Agent presets
 
-The worker and router presets move shell commands to the background after 5 seconds. A Session cannot load without its preset. Keep the `dsh-superagent-worker` and `dsh-superagent-router` rows in `cordis.patch.yml` while their Sessions are in use; otherwise resume fails with `agent-preset/not-found`.
+The worker and router presets move shell commands to the background after 5 seconds. A Session cannot load without its preset. Keep the `dsh-superagentarea-worker` and `dsh-superagentarea-router` rows in `cordis.patch.yml` while their Sessions are in use; otherwise resume fails with `agent-preset/not-found`.
 
 ## Troubleshooting
 
@@ -425,15 +425,15 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `@… cannot read …` or `@… cannot push to …` | Give the agent account write access to the repository |
 | `gh is unavailable: this installation has no GitHub account.` | The GitHub Source names no repository; set one, `owner/name`, on the GitHub card to give workers a GitHub account |
 | A Ticket fails with `The prepare command failed: …` | The output names the cause, such as a wrong clone path; fix the command, then retry the Ticket |
-| `git does not read the github.com credential configuration dsh-superagent writes` | Install git 2.32 or later |
+| `git does not read the github.com credential configuration dsh-superagentarea writes` | Install git 2.32 or later |
 | A Ticket fails with `The git configuration of the repository in … sets …` | Remove the named credential or `http.*.extraheader` settings from the clone's `.git/config` |
-| `… was not written by dsh-superagent` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |
+| `… was not written by dsh-superagentarea` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |
 | `The bot lark-cli does not work.` or `The bot identity of app … is …` | Check the configuration's app id and secret |
 | `The Feishu bot is not a member of the chat.` | Add the bot to the chat in the chat's settings; the next attempt succeeds |
 | A remote folder's card reports `Host key verification failed` | The known_hosts file names no key for that host and port, or its key changed: verify the host's fingerprint out of band and update the configured known_hosts file |
 | A remote folder's card reports `Permission denied (publickey)` | The remote account does not accept the configured key: add the key's public half to its `authorized_keys`, and point `identityFile` at the matching private key |
-| A remote folder's settings refuse `The identityFile cannot be read` | The key file path is relative, missing or unreadable by the dsh-superagent process; use an absolute path it can read |
+| A remote folder's settings refuse `The identityFile cannot be read` | The key file path is relative, missing or unreadable by the dsh-superagentarea process; use an absolute path it can read |
 | A web instance's settings refuse `must be an absolute http or https address` | The address is relative or uses another scheme; use the feed's full `https://…` or `http://…` address |
 | A web instance's settings refuse `must not name a local or private address` | The address names `localhost`, a `.local` host or a private IP; publish the feed on a public address, or use a public tunnel/address |
 | A web instance's card reports `resolves to … , a local or private address` | The host name currently resolves to a private address; point the instance at a host name that resolves only to public addresses |
@@ -446,8 +446,8 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `status` exits 3 | Setup waits: `setup` says what is missing, and the overview links to the setting that fixes it |
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |
 | `… timed out after 90 s`, `… was stopped by …`, `… exited with code …` or `… could not run: …` | A CLI failed without printing why; run the named program by hand as the operator's user to see its own message |
-| The panel says dsh-superagent is not answering | It is restarting, or did not start because of its configuration; the DeepSeek Harness log names the cause |
-| `dsh-superagent configuration has keys it does not use` (log) | Remove the named keys; the message says where each value lives now |
+| The panel says dsh-superagentarea is not answering | It is restarting, or did not start because of its configuration; the DeepSeek Harness log names the cause |
+| `dsh-superagentarea configuration has keys it does not use` (log) | Remove the named keys; the message says where each value lives now |
 | The log says the plugin is incompatible with the running dsh | Install a DeepSeek Harness version within the `engines.dsh` range |
 | The panel shows "Failed to load plugins" after a DeepSeek Harness upgrade | Restart the running instance |
 | Nothing happens after a mention | Check that the author is on the Source's allowed list, the Source is on, and processing is not paused. On GitHub, a mention added by editing an Issue's body is not received; mention the agent in a comment |

@@ -219,7 +219,7 @@ it('serves the workstation cards, and routes creating and changing one to the Pr
 })
 
 it('serves the artifact index and one artifact\'s chain, and downloads a file only from the artifact\'s own landing', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-http-'))
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagentarea-http-'))
   const root = join(directory, 'area', 'aps'), outbox = join(directory, 'outbox', 't1', 'artifacts')
   mkdirSync(root, { recursive: true })
   mkdirSync(outbox, { recursive: true })

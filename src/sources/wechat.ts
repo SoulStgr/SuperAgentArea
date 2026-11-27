@@ -502,7 +502,7 @@ export async function watchWechat(ctx: SourceContext, signal: AbortSignal, optio
   }
 }
 
-export const name = 'dsh-superagent-wechat'
+export const name = 'dsh-superagentarea-wechat'
 export const inject = ['orchestrator']
 /** Registers the kind and starts its sign-in/poll loop. `options` injects fakes in tests; production uses iLink over fetch. */
 export function apply(ctx: Context, options: WechatWatchOptions = {}): void {

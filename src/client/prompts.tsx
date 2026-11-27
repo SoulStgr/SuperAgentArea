@@ -35,7 +35,7 @@ export function SourcePrompts({ id }: { id: string }) {
 function PromptsEditor({ view, reload, scope }: { view: PromptsView; reload: () => Promise<void>; scope?: string }) {
   const { t, call, notify } = usePanel()
   const saved = withOverrides(view.current.config)
-  const draft = useDraft<PromptConfig, PromptNote>({ key: `dsh-superagent/prompts/${view.masterId}${scope === undefined ? ''
+  const draft = useDraft<PromptConfig, PromptNote>({ key: `dsh-superagentarea/prompts/${view.masterId}${scope === undefined ? ''
     : `/${scope}`}`, saved, revision: view.revision,
     reload,
     save: async (config, baseRevision) => {

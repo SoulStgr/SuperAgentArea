@@ -552,7 +552,7 @@ export async function watchDingtalk(ctx: SourceContext, signal: AbortSignal, opt
   }
 }
 
-export const name = 'dsh-superagent-dingtalk'
+export const name = 'dsh-superagentarea-dingtalk'
 export const inject = ['orchestrator']
 /** Registers the kind and starts its Stream loop. `options` injects fake transport pieces in tests; production loads the SDK. */
 export function apply(ctx: Context, options: DingtalkWatchOptions = {}): void {

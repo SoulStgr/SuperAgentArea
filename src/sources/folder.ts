@@ -1,7 +1,7 @@
 /**
  * Local folder Source: one instance watches one inbox; a file or task folder dropped there becomes a Trigger, and
  * replies and artifacts are written to the instance's outbox. A task folder carries its instruction in `TASK.md`; a
- * lone file is named by the Trigger and read by the worker through `DSH_SUPERAGENT_FOLDER_TASK`. Drops are explicit
+ * lone file is named by the Trigger and read by the worker through `DSH_SUPERAGENTAREA_FOLDER_TASK`. Drops are explicit
  * requests of the operator.
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -112,7 +112,7 @@ const sha = (text: string): string => createHash('sha256').update(text).digest('
 
 /** Names a file whose UTF-8 text carries the instruction, so the Trigger text needs no shell read (Windows code pages mangle it). */
 const TEXT_FILE = /\.(?:md|markdown|txt|log|json|ya?ml|csv|ps1|sh)$/i
-/** How much of a text file the Trigger carries before the worker reads the rest at `DSH_SUPERAGENT_FOLDER_TASK`. */
+/** How much of a text file the Trigger carries before the worker reads the rest at `DSH_SUPERAGENTAREA_FOLDER_TASK`. */
 const TEXT_CHARS = 8000
 /** Reads one inbox entry into a drop, or undefined while it is still being written or holds nothing readable. */
 export async function readDrop(inbox: string, name: string, type: 'file' | 'dir'): Promise<FolderDrop | undefined> {
@@ -123,8 +123,8 @@ export async function readDrop(inbox: string, name: string, type: 'file' | 'dir'
     const instruction = TEXT_FILE.test(name) ? content.toString('utf8').trim() : ''
     return { rel: name, kind: 'file', hash: sha(content.toString('binary')), at: info.mtime.toISOString(),
       text: instruction
-        ? `New file dropped: ${name} (${content.length} bytes).\n\n${instruction.slice(0, TEXT_CHARS)}${instruction.length > TEXT_CHARS ? '\n\n[Truncated; read the rest at DSH_SUPERAGENT_FOLDER_TASK.]' : ''}`
-        : `New file dropped: ${name} (${content.length} bytes). Read it at DSH_SUPERAGENT_FOLDER_TASK and do what its name and content ask.`,
+        ? `New file dropped: ${name} (${content.length} bytes).\n\n${instruction.slice(0, TEXT_CHARS)}${instruction.length > TEXT_CHARS ? '\n\n[Truncated; read the rest at DSH_SUPERAGENTAREA_FOLDER_TASK.]' : ''}`
+        : `New file dropped: ${name} (${content.length} bytes). Read it at DSH_SUPERAGENTAREA_FOLDER_TASK and do what its name and content ask.`,
       files: [name] }
   }
   const entries = (await readdir(path, { withFileTypes: true })).filter(entry => entry.isFile()).map(entry => entry.name).sort()
@@ -135,7 +135,7 @@ export async function readDrop(inbox: string, name: string, type: 'file' | 'dir'
   const sizes = await Promise.all(entries.map(async entry => `${entry}:${(await stat(join(path, entry))).size}`))
   const info = await stat(path)
   return { rel: name, kind: 'task', hash: sha(`${instruction}\n${sizes.join('\n')}`), at: info.mtime.toISOString(),
-    text: instruction.trim() || `New task folder dropped: ${name}. Files: ${entries.join(', ')}. Read them under DSH_SUPERAGENT_FOLDER_TASK.`,
+    text: instruction.trim() || `New task folder dropped: ${name}. Files: ${entries.join(', ')}. Read them under DSH_SUPERAGENTAREA_FOLDER_TASK.`,
     files: entries, ...project ? { project } : {} }
 }
 
@@ -229,17 +229,17 @@ export const folderKind: SourceKind<FolderConfig> = {
   },
   environment: {
     variables: [
-      { key: 'DSH_SUPERAGENT_FOLDER_INBOX', description: { zh: '接下工单的收件目录；工单不是从这个来源来的时为空', en: 'The inbox that started the ticket; empty when the ticket did not start on this Source' } },
-      { key: 'DSH_SUPERAGENT_FOLDER_OUTBOX', description: { zh: '工单交付目录；产物与回复写入其下', en: 'The ticket outbox; artifacts and replies land under it' } },
-      { key: 'DSH_SUPERAGENT_FOLDER_TASK', description: { zh: '投件文件或任务文件夹的绝对路径', en: 'Absolute path of the dropped file or task folder' } },
+      { key: 'DSH_SUPERAGENTAREA_FOLDER_INBOX', description: { zh: '接下工单的收件目录；工单不是从这个来源来的时为空', en: 'The inbox that started the ticket; empty when the ticket did not start on this Source' } },
+      { key: 'DSH_SUPERAGENTAREA_FOLDER_OUTBOX', description: { zh: '工单交付目录；产物与回复写入其下', en: 'The ticket outbox; artifacts and replies land under it' } },
+      { key: 'DSH_SUPERAGENTAREA_FOLDER_TASK', description: { zh: '投件文件或任务文件夹的绝对路径', en: 'Absolute path of the dropped file or task folder' } },
     ],
     values: ({ trigger, config }) => {
       // Only the instance that received the Trigger fills these; the registry narrows a Trigger to its own instance.
       if (!trigger || !(trigger.source === 'folder' || trigger.source.startsWith('folder:'))) {
-        return { DSH_SUPERAGENT_FOLDER_INBOX: '', DSH_SUPERAGENT_FOLDER_OUTBOX: '', DSH_SUPERAGENT_FOLDER_TASK: '' }
+        return { DSH_SUPERAGENTAREA_FOLDER_INBOX: '', DSH_SUPERAGENTAREA_FOLDER_OUTBOX: '', DSH_SUPERAGENTAREA_FOLDER_TASK: '' }
       }
-      return { DSH_SUPERAGENT_FOLDER_INBOX: config.inbox, DSH_SUPERAGENT_FOLDER_OUTBOX: config.outbox,
-        DSH_SUPERAGENT_FOLDER_TASK: config.inbox ? join(config.inbox, String(trigger.meta.rel)) : '' }
+      return { DSH_SUPERAGENTAREA_FOLDER_INBOX: config.inbox, DSH_SUPERAGENTAREA_FOLDER_OUTBOX: config.outbox,
+        DSH_SUPERAGENTAREA_FOLDER_TASK: config.inbox ? join(config.inbox, String(trigger.meta.rel)) : '' }
     },
   },
 }
@@ -333,7 +333,7 @@ export async function watchFolder(ctx: SourceContext, signal: AbortSignal): Prom
   }
 }
 
-export const name = 'dsh-superagent-folder'
+export const name = 'dsh-superagentarea-folder'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.orchestrator.sources.register(folderKind), 'folder: source kind')

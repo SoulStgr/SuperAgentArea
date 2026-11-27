@@ -302,7 +302,7 @@ it('shows a named instance\'s setup problem on its own card, with the check that
   expect(github.textContent).not.toContain(zh['setup.agentCliSignedOut'])
   // Checking again re-runs setup, which checks the instance again; it asks first because running Assignments would stop.
   await click(find(zh.setupCheck, '.dt-source-card button'))
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新检查会重启 dsh-superagent')
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新检查会重启 dsh-superagentarea')
   await click(zh.confirm)
   expect(server.requests.some(request => request.path === 'setup/check')).toBe(true)
 })
@@ -387,7 +387,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   expect(server.revisions['source:github']).toBe(6)
 })
 
-it('shows the account each CLI signs in as, and keeps a saved CLI on screen while dsh-superagent restarts', async () => {
+it('shows the account each CLI signs in as, and keeps a saved CLI on screen while dsh-superagentarea restarts', async () => {
   openSource('github', 'config')
   await mount()
   const github = all('.dt-card')[0]!
@@ -403,14 +403,14 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   await click([...github.querySelectorAll<HTMLElement>('[data-disclosure-row]')].find(row => row.textContent?.includes('高级'))!)
   expect(labels()).toEqual(['显示名称', '监听的仓库', '智能体的 GitHub CLI', '轮询间隔 / 秒', '连续失败几次后报告异常'])
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), '/opt/bin/gh-agent')
-  expect(github.textContent).toContain('保存会重启 dsh-superagent：2 个进行中的派工会中断，并带恢复说明重新开始。')
+  expect(github.textContent).toContain('保存会重启 dsh-superagentarea：2 个进行中的派工会中断，并带恢复说明重新开始。')
   await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   expect(server.settings.sources.github!.config).toMatchObject({ cli: '/opt/bin/gh-agent' })
   expect(text()).toContain(zh.savedRestarting)
-  // The saved value stays, and the card's fields are disabled, until the saved revision returns with the restarted dsh-superagent.
+  // The saved value stays, and the card's fields are disabled, until the saved revision returns with the restarted dsh-superagentarea.
   expect(field<HTMLInputElement>('智能体的 GitHub CLI').value).toBe('/opt/bin/gh-agent')
   expect(field('智能体的 GitHub CLI').matches(':disabled')).toBe(true)
-  expect(sessionStorage.getItem('dsh-superagent/draft/master/source:github')).toBeNull()
+  expect(sessionStorage.getItem('dsh-superagentarea/draft/master/source:github')).toBeNull()
 })
 
 it('points a setup problem at the Source page that fixes it, or at Deployment', async () => {
@@ -431,7 +431,7 @@ it('points a setup problem at the Source page that fixes it, or at Deployment', 
   await click(find(zh['tab.settings'], '.dt-head button'))
   await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
   expect(text()).toContain(zh['setup.agentCliUnset'])
-  // After a fix outside dsh-superagent, a check runs setup again.
+  // After a fix outside dsh-superagentarea, a check runs setup again.
   await click(zh.setupCheck)
   expect(server.requests.filter(request => request.path === 'setup/check')).toEqual([{ path: 'setup/check', method: 'POST' }])
   expect(text()).toContain(zh.setupChecking)
@@ -440,10 +440,10 @@ it('points a setup problem at the Source page that fixes it, or at Deployment', 
   await click(zh['tab.overview'])
   await click(find(zh.problemSetup, 'button, a, [role="button"]'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
-  expect(text()).toContain('部署检查未通过：git 没有读取 dsh-superagent 为 github.com 写的凭据配置')
+  expect(text()).toContain('部署检查未通过：git 没有读取 dsh-superagentarea 为 github.com 写的凭据配置')
 })
 
-it('shows a failed Feishu bot check as a problem of the Feishu Source only, with a check after a fix outside dsh-superagent', async () => {
+it('shows a failed Feishu bot check as a problem of the Feishu Source only, with a check after a fix outside dsh-superagentarea', async () => {
   server.setup = { ...server.setup, feishuProblem: problemOf('feishuBotNotReady', { app: 'cli_bot', status: 'missing' }),
     accounts: { ...server.setup.accounts!, feishu: null } }
   await mount()
@@ -452,9 +452,9 @@ it('shows a failed Feishu bot check as a problem of the Feishu Source only, with
   await click(find(zh.problemSetupFeishu, 'button, a, [role="button"]'))
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('飞书')
   expect(text()).toContain('部署检查未通过：应用 cli_bot 的机器人身份状态是 missing；用 lark-cli 配置应用密钥。')
-  // dsh-superagent runs meanwhile, so checking again asks first: the restart interrupts running Executor Sessions.
+  // dsh-superagentarea runs meanwhile, so checking again asks first: the restart interrupts running Executor Sessions.
   await click([...document.querySelectorAll<HTMLElement>('.dt-main button')].find(button => button.textContent === '重新检查')!)
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新检查会重启 dsh-superagent：2 个进行中的派工会中断')
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新检查会重启 dsh-superagentarea：2 个进行中的派工会中断')
   expect(server.requests.some(request => request.path === 'setup/check')).toBe(false)
   await click(zh.confirm)
   expect(server.requests.some(request => request.path === 'setup/check')).toBe(true)
@@ -544,7 +544,7 @@ it('takes no space for messages that were all sent', async () => {
   expect(text()).not.toContain(zh.sourceDroppedTitle)
 })
 
-it('reads the instance again as soon as dsh-superagent answers after a save restarted it', async () => {
+it('reads the instance again as soon as dsh-superagentarea answers after a save restarted it', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   onTestFinished(() => { vi.useRealTimers() })
   openSource('github', 'config')
@@ -553,7 +553,7 @@ it('reads the instance again as soon as dsh-superagent answers after a save rest
   const github = all('.dt-card')[0]!
   await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   expect(field('智能体的 GitHub CLI').matches(':disabled')).toBe(true)
-  // dsh-superagent restarts: DSH answers with empty 404s, then it answers again.
+  // dsh-superagentarea restarts: DSH answers with empty 404s, then it answers again.
   server.down = true
   await act(async () => { await vi.advanceTimersByTimeAsync(1000) }); await settle()
   server.down = false

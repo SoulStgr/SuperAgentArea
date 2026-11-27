@@ -67,7 +67,7 @@ const emailKind = placeholderKind({
 /** The four placeholder kinds, in the catalog order of plan/24: Gitee, Telegram, WeCom app and Email. */
 export const connectorKinds = [giteeKind, telegramKind, wecomKind, emailKind] as unknown as SourceKind[]
 
-export const name = 'dsh-superagent-connectors'
+export const name = 'dsh-superagentarea-connectors'
 export const inject = ['orchestrator']
 /** Registers each placeholder kind, so the catalog lists twelve kinds while only folder, remote, web, QQ, DingTalk, WeChat, GitHub and Feishu receive work. */
 export function apply(ctx: Context): void {

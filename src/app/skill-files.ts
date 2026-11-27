@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { packagePath } from '../infra/paths.ts'
 /**
  * Reads a packaged text file with normalized Unix line endings.
- * @throws Naming the file when it is missing or whitespace-only, because `dsh-superagent` cannot load without it.
+ * @throws Naming the file when it is missing or whitespace-only, because `dsh-superagentarea` cannot load without it.
  */
 function packaged(...parts: string[]): { path: string; text: string } {
   const path = packagePath(...parts)
@@ -17,8 +17,8 @@ function packaged(...parts: string[]): { path: string; text: string } {
 }
 /** A packaged built-in skill: the kind it belongs to, its frontmatter, its body, and the file it was read from. */
 export interface BundledSkill { name: string; description: string; content: string; path: string }
-/** The directory of a bundled Source skill: `skills/dsh-superagent-<kind>/SKILL.md`. */
-const SKILL_DIR = /^dsh-superagent-([a-z][a-z0-9-]*)$/
+/** The directory of a bundled Source skill: `skills/dsh-superagentarea-<kind>/SKILL.md`. */
+const SKILL_DIR = /^dsh-superagentarea-([a-z][a-z0-9-]*)$/
 function load(directory: string, name: string): BundledSkill {
   const { path, text } = packaged('skills', directory, 'SKILL.md')
   const match = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\n---\n\n([\s\S]*)$/.exec(text)
@@ -26,7 +26,7 @@ function load(directory: string, name: string): BundledSkill {
   return { name, description: match[2]!, content: match[3]!, path }
 }
 /**
- * Every packaged Source skill, by the kind it serves: each directory `skills/dsh-superagent-<kind>` with a `SKILL.md`,
+ * Every packaged Source skill, by the kind it serves: each directory `skills/dsh-superagentarea-<kind>` with a `SKILL.md`,
  * in name order, so a new Source kind's skill is registered by shipping its directory, without listing it in code.
  */
 const scanned: [string, BundledSkill][] = readdirSync(packagePath('skills'), { withFileTypes: true }).flatMap(entry => {

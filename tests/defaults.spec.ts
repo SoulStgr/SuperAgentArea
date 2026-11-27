@@ -11,7 +11,7 @@ import { SettingsSchema } from '../src/policy.ts'
 let directory: string
 let store: Store
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-defaults-'))
+  directory = mkdtempSync(join(tmpdir(), 'dsh-superagentarea-defaults-'))
   store = new Store(join(directory, 'orchestrator.sqlite'))
 })
 afterEach(() => {

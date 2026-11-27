@@ -67,32 +67,33 @@ describe('worker shims', () => {
     expect(config).toContain('[user]\n\tuseConfigOnly = true')
     expect(config).toContain('[filter "lfs"]')
   })
-  it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
+  it('replace only what dsh-superagentarea wrote and refuse anything else in its places', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli'])
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
     expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
     // A file that merely contains the marker on a later line, a symlink to a shim, and a foreign gitconfig are all rejected.
     writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagentarea`)
     rmSync(join(workerBin(dir), 'notes'))
     // A non-regular entry in the shims' directory is foreign too: a symbolic link to a shim, or, where the account cannot
     // create one (Windows without its symlink privilege), a directory with the same name.
     const foreign = join(workerBin(dir), 'link')
     if (canFileSymlink()) symlinkSync(join(workerBin(dir), 'gh'), foreign)
     else mkdirSync(foreign)
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagentarea')
     rmSync(foreign, { recursive: true, force: true })
     writeFileSync(workerGitConfig(dir), '[user]\n\tname = someone\n')
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by dsh-superagent`)
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by dsh-superagentarea`)
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toBe('[user]\n\tname = someone\n')
   })
   it('replaces the files it wrote under the project\'s earlier names', async () => {
-    await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli', 'older-cli'])
-    const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by dsh-superagent', `Written by ${name}`))
+    await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli', 'older-cli', 'pre-rename-cli'])
+    const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by dsh-superagentarea', `Written by ${name}`))
     legacy(join(workerBin(dir), 'old-cli'), 'dsh-tag'); legacy(join(workerBin(dir), 'older-cli'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
+    legacy(join(workerBin(dir), 'pre-rename-cli'), 'dsh-superagent')
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
     expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
-    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagentarea')
   })
 })
 

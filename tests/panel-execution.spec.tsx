@@ -71,8 +71,8 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   expect(all('.dt-disclosure-body a').map(link => [link.textContent, link.getAttribute('href')])).toEqual([['飞书消息',
     'https://applink.feishu.cn/client/chat/open?openChatId=oc_1'], ['GitHub #42', 'https://github.com/acme/widgets/issues/42']])
   await click(zh['term.environment'])
-  expect(all('.dt-disclosure-body .dt-table tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENT_DIR/w/t1',
-    'DSH_SUPERAGENT_GITHUB_NUMBER—'])
+  expect(all('.dt-disclosure-body .dt-table tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENTAREA_DIR/w/t1',
+    'DSH_SUPERAGENTAREA_GITHUB_NUMBER—'])
   await click(document.querySelector<HTMLElement>('.dt-trigger-link')!)
   expect(server.requests.some(request => request.path.startsWith('threads/feishu:oc_1:om_root'))).toBe(true)
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('这个文案好奇怪')
@@ -159,11 +159,11 @@ it('says why an Input was not delivered on its Ticket\'s page, in either languag
   expect(text()).toContain(en.inputRetryHint)
 })
 
-it('tells a Ticket or Thread that does not exist from a dsh-superagent that is not answering', async () => {
+it('tells a Ticket or Thread that does not exist from a dsh-superagentarea that is not answering', async () => {
   at({ page: 'execution', id: 't9' })
   await mount()
   expect(text()).toContain(zh.ticketNotFound)
-  // While dsh-superagent restarts, DSH's web server answers every route with an empty 404.
+  // While dsh-superagentarea restarts, DSH's web server answers every route with an empty 404.
   at({ page: 'execution', id: 't1' })
   server.down = true
   await remount()

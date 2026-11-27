@@ -57,7 +57,7 @@ export const WEIXIN_LONG_POLL_TIMEOUT_MS = 30_000
 const LOGIN_TIMEOUT_MS = 10_000
 /** iLink's own "this bot token is no longer valid" code; the account must sign in again. */
 const STALE_TOKEN_CODE = '-14'
-const BOT_AGENT = 'dsh-superagent'
+const BOT_AGENT = 'dsh-superagentarea'
 
 /** The kinds of failure a WeChat call can have; the Channel decides from them whether a reply is retryable or gone. */
 export type WeixinFailure = 'network' | 'timeout' | 'auth' | 'rate-limit' | 'rejected' | 'invalid-response'

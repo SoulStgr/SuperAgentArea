@@ -22,7 +22,7 @@ const section = (name: string) => all('.dt-main .dt-section').find(item =>
 /** A workstation that owns no Tickets or artifacts, so a person may delete it. */
 const cleanProject = (id: string, name: string): ProjectFixture => ({ id, key: name, name, kind: 'station',
   location: { type: 'folder', path: `/srv/${id}` }, status: 'active', sourceIds: [], aliases: [], outputDir: `/srv/${id}`,
-  scratchDir: `/srv/dsh-superagent/area/${id}.work`, rulesDir: `/srv/dsh-superagent/area/${id}.work/rules`,
+  scratchDir: `/srv/dsh-superagentarea/area/${id}.work`, rulesDir: `/srv/dsh-superagentarea/area/${id}.work/rules`,
   createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
 /** The worded refusal of deleting a workstation that still owns work. */
 const hasWork = (name: string, tickets: number, artifacts: number) => zh['userError.projectHasWork']
@@ -186,8 +186,8 @@ it('opens a workstation page with its six sections: Sources, Threads, Decisions,
   // 设置: its name, aliases and the directories fixed when it was created.
   await click(segment(zh['projectSegment.settings']))
   expect(field<HTMLInputElement>(zh.projectName).value).toBe('aps')
-  expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagent/area/aps.work',
-    '/srv/dsh-superagent/area/aps.work/rules'])
+  expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagentarea/area/aps.work',
+    '/srv/dsh-superagentarea/area/aps.work/rules'])
   // agent: only its agent's requirements and rules; the work history lives on the Tickets and artifacts pages.
   await click(segment(zh['projectSegment.agent']))
   expect(all('.dt-main .dt-section-title').map(title => title.textContent)).toEqual([zh.projectAgentRulesTitle])
@@ -213,8 +213,8 @@ it('opens the Thread and the Ticket a workstation\'s sections list', async () =>
 it('saves a workstation\'s name and aliases, shows its directories read-only, and archives and restores it', async () => {
   await openProject('aps', zh['projectSegment.settings'])
   expect(field<HTMLInputElement>(zh.projectName).value).toBe('aps')
-  expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagent/area/aps.work',
-    '/srv/dsh-superagent/area/aps.work/rules'])
+  expect(all('.dt-kv dd').map(cell => cell.textContent)).toEqual(['/srv/aps', '/srv/dsh-superagentarea/area/aps.work',
+    '/srv/dsh-superagentarea/area/aps.work/rules'])
   // The name and the aliases save together, in one patch.
   await type(field<HTMLInputElement>(zh.projectName), 'aps 填报')
   await type(field<HTMLInputElement>(zh.projectAliases), 'APS, 填报')

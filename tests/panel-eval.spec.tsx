@@ -83,7 +83,7 @@ it('keeps a Source policy draft across remounts and rebases it onto another save
   await click(zh.save)
   expect(server.settings.policy.sources.feishu!.allowed).toEqual([{ id: 'ou_alice', name: 'Alice' },
     { id: 'ou_newperson', name: '新人' }])
-  expect(sessionStorage.getItem('dsh-superagent/draft/master/policy:feishu')).toBeNull()
+  expect(sessionStorage.getItem('dsh-superagentarea/draft/master/policy:feishu')).toBeNull()
 })
 
 it('keeps each Source\'s Policy in its own identities: people, bots, sync chat and the admission matrix', async () => {

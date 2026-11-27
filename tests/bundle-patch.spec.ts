@@ -28,14 +28,14 @@ const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.confi
 
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
-  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-folder',
-    'dsh-superagent-remote', 'dsh-superagent-web', 'dsh-superagent-qq', 'dsh-superagent-dingtalk', 'dsh-superagent-wechat',
-    'dsh-superagent-connectors', 'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
+  expect(rows.map(row => row.id)).toEqual(['dsh-superagentarea', 'dsh-superagentarea-github', 'dsh-superagentarea-feishu', 'dsh-superagentarea-folder',
+    'dsh-superagentarea-remote', 'dsh-superagentarea-web', 'dsh-superagentarea-qq', 'dsh-superagentarea-dingtalk', 'dsh-superagentarea-wechat',
+    'dsh-superagentarea-connectors', 'dsh-superagentarea-worker-preset', 'dsh-superagentarea-router-preset'])
   // Every Source kind is always listed: the default folder, the remote folder, the web page/feed, QQ, DingTalk and WeChat
   // (an account is added from the panel and a WeChat account is signed in there), Feishu and the placeholder kinds; none of
   // these rows is disabled.
-  for (const id of ['dsh-superagent-folder', 'dsh-superagent-remote', 'dsh-superagent-web', 'dsh-superagent-qq', 'dsh-superagent-dingtalk',
-    'dsh-superagent-wechat', 'dsh-superagent-feishu', 'dsh-superagent-connectors']) {
+  for (const id of ['dsh-superagentarea-folder', 'dsh-superagentarea-remote', 'dsh-superagentarea-web', 'dsh-superagentarea-qq', 'dsh-superagentarea-dingtalk',
+    'dsh-superagentarea-wechat', 'dsh-superagentarea-feishu', 'dsh-superagentarea-connectors']) {
     expect(rows.find(row => row.id === id)?.disabled, id).toBeUndefined()
   }
   const preset = presetOf(rows, WORKER_PRESET)

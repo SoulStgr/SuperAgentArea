@@ -10,7 +10,7 @@ import { join } from 'node:path'
 // A host that already runs a superagent (this machine's desktop profile) sets these in the process that starts the tests.
 // The suite asserts the environment a runtime writes and restores, so start from a clean one.
 for (const name of ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_TERMINAL_PROMPT']) delete process.env[name]
-for (const name of Object.keys(process.env)) if (name.startsWith('DSH_SUPERAGENT_')) delete process.env[name]
+for (const name of Object.keys(process.env)) if (name.startsWith('DSH_SUPERAGENTAREA_') || name.startsWith('DSH_SUPERAGENT_')) delete process.env[name]
 
 if (process.platform === 'win32') {
   const gitCmd = (process.env.PATH ?? '').split(';').find(entry => /[\\/]git[\\/]cmd$/i.test(entry))

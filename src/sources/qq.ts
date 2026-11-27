@@ -532,7 +532,7 @@ export async function watchQq(ctx: SourceContext, signal: AbortSignal, options: 
   }
 }
 
-export const name = 'dsh-superagent-qq'
+export const name = 'dsh-superagentarea-qq'
 export const inject = ['orchestrator']
 /** Registers the kind and starts its gateway loop. `options` injects fake transport pieces in tests; production loads the SDK. */
 export function apply(ctx: Context, options: QqWatchOptions = {}): void {

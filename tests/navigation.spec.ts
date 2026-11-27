@@ -184,14 +184,14 @@ it('reopens the page this tab showed last, and the overview for a route that no 
   expect(initialLocation()).toEqual({ route: { page: 'decisions', query: { filter: 'stop' } },
     stack: [{ page: 'overview' }] })
   // A page this version does not have falls back to the overview.
-  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'gone' }, stack: [] }))
+  sessionStorage.setItem('dsh-superagentarea/route', JSON.stringify({ route: { page: 'gone' }, stack: [] }))
   expect(initialLocation()).toEqual({ route: { page: 'overview' }, stack: [] })
-  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'trigger', id: 'github:1' }, stack: [{ page: 'gone' }, { page: 'trigger' }] }))
+  sessionStorage.setItem('dsh-superagentarea/route', JSON.stringify({ route: { page: 'trigger', id: 'github:1' }, stack: [{ page: 'gone' }, { page: 'trigger' }] }))
   expect(initialLocation().stack).toEqual([{ page: 'trigger' }])
   // A route saved by an older version still opens a page this one has.
-  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'policy', query: { segment: 'decisions', filter: 'stop' } }, stack: [] }))
+  sessionStorage.setItem('dsh-superagentarea/route', JSON.stringify({ route: { page: 'policy', query: { segment: 'decisions', filter: 'stop' } }, stack: [] }))
   expect(initialLocation().route).toEqual({ page: 'decisions', query: { filter: 'stop' } })
-  sessionStorage.setItem('dsh-superagent/route', '{')
+  sessionStorage.setItem('dsh-superagentarea/route', '{')
   expect(initialLocation().route).toEqual({ page: 'overview' })
 })
 it('reads each page a tab remembered with the parameters it takes, and leaves out what it does not know', () => {

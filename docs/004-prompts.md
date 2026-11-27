@@ -57,7 +57,7 @@ The main Session can read affected part names in `orchestrator_read prompts`, un
 
 ### Default skills per Source kind
 
-Each Source kind ships its default skill in `skills/dsh-superagent-<kind>/SKILL.md`. The host scans that directory, so shipping the file registers the skill; no code lists the kinds.
+Each Source kind ships its default skill in `skills/dsh-superagentarea-<kind>/SKILL.md`. The host scans that directory, so shipping the file registers the skill; no code lists the kinds.
 
 | Source kind | Default skill | Read by |
 | --- | --- | --- |
@@ -65,13 +65,13 @@ Each Source kind ships its default skill in `skills/dsh-superagent-<kind>/SKILL.
 | `feishu` | How to read a chat, a topic and the messages around a Trigger, with images | Workers of every `feishu` instance; the main Session while a Feishu instance is configured |
 | `folder` | How to read the file or task folder an operator dropped and how to deliver results to the outbox | Workers of every `folder` instance; the main Session while a folder instance is configured |
 
-Kinds added later — DingTalk, QQ, WeChat, remote hosts and so on — follow the same pattern: a `skills/dsh-superagent-<kind>/SKILL.md` is registered as that kind's default skill for the main Session and for the kind's workers, and needs no other registration.
+Kinds added later — DingTalk, QQ, WeChat, remote hosts and so on — follow the same pattern: a `skills/dsh-superagentarea-<kind>/SKILL.md` is registered as that kind's default skill for the main Session and for the kind's workers, and needs no other registration.
 
 - A worker Session registers its instance's kind's default skill, then the team skills of that instance's configuration.
 - The main Session registers the default skill of **every configured Source kind** — the union — then the installation's team skills.
 - A default skill is read-only in the panel: its name is reserved, so a team skill cannot take it, and its text follows what the installation ships. A team skill can only add to them, and any number of team skills may be added beside them.
 
-Skills are registered in a Session under the `dsh-superagent-` prefix, so the default skill of a `folder` instance is loaded as `dsh-superagent-folder`.
+Skills are registered in a Session under the `dsh-superagentarea-` prefix, so the default skill of a `folder` instance is loaded as `dsh-superagentarea-folder`.
 
 ## Assembly and precedence
 

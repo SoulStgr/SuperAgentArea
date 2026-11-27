@@ -200,7 +200,7 @@ export class Settings {
   /**
    * Validates and saves one settings block against its `revision`; a no-op save records no new revision, a changed policy
    * version notifies affected open tickets, and changing a setup-read field (`SETUP_FIELDS`, such as an account CLI) or any
-   * change saved while waiting for setup (`!this.host.setup.configured()`) restarts `dsh-superagent` so setup runs again.
+   * change saved while waiting for setup (`!this.host.setup.configured()`) restarts `dsh-superagentarea` so setup runs again.
    * @param origin - Caller origin; restricts execution-environment and account-CLI changes to `'panel'` (a guardrail against prompt-injected tool calls, not an OS security boundary, since agents run shell commands; `origin` has no default so no caller receives panel privileges implicitly).
    * @returns Save outcome with the block's current `revision`, whether `policy_changed`, whether `restarting`, and `context_delivery` status (`'injected'` or `'pending'`).
    * @throws SettingsConflict when `block`'s revision changed before or during validation checks.
@@ -263,7 +263,7 @@ export class Settings {
   /**
    * Creates a Source instance from the management panel: validates its configuration against its kind, stores it enabled
    * with the optional label, and records the save as the instance's own block revision. A kind whose setup fields change
-   * restarts `dsh-superagent`, as any saved account change does; a folder instance takes effect on the next poll.
+   * restarts `dsh-superagentarea`, as any saved account change does; a folder instance takes effect on the next poll.
    * @throws UserError `sourceNotInstalled` for a kind that is not installed, or `sourceExists` when the id is taken.
    */
   async add(request: { id: string; kind: string; label?: string; config: unknown }): Promise<{ revision: number; restarting: boolean }> {

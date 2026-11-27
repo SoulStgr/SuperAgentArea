@@ -22,7 +22,7 @@ import { wechatKind } from '../src/sources/wechat.ts'
 const directories: string[] = []
 const stores: Store[] = []
 function storeOf(settings = SettingsSchema.parse({})): Store {
-  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagent-connectors-'))
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-superagentarea-connectors-'))
   directories.push(directory)
   const store = new Store(join(directory, 'orchestrator.sqlite'))
   stores.push(store)

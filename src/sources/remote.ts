@@ -204,7 +204,7 @@ export async function sendRemote(message: OutboundMessage, options: TransportOpt
   if (problem) throw new Error(`The remote reply target is unusable: ${problem}`)
   if (!MESSAGE_ID.test(message.id)) throw new Error('The remote reply message id is unusable')
   const file = `${message.id}.md`
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-superagent-remote-'))
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-superagentarea-remote-'))
   try {
     await writeFile(join(directory, file), message.text, { mode: 0o600 })
     await verifyHostKey(target, options)
@@ -340,7 +340,7 @@ export async function watchRemote(ctx: SourceContext, signal: AbortSignal, optio
   }
 }
 
-export const name = 'dsh-superagent-remote'
+export const name = 'dsh-superagentarea-remote'
 export const inject = ['orchestrator']
 /** Registers the kind and starts its loop. `options` carries a stand-in transport in tests; production takes sftp from PATH. */
 export function apply(ctx: Context, options: TransportOptions = {}): void {

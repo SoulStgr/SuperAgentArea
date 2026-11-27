@@ -74,7 +74,7 @@ const workRules = (project: ProjectRecord | undefined): string => {
 }
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
-export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+export const WORKER_PRESET = 'dsh-superagentarea-worker', ROUTER_PRESET = 'dsh-superagentarea-router'
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** DSH's agent preset registry selected `agentPreset` for a Session. */
@@ -297,11 +297,11 @@ export class Sessions {
     this.updateModelHealth()
     if (project) {
       const text = workstationSection(project)
-      if (text) binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-workstation', order: 9000, interpolate: false, text }))
+      if (text) binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagentarea-workstation', order: 9000, interpolate: false, text }))
       return
     }
     // Disable variable interpolation so literal ${{ ... }} expressions in team prompts are preserved.
-    binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
+    binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagentarea-policy', order: 9999, interpolate: false, text: context => {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
@@ -309,7 +309,7 @@ export class Sessions {
       const mandate = current ? mandateInstructions(current.mandate, rulesFor(host.store.settings(), current.sourceId)) : ''
       // The station a Ticket belongs to may state requirements for the work in it.
       const rules = current?.projectId === undefined ? '' : workRules(host.store.projects.get(current.projectId))
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${mandate}${rules ? `\n\n${rules}` : ''}`
+      return `[dsh-superagentarea prompt revision ${version.revision}]\n${composed}\n${mandate}${rules ? `\n\n${rules}` : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -318,7 +318,7 @@ export class Sessions {
       const promptScope = this.scopeOfSession(agent.id)
       this.bindSkills(binding, host.prompts.current(promptScope), promptScope)
     })
-    binding.disposers.push(() => { skillScope.dispose().catch((error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release a skill scope: %s', String(error)) }) })
+    binding.disposers.push(() => { skillScope.dispose().catch((error: unknown) => { this.ctx.logger.warn('dsh-superagentarea could not release a skill scope: %s', String(error)) }) })
     await skillScope
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
@@ -384,7 +384,7 @@ export class Sessions {
     for (const [name, content] of this.host.prompts.skills(version.config, scope)) {
       const bundled = bundledSkills[name]
       const body = version.config.skills[name] ?? ''
-      const description = bundled?.description ?? (body.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagent operational skill.')
+      const description = bundled?.description ?? (body.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagentarea operational skill.')
       disposers.push(context.skills.register({ name: `${SKILL_PREFIX}${name}`, description, content, source: 'runtime',
         ...(bundled ? { resourceBase: { kind: 'directory' as const, path: dirname(bundled.path) } } : {}) }))
     }
@@ -411,7 +411,7 @@ export class Sessions {
     this.bindings.delete(agent)
     binding.skills?.dispose()
     for (const dispose of binding.disposers.splice(0).reverse()) {
-      try { dispose() } catch (error) { this.ctx.logger.warn('dsh-superagent could not release what it registered for a Session: %s', String(error)) }
+      try { dispose() } catch (error) { this.ctx.logger.warn('dsh-superagentarea could not release what it registered for a Session: %s', String(error)) }
     }
   }
   /** Releases prompt sections, skills, and tools registered by `Sessions` across all decorated agents. */

@@ -44,7 +44,7 @@ export function SourceConfigForm({ source, reload }: { source: SourceDetailView;
     const { added } = await call('POST sources/:id/labels', { id: source.id }); await reload(); return added
   }
   const draft = useDraft({
-    key: `dsh-superagent/draft/${state?.masterId ?? ''}/source:${source.id}`,
+    key: `dsh-superagentarea/draft/${state?.masterId ?? ''}/source:${source.id}`,
     saved: source.value, revision: source.revision, reload,
     save: async (value, from) => {
       const result = await call('PUT settings/:block', { block: `source:${source.id}`, body: { value, revision: from } })

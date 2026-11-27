@@ -4,26 +4,26 @@ import type {} from '@deepseek-ai/dsh-settings'
 import { Runtime } from './app/runtime.ts'
 import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
 
-export const name = 'dsh-superagent'
+export const name = 'dsh-superagentarea'
 export const inject = ['agents', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'tools', 'systemPrompt', 'skills', 'webServer', 'llm', 'subprocess']
 export { Config }
 export async function apply(ctx: Context, config: DeploymentConfig): Promise<void> {
   const machine = machineOf(config)
   // The management panel provides its own settings UI, so disable DSH's auto-generated settings page.
   ctx.inject(['settings'], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
-  // Volatile limits update in place without a restart; account changes restart dsh-superagent. DSH's settings service stops
-  // serving this entry while dsh-superagent restarts and rereads it only on a configuration write, so trigger `describe()`
+  // Volatile limits update in place without a restart; account changes restart dsh-superagentarea. DSH's settings service stops
+  // serving this entry while dsh-superagentarea restarts and rereads it only on a configuration write, so trigger `describe()`
   // after restart to keep open configuration forms editable without a page reload.
   // TODO: drop the read once DSH's settings service rereads an entry whose plugin becomes active again.
   const restart = (): void => {
-    ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagent restart failed: %s', String(error)) })
+    ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagentarea restart failed: %s', String(error)) })
   }
   const runtime = new Runtime(ctx, machine, restart)
   ctx.effect(() => async () => { await runtime.stop() })
   await runtime.ready
   // Seed the default local folder Source once startup finished, where a failure does not keep the plugin from serving.
-  try { runtime.ensureDefaults() } catch (error) { ctx.logger.warn('dsh-superagent could not seed the default Sources: %s', String(error)) }
-  ctx.logger.info(runtime.configured() ? 'dsh-superagent ready; the Superagent sidebar entry opens the management panel' : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ''}`)
+  try { runtime.ensureDefaults() } catch (error) { ctx.logger.warn('dsh-superagentarea could not seed the default Sources: %s', String(error)) }
+  ctx.logger.info(runtime.configured() ? 'dsh-superagentarea ready; the Superagent sidebar entry opens the management panel' : `dsh-superagentarea is waiting for setup: ${runtime.setupProblem?.detail ?? ''}`)
 }
 export type { Deployment, DeploymentConfig } from './deployment.ts'
 export * from './core/index.ts'

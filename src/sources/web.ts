@@ -27,7 +27,7 @@ export const WEB_MAX_BYTES = 2 * 1024 * 1024
 /** How many redirects one request follows; every hop is checked again before it is fetched. */
 export const WEB_MAX_REDIRECTS = 3
 /** The User-Agent every request names, so a feed operator can see where the load comes from. */
-export const WEB_USER_AGENT = 'dsh-superagent/web'
+export const WEB_USER_AGENT = 'dsh-superagentarea/web'
 /** How long a received item id is remembered. */
 export const WEB_SEEN_TTL_MS = 7 * 24 * 3600_000
 /** How many received item ids are kept; a busier feed forgets its oldest ones first. */
@@ -332,7 +332,7 @@ async function readBody(response: Response, limit: number, signal: AbortSignal):
 }
 /**
  * Fetches one public http(s) address with the Source's own envelope: a 20 s timeout, a manual redirect chain of at most
- * three hops (each hop checked again), a 2 MiB body cap and the `dsh-superagent/web` User-Agent. The address, its
+ * three hops (each hop checked again), a 2 MiB body cap and the `dsh-superagentarea/web` User-Agent. The address, its
  * resolved addresses and every redirect target pass the SSRF checks; a `file:` or other scheme is refused.
  */
 export async function fetchPage(address: string, signal: AbortSignal, options: WebTransportOptions = {}): Promise<WebPage> {
@@ -551,7 +551,7 @@ export const webKind: SourceKind<WebConfig> = {
   people: config => config.operator ? [{ id: config.operator }] : [],
 }
 
-export const name = 'dsh-superagent-web'
+export const name = 'dsh-superagentarea-web'
 export const inject = ['orchestrator']
 /** Registers the kind and starts its loop. `options` carries a stand-in fetch and resolver in tests. */
 export function apply(ctx: Context, options: WebTransportOptions = {}): void {

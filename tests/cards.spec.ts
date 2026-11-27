@@ -113,7 +113,8 @@ it.each(RULES)('%s (%s)', (_rule, file, says, gone = []) => {
 
 it('keeps each role\'s own instructions short', () => {
   expect(masterPrompt.length).toBeLessThan(1400)
-  expect(workerPrompt.length).toBeLessThan(1000)
+  // The dsh-superagentarea rename adds four characters to every name in the worker prompt; keep the role text otherwise unchanged.
+  expect(workerPrompt.length).toBeLessThan(1010)
 })
 
 const trigger: Trigger = { id: 'request-1', source: 'github', threads: [{ source: 'github', id: '42' }], actor: { source: 'github', id: 'alice' }, human: true,
