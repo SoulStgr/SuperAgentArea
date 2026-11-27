@@ -119,6 +119,8 @@ Each rule describes a kind of proactive work. Rules are held by Source instance:
 
 For that Ticket, a rule's process and communication requirements override the defaults. A silence rule can suppress an acknowledgement; a review rule can name the required reviewer and approval before merge. Requirements that apply to every Ticket belong in team prompt sections instead.
 
+The default set also carries a **casual-chat** category: greetings, small talk, the weather, thanks, or a question about what the agent can do are answered directly in the source conversation, never as a Ticket. A candidate that matches only that rule is not accepted as work; the main Session replies without creating a Ticket, worker or workstation. A message that also asks for concrete work is judged under its work rule as well.
+
 ## Policy version
 
 Rules, accept mode and each Source's Policy form the Policy version. The rules in it are the installation's default rules and every instance's own rules; an instance that saved none adds nothing and inherits the default. Every Mandate records the version under which it was accepted.

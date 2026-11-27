@@ -14,7 +14,7 @@ import { artifactRecordId, isoTime, said, WORKSPACE_PROJECT_ID, type AcceptMode,
 import type { Artifact } from './artifacts.ts'
 import { feishuChatLink } from '../sources/feishu-channel.ts'
 import { POLL_HORIZON_MS } from '../sources/poll.ts'
-import { DEFAULT_RULES, LEGACY_DEFAULT_RULES, SettingsSchema, policyVersion, type Rule, type SettingsOrigin } from '../policy.ts'
+import { DEFAULT_RULES, LEGACY_DEFAULT_RULES, PREVIOUS_DEFAULT_RULES, SettingsSchema, policyVersion, type Rule, type SettingsOrigin } from '../policy.ts'
 import { autoMergeThreshold, teamDefaults } from './context.ts'
 import { PromptConfigSchema, type PromptConfig, type PromptVersion } from './prompts.ts'
 import type { EffectKind, EffectPayloads } from './effects.ts'
@@ -248,19 +248,20 @@ export function sameRules(stored: unknown, expected: readonly Rule[]): boolean {
   })
 }
 /**
- * The raw settings value with every rule set that is still exactly the previous defaults replaced by the current default
+ * The raw settings value with every rule set that is still exactly a previous default replaced by the current default
  * rules: the installation's rules as well as each Source instance's own rules. A customized rule set is left whole, even
  * when one of its rules reuses a default rule's id, so a person's rules are never overwritten.
- * @returns The upgraded value, or undefined when no stored rules are the previous defaults, so nothing is written.
+ * @returns The upgraded value, or undefined when no stored rules are a previous default, so nothing is written.
  */
 export function upgradeDefaultRules(value: unknown): unknown {
+  const previousDefault = (rules: unknown): boolean => sameRules(rules, LEGACY_DEFAULT_RULES) || sameRules(rules, PREVIOUS_DEFAULT_RULES)
   if (!isObject(value) || !isObject(value.policy)) return undefined
   const policy = value.policy
   const rules = policy.rules
   const parts = isObject(policy.sources) ? policy.sources : {}
   const sources = Object.entries(parts).flatMap(([id, part]): [string, Stored][] =>
-    isObject(part) && sameRules(part.rules, LEGACY_DEFAULT_RULES) ? [[id, { ...part, rules: currentRules() }]] : [])
-  const rulesChanged = sameRules(rules, LEGACY_DEFAULT_RULES)
+    isObject(part) && previousDefault(part.rules) ? [[id, { ...part, rules: currentRules() }]] : [])
+  const rulesChanged = previousDefault(rules)
   if (!rulesChanged && !sources.length) return undefined
   return { ...value, policy: { ...policy, ...rulesChanged ? { rules: currentRules() } : {},
     ...sources.length ? { sources: { ...parts, ...Object.fromEntries(sources) } } : {} } }

@@ -99,12 +99,10 @@ export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().m
   instruction: z.string().trim().min(1).max(LIMITS.ruleInstruction) }).strict()
 export type Rule = z.infer<typeof RuleSchema>
 /**
- * The admission rules a new installation starts with, in English: the categories of proactive candidate the main Session
- * may accept. They affect proactive candidate acceptance only: they never create a workstation, and a request that needs
- * one is left to the host, which asks a person for its name and address. A person's own rule set replaces these defaults
- * for a Source instance; an installation an earlier build configured keeps its customized rules.
+ * The four workstation- and work-oriented rules installations of 0.3.22 started with. They remain here so a later default
+ * (0.3.23's casual-chat rule) upgrades an untouched 0.3.22 rule set instead of mistaking it for a person's custom rules.
  */
-export const DEFAULT_RULES: Rule[] = [
+export const PREVIOUS_DEFAULT_RULES: readonly Rule[] = [
   { id: 'workstation-work', name: 'Workstation work', enabled: true,
     instruction: 'An explicit request for concrete work in an existing workstation: a code, configuration, documentation, copy or visual change, or another deliverable a person can check. The discussion settles which workstation, which target and what result is wanted, and the change is clearly separable and verifiable against the repository, the running product or another named deliverable. Do not invent design, product, rendering or interaction decisions the request leaves open; a reported defect does not authorize adjacent undefined restyling, and while direction or scope is unsettled, observe only: no acknowledgement, worker or unsolicited question.' },
   { id: 'new-workstation', name: 'New workstation', enabled: true,
@@ -113,6 +111,12 @@ export const DEFAULT_RULES: Rule[] = [
     instruction: 'An explicit request to investigate a problem, review a change, or analyze a behaviour and report a conclusion: find a cause, judge code or a pull request, measure something, or answer a question with evidence. The deliverable is the finding, review or analysis itself, not an implementation; the discussion names what to examine and which question to answer, and the conclusion can be checked against the repository, logs, tests or another named source. An open-ended look at a topic with no question to answer is not a match: do not invent the question or the expected conclusion, and observe only.' },
   { id: 'one-off-task', name: 'One-off task', enabled: true,
     instruction: 'An explicit request for one temporary piece of work with a clear end, such as converting one file, producing one report, running one check or making one hotfix, that does not continue the ongoing work of any workstation. The request names the deliverable and what finished means. This work lands in the workspace unless a person places it in a workstation; do not create or propose a workstation for it, and do not treat repeated or open-ended work as one-off.' },
+]
+/** The admission rules a new installation starts with. The casual-chat rule lets the agent answer everyday conversation directly. */
+export const DEFAULT_RULES: Rule[] = [
+  ...PREVIOUS_DEFAULT_RULES.map(rule => ({ ...rule })),
+  { id: 'casual-chat', name: 'Casual chat', enabled: true,
+    instruction: 'Everyday conversation that asks for no project work: greetings, small talk, the weather, thanks, or a question about what the agent can do or how to use it. Answer it briefly in the source conversation; this rule never starts a Ticket, worker or workstation, and it never authorizes project work. If the same message also asks for concrete work, judge that work under its own rule.' },
 ]
 /**
  * The admission rules installations of versions through 0.3.21 started with: copy and visual fixes. The one-time migration

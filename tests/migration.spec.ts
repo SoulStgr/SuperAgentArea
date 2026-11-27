@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 import { SCHEMA_VERSION, Store, type SettingsVersion } from '../src/app/store.ts'
 import { WORKSPACE_PROJECT_ID, artifactRecordId } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
-import { LEGACY_DEFAULT_RULES } from '../src/policy.ts'
+import { LEGACY_DEFAULT_RULES, PREVIOUS_DEFAULT_RULES } from '../src/policy.ts'
 import { basisOf, reasonsOf, withoutCopies } from '../src/app/migration.ts'
 import { Prompts, composePrompt, defaultPrompts } from '../src/app/prompts.ts'
 import { masterPrompt } from '../src/app/context.ts'
@@ -728,15 +728,16 @@ function savedSettings(path: string, settings: unknown, source: SettingsVersion[
 }
 /** A person's own rule, which no default-rule migration may rewrite. */
 const customRule = { id: 'chat', name: 'Casual chat', enabled: true, instruction: 'Answer casual conversation without changing the product.' }
-const newRuleIds = ['workstation-work', 'new-workstation', 'investigation', 'one-off-task']
+const newRuleIds = ['workstation-work', 'new-workstation', 'investigation', 'one-off-task', 'casual-chat']
 const ruleIds = (rules: readonly { id: string }[] | undefined) => (rules ?? []).map(rule => rule.id)
 
-it('starts a new installation with the four workstation admission rules and records no settings revision', () => {
+it('starts a new installation with the current admission rules and records no settings revision', () => {
   const path = join(directory, 'db.sqlite')
   const store = new Store(path)
   const rules = store.settings().policy.rules
   expect(ruleIds(rules)).toEqual(newRuleIds)
-  expect(rules.map(rule => rule.name)).toEqual(['Workstation work', 'New workstation', 'Investigation', 'One-off task'])
+  expect(rules.map(rule => rule.name)).toEqual(['Workstation work', 'New workstation', 'Investigation', 'One-off task',
+    'Casual chat'])
   expect(rules.every(rule => rule.enabled)).toBe(true)
   // The default rules are English and state that they gate proactive acceptance only, not station creation.
   for (const rule of rules) {
@@ -784,6 +785,20 @@ it('replaces the previous build\'s default rules once, in the installation and i
   expect(again.settingsHistory().map(item => item.revision)).toEqual([2, 1])
   expect(ruleIds(again.settings().policy.rules)).toEqual(newRuleIds)
   again.close()
+})
+
+it('adds the casual-chat rule to an untouched 0.3.22 default rule set', () => {
+  const path = join(directory, 'db.sqlite')
+  savedSettings(path, {
+    sources: { feishu: instance('feishu') },
+    policy: { rules: PREVIOUS_DEFAULT_RULES, sources: { feishu: { allowed: [], admission: {}, rules: PREVIOUS_DEFAULT_RULES } } },
+  })
+  const store = new Store(path)
+  const settings = store.settings()
+  expect(ruleIds(settings.policy.rules)).toEqual(newRuleIds)
+  expect(ruleIds(settings.policy.sources.feishu!.rules)).toEqual(newRuleIds)
+  expect(store.settingsHistory().map(item => item.revision)).toEqual([2, 1])
+  store.close()
 })
 
 it('replaces a Source\'s own rules that are the old defaults without touching the installation\'s customized rules', () => {
